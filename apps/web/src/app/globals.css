@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+/* North design tokens (docs/research/polsia-teardown.md §4, design spec §9). */
+:root {
+  --ink: #000000;
+  --paper: #ffffff;
+  --gray-1a: #1a1a1a;
+  --gray-55: #555555;
+  --gray-6a: #6a6a6a;
+  --gray-88: #888888;
+  --gray-aa: #aaaaaa;
+  --gray-cc: #cccccc;
+  --gray-dd: #dddddd;
+  --gray-e5: #e5e5e5;
+  --gray-fa: #fafafa;
+  --deep: #e65100;
+  --success: #2e7d32;
+  --success-bg: #f4f8f4;
+  --error: #c62828;
+  --error-bg: #fbeaea;
+  --warning: #f97316;
+  --warning-bg: #fff3cd;
+  --link: #2383e2;
+
+  --bg: var(--paper);
+  --fg: var(--ink);
+  --muted: var(--gray-55);
+  --faint: var(--gray-88);
+  --border: var(--ink);
+  --surface: var(--gray-fa);
+  --surface-border: var(--gray-dd);
+  --terminal-bg: var(--ink);
+  --terminal-fg: var(--paper);
+}
+
+:root[data-theme="dark"],
+:root:not([data-theme="light"]) {
+  @media (prefers-color-scheme: dark) {
+    --bg: var(--ink);
+    --fg: var(--paper);
+    --muted: var(--gray-aa);
+    --faint: var(--gray-88);
+    --border: var(--gray-55);
+    --surface: var(--gray-1a);
+    --surface-border: var(--gray-55);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: var(--ink);
+  --fg: var(--paper);
+  --muted: var(--gray-aa);
+  --faint: var(--gray-88);
+  --border: var(--gray-55);
+  --surface: var(--gray-1a);
+  --surface-border: var(--gray-55);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-border: var(--border);
+  --color-surface: var(--surface);
+  --color-surface-border: var(--surface-border);
+  --color-terminal-bg: var(--terminal-bg);
+  --color-terminal-fg: var(--terminal-fg);
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-deep: var(--deep);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-error: var(--error);
+  --color-error-bg: var(--error-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-link: var(--link);
+
+  --font-display: var(--font-instrument-serif), "Times New Roman", serif;
+  --font-body: var(--font-newsreader), Georgia, serif;
+  --font-mono: var(--font-geist-mono), "Courier New", monospace;
+
+  --radius-none: 0;
+  --radius-sm: 2px;
+}
+
+html {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+@utility mono-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+@utility hairline {
+  border: 1px solid var(--border);
+}
+
+@utility retro-button {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  padding: 6px 14px;
+  color: var(--ink);
+  background: linear-gradient(to bottom, var(--paper), var(--gray-dd));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 1px 0 rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+}
+
+@utility retro-button-primary {
+  color: var(--paper);
+  border-color: var(--ink);
+  background: linear-gradient(to bottom, var(--gray-55), var(--ink));
+}
+
+@utility terminal {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+}
+
+@keyframes north-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink::after {
+  content: "▋";
+  animation: north-blink 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor-blink::after {
+    animation: none;
+  }
+}

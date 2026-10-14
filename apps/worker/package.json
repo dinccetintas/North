@@ -1,0 +1,32 @@
+{
+  "name": "@north/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@north/agents": "workspace:*",
+    "@north/core": "workspace:*",
+    "@north/db": "workspace:*",
+    "@north/integrations": "workspace:*",
+    "@supabase/supabase-js": "2.117.3",
+    "hono": "^4.7.0",
+    "inngest": "4.24.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "eslint": "^9.30.0",
+    "tsx": "^4.20.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.40.0",
+    "vitest": "5.0.4"
+  }
+}
