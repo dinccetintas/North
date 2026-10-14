@@ -15,10 +15,30 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!email.trim() || loading) return
+    if (loading) return
 
     setLoading(true)
     setError(null)
+
+    // Auto-login (when AUTO_LOGIN_EMAIL is set on the server) skips the email
+    const res = await fetch('/auth/auto-login', { method: 'POST' })
+    if (res.ok) {
+      router.replace('/cockpit')
+      router.refresh()
+      return
+    }
+    if (res.status !== 404) {
+      const body = await res.json().catch(() => ({}))
+      setLoading(false)
+      setError(body.error ?? 'Auto-login failed')
+      return
+    }
+
+    if (!email.trim()) {
+      setLoading(false)
+      setError('Enter your email')
+      return
+    }
 
     const { error } = await supabase.auth.signInWithOtp({
       email: email.trim(),
@@ -69,7 +89,6 @@ export default function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                required
                 disabled={loading}
                 className={cn(
                   'w-full bg-surface-raised border border-surface-border text-sm text-zinc-200',
@@ -85,7 +104,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading || !email.trim()}
+              disabled={loading}
               className={cn(
                 'w-full font-mono text-xs uppercase tracking-widest py-2.5 border',
                 'transition-colors',
@@ -93,7 +112,7 @@ export default function LoginPage() {
                 'disabled:opacity-40 disabled:cursor-not-allowed'
               )}
             >
-              {loading ? 'Sending...' : 'Send magic link →'}
+              {loading ? 'Logging in...' : 'Log in →'}
             </button>
           </form>
         )}
