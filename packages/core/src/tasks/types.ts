@@ -13,6 +13,8 @@ export const TASK_TYPES = [
   "business_plan",
   "investor_deck",
   "brand_kit",
+  "campaign_spec",
+  "outreach_batch",
   "plan_week",
   "brief",
 ] as const;
@@ -39,6 +41,8 @@ export const TASK_OWNER: Readonly<Record<TaskType, AgentRole>> = Object.freeze({
   business_plan: "strategy_product",
   investor_deck: "strategy_product",
   brand_kit: "design",
+  campaign_spec: "growth",
+  outreach_batch: "sales",
   plan_week: "chief_of_staff",
   brief: "chief_of_staff",
 });
@@ -57,7 +61,7 @@ export const METRIC_KEYS = [
 ] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
-export const ARTIFACT_KINDS = ["market_report", "personas", "competitor_map", "prd", "business_plan", "investor_deck", "brand_kit", "plan", "brief", "doc"] as const;
+export const ARTIFACT_KINDS = ["market_report", "personas", "competitor_map", "prd", "business_plan", "investor_deck", "brand_kit", "campaign_spec", "outreach_batch", "plan", "brief", "doc"] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
 export const MEMORY_KINDS = ["thesis", "persona", "decision", "learning", "doc"] as const;

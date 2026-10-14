@@ -20,7 +20,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "validate": "bash scripts/validate.sh",
     "e2e": "pnpm --filter @north/web e2e",
-    "smoke:m1": "tsx scripts/smoke-m1.ts"
+    "smoke:m1": "tsx scripts/smoke-m1.ts",
+    "smoke:m2": "tsx scripts/smoke-m2.ts"
   },
   "devDependencies": {
     "@north/agents": "workspace:*",

@@ -64,6 +64,36 @@ export const TASK_STATUS_LABEL: Readonly<Record<TaskStatus, string>> = Object.fr
   failed: "failed",
 });
 
+/** One line per authority tier, shown on decision cards and action rows. */
+export const TIER_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  K0: "K0 · automatic",
+  K1: "K1 · notified",
+  K2: "K2 · your call",
+  K3: "K3 · only you",
+});
+
+export function tierLabel(tier: string): string {
+  return TIER_LABELS[tier] ?? tier;
+}
+
+/** "due in 3 h", "due in 2 d" or "overdue", from an ISO timestamp. */
+export function formatDue(iso: string, now: Date = new Date()): string {
+  const ms = Date.parse(iso) - now.getTime();
+  if (!Number.isFinite(ms)) return "no deadline";
+  if (ms <= 0) return "overdue";
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 1) return "due within the hour";
+  if (hours < 48) return `due in ${hours} h`;
+  return `due in ${Math.round(hours / 24)} d`;
+}
+
+/** "answered 14:05" / "answered 12 Oct" for the collapsed list of decided cards. */
+export function formatAnsweredAt(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay ? date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
 export function formatUsd(value: number): string {
   return `$${value.toFixed(value < 10 ? 2 : 0)}`;
 }

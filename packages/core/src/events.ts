@@ -15,6 +15,7 @@ export const EVENT = {
   decisionOpened: "decision/opened",
   decisionAnswered: "decision/answered",
   decisionExpired: "decision/expired",
+  decisionDeferred: "decision/deferred",
   signalDetected: "signal/detected",
   metricCollect: "metric/collect",
   briefGenerate: "brief/generate",
@@ -37,6 +38,18 @@ export const DecisionAnsweredSchema = z.object({
   optionId: z.string().min(1),
   answeredBy: z.enum(["user", "default", "auto_rule"]),
 });
+export const DecisionOpenedSchema = z.object({
+  companyId: z.string().uuid(),
+  cardId: z.string().uuid(),
+  taskId: z.string().uuid().nullable(),
+});
+export const DecisionDeferredSchema = z.object({
+  companyId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  reason: z.string().min(1),
+});
+export type DecisionOpenedEvent = z.infer<typeof DecisionOpenedSchema>;
+export type DecisionDeferredEvent = z.infer<typeof DecisionDeferredSchema>;
 
 export type CompanyEvent = z.infer<typeof CompanyEventSchema>;
 export type TaskDispatchEvent = z.infer<typeof TaskDispatchSchema>;

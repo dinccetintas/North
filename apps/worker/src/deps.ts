@@ -1,5 +1,6 @@
 import { createServiceClient, getKillSwitch, searchMemory, type DbClient } from "@north/db";
 import { loadRoles, minimalSubprocessEnv, selectRuntime, type AgentRuntime, type RoleDefinition } from "@north/agents";
+import { selectIntegrations, type Integrations } from "@north/integrations";
 import { workerEnv, type WorkerEnv } from "./env";
 
 /** Everything a worker function needs; built once per process, injectable in tests. */
@@ -8,6 +9,7 @@ export interface WorkerDeps {
   readonly db: DbClient;
   readonly roles: ReadonlyMap<string, RoleDefinition>;
   readonly runtime: AgentRuntime;
+  readonly integrations: Integrations;
 }
 
 /** Audit payloads are capped so a hostile tool input cannot bloat the log. */
@@ -33,6 +35,7 @@ export function buildDeps(env: WorkerEnv = workerEnv()): Promise<WorkerDeps> {
 async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const db = createServiceClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
   const roles = await loadRoles(env.AGENTS_DIR);
+  const integrations = selectIntegrations({ ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE });
   const runtime = selectRuntime(
     {
       roles,
@@ -54,5 +57,5 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
     },
     { AGENT_RUNTIME: env.AGENT_RUNTIME },
   );
-  return Object.freeze({ env, db, roles, runtime });
+  return Object.freeze({ env, db, roles, runtime, integrations });
 }

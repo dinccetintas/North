@@ -20,6 +20,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/new" className="hover:underline">
             New
           </Link>
+          <Link href="/settings" className="hover:underline" data-testid="nav-settings">
+            Settings
+          </Link>
           <span className="hidden text-faint sm:inline" data-testid="user-email">
             {user.email}
           </span>

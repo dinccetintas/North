@@ -1,0 +1,34 @@
+M2 database guarantees, verified 2026-10-14 on PostgreSQL 16.15 (cloud container, no Docker).
+
+Setup: scripts/pg-verify/00_supabase_shims.sql (auth/storage/role stand-ins, placeholder
+`vector` type), then migrations 0001_init → 0002_m1 → 0003_m1_hardening → 0004_m2 applied
+in order with ON_ERROR_STOP, then scripts/pg-verify/90_assert_m2.sql (runs in a transaction
+and rolls back).
+
+== packages/db/supabase/migrations/0001_init.sql
+== packages/db/supabase/migrations/0002_m1.sql
+== packages/db/supabase/migrations/0003_m1_hardening.sql
+== packages/db/supabase/migrations/0004_m2.sql
+== ASSERT M2
+NOTICE:  OK tasks_task_type_check refuses mine_bitcoin
+NOTICE:  OK seq assigned 1..3 (default 0 overridden by trigger)
+NOTICE:  OK DEC-3: fourth card of the day refused (daily decision quota (3) exceeded for company 22222222-2222-4222-8222-222222222222)
+NOTICE:  OK merge_key default and nullable action_id
+NOTICE:  OK default answer must be the safe default
+NOTICE:  OK default answer equal to the safe default accepted
+NOTICE:  OK K3 cannot carry a default
+NOTICE:  OK actions_supersedes_idx keeps chains linear
+NOTICE:  OK push endpoint unique
+NOTICE:  OK notifications_channel_check
+NOTICE:  OK notifications_status_check
+NOTICE:  OK RLS enabled with 2 policies on the M2 tables
+exit=0
+
+Re-run locally (plain Postgres, as a superuser):
+  createdb north_verify
+  cp scripts/pg-verify/vector-placeholder.control $(pg_config --sharedir)/extension/vector.control   # only without pgvector
+  cp scripts/pg-verify/vector-placeholder--0.0.sql $(pg_config --sharedir)/extension/vector--0.0.sql
+  psql -v ON_ERROR_STOP=1 -d north_verify -f scripts/pg-verify/00_supabase_shims.sql
+  for f in packages/db/supabase/migrations/000*.sql; do psql -v ON_ERROR_STOP=1 -d north_verify -f $f; done
+  psql -v ON_ERROR_STOP=1 -d north_verify -f scripts/pg-verify/90_assert_m2.sql
+With Docker, `pnpm db:reset && pnpm test:integration` covers the same guarantees through the repositories and RLS.

@@ -23,6 +23,7 @@ export type Database = {
           payload: NonNullable<Json>;
           sandbox: boolean;
           status: string;
+          supersedes: string | null;
           task_id: string | null;
           tier: string;
         };
@@ -40,6 +41,7 @@ export type Database = {
           payload?: NonNullable<Json>;
           sandbox?: boolean;
           status: string;
+          supersedes?: string | null;
           task_id?: string | null;
           tier: string;
         };
@@ -56,6 +58,7 @@ export type Database = {
           payload?: NonNullable<Json>;
           sandbox?: boolean;
           status?: string;
+          supersedes?: string | null;
           task_id?: string | null;
           tier?: string;
         };
@@ -79,6 +82,13 @@ export type Database = {
             columns: ["decision_card_id"];
             isOneToOne: false;
             referencedRelation: "decision_cards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "actions_supersedes_fkey";
+            columns: ["supersedes"];
+            isOneToOne: false;
+            referencedRelation: "actions";
             referencedColumns: ["id"];
           },
           {
@@ -507,6 +517,7 @@ export type Database = {
       };
       decision_cards: {
         Row: {
+          action_id: string | null;
           action_kind: string;
           answered_at: string | null;
           answered_by: string | null;
@@ -519,6 +530,7 @@ export type Database = {
           due_at: string;
           expected_impact: string | null;
           id: string;
+          merge_key: string;
           options: NonNullable<Json>;
           question: string;
           rationale: string;
@@ -529,6 +541,7 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          action_id?: string | null;
           action_kind: string;
           answered_at?: string | null;
           answered_by?: string | null;
@@ -541,15 +554,17 @@ export type Database = {
           due_at: string;
           expected_impact?: string | null;
           id?: string;
+          merge_key?: string;
           options: NonNullable<Json>;
           question: string;
           rationale: string;
           recommended_option_id: string;
-          seq: number;
+          seq?: number;
           task_id?: string | null;
           tier: string;
         };
         Update: {
+          action_id?: string | null;
           action_kind?: string;
           answered_at?: string | null;
           answered_by?: string | null;
@@ -562,6 +577,7 @@ export type Database = {
           due_at?: string;
           expected_impact?: string | null;
           id?: string;
+          merge_key?: string;
           options?: NonNullable<Json>;
           question?: string;
           rationale?: string;
@@ -571,6 +587,13 @@ export type Database = {
           tier?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: "decision_cards_action_id_fkey";
+            columns: ["action_id"];
+            isOneToOne: false;
+            referencedRelation: "actions";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "decision_cards_company_id_fkey";
             columns: ["company_id"];
@@ -762,6 +785,65 @@ export type Database = {
           },
         ];
       };
+      notifications: {
+        Row: {
+          card_id: string | null;
+          channel: string;
+          company_id: string;
+          created_at: string;
+          id: string;
+          kind: string;
+          payload: NonNullable<Json>;
+          status: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          card_id?: string | null;
+          channel: string;
+          company_id: string;
+          created_at?: string;
+          id?: string;
+          kind: string;
+          payload?: NonNullable<Json>;
+          status: string;
+          user_id: string;
+        };
+        Update: {
+          card_id?: string | null;
+          channel?: string;
+          company_id?: string;
+          created_at?: string;
+          id?: string;
+          kind?: string;
+          payload?: NonNullable<Json>;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notifications_card_id_fkey";
+            columns: ["card_id"];
+            isOneToOne: false;
+            referencedRelation: "decision_cards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "notifications_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "notifications_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       plans: {
         Row: {
           company_id: string;
@@ -807,6 +889,42 @@ export type Database = {
             columns: ["goal_id"];
             isOneToOne: false;
             referencedRelation: "goals";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      push_subscriptions: {
+        Row: {
+          auth: string;
+          created_at: string;
+          endpoint: string;
+          id: string;
+          p256dh: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          auth: string;
+          created_at?: string;
+          endpoint: string;
+          id?: string;
+          p256dh: string;
+          user_id: string;
+        };
+        Update: {
+          auth?: string;
+          created_at?: string;
+          endpoint?: string;
+          id?: string;
+          p256dh?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];

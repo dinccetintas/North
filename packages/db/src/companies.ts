@@ -70,6 +70,23 @@ export async function getCompanyBySlug(db: DbClient, slug: string): Promise<Comp
   return data ? toSummary(data) : null;
 }
 
+/** Company by id (worker and deep links), or null when missing or not visible under RLS. */
+export async function getCompanyById(db: DbClient, companyId: string): Promise<CompanySummary | null> {
+  const id = z.string().uuid().parse(companyId);
+  const { data, error } = await db.from("companies").select("id, name, slug, status, kill_switch_active").eq("id", id).maybeSingle();
+  if (error) throw new DbError(`Could not load company: ${error.message}`, error);
+  return data ? toSummary(data) : null;
+}
+
+/** The user who owns the company (the one who answers its cards). Throws when the company is unknown or invisible. */
+export async function companyOwnerId(db: DbClient, companyId: string): Promise<string> {
+  const id = z.string().uuid().parse(companyId);
+  const { data, error } = await db.from("companies").select("owner_id").eq("id", id).maybeSingle();
+  if (error) throw new DbError(`Could not read company owner: ${error.message}`, error);
+  if (!data) throw new DbError(`Company ${id} not found`);
+  return data.owner_id;
+}
+
 export async function listCompanies(db: DbClient): Promise<readonly CompanySummary[]> {
   const { data, error } = await db
     .from("companies")

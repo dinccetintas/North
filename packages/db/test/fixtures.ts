@@ -1,3 +1,4 @@
+import type { CardDraft } from "@north/core";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createCompany } from "../src/companies";
 import type { Database } from "../src/types";
@@ -48,4 +49,32 @@ export async function createOwnerWithCompany(label: string, thesis = "A test com
   const owner = await createTestUser(label);
   const company = await createCompany(owner.client, { ownerId: owner.id, name: `${label} Co`, thesis });
   return { owner, companyId: company.id };
+}
+
+/** A second (or third) company for an existing owner; the decision quota is per company and day. */
+export async function createCompanyFor(owner: TestUser, label: string): Promise<string> {
+  const company = await createCompany(owner.client, { ownerId: owner.id, name: `${label} Co`, thesis: `${label}: a company whose thesis is long enough to pass validation.` });
+  return company.id;
+}
+
+/** A valid K2 card draft the authority gate would produce for a $10 ad test; override fields per test. */
+export function sampleCardDraft(companyId: string, overrides: Partial<CardDraft> = {}): CardDraft {
+  return Object.freeze({
+    companyId,
+    question: "Start the $10/day ad test?",
+    options: [
+      { id: "approve", label: "Approve" },
+      { id: "decline", label: "Decline" },
+    ],
+    recommendedOptionId: "approve",
+    rationale: "Tier K2 (spends_money). Requested by growth.",
+    expectedImpact: null,
+    costUsd: 10,
+    dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    defaultOptionId: "decline",
+    tier: "K2",
+    actionKind: "ads.start",
+    mergeKey: "ads.start:ads",
+    ...overrides,
+  });
 }

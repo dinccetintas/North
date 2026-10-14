@@ -9,6 +9,8 @@ export const ARTIFACT_KIND_FOR_TASK: Readonly<Record<TaskType, ArtifactKind>> = 
   business_plan: "business_plan",
   investor_deck: "investor_deck",
   brand_kit: "brand_kit",
+  campaign_spec: "campaign_spec",
+  outreach_batch: "outreach_batch",
   plan_week: "plan",
   brief: "brief",
 });
@@ -61,6 +63,20 @@ export const TASK_GUIDES: Readonly<Record<TaskType, string>> = Object.freeze({
 - Voice and tone: three adjectives, do/don't examples, sample headline and CTA.
 - Logo direction and imagery guidance (described, no binary assets).
 - Accessibility notes (contrast ratios) and a short rationale.`,
+  campaign_spec: `A great campaign spec contains:
+- One objective tied to the goal metric, with the expected delta and the budget that buys it.
+- Audience definition precise enough to configure, with exclusions.
+- Creative: headline, body, CTA and format, with no stock imagery and no claims the product cannot keep.
+- Budget and schedule inside the ads cap, plus an automatic pause rule.
+- A stop rule and what a pass or fail teaches.
+- Exactly one \`ads.start\` action request with amountUsd and category "ads"; the platform opens the decision card.`,
+  outreach_batch: `A great outreach batch contains:
+- Who and why: a handful of prospects from public research or the CEO's uploads, never scraped personal data.
+- One short email per prospect: what we noticed, what we do, one ask, no follow-up pressure, no fake personalisation.
+- A prospects table with the reason each is a fit now.
+- Sending rules: first contact waits for the CEO's approval (K2); replies in-thread are K1.
+- The metric (replies) and the thresholds that mean the message works or fails.
+- One \`email.send.first_contact\` action request per email with payload.to, payload.subject and payload.text.`,
   plan_week: `A great weekly plan contains:
 - Three to five tasks, each owned by exactly one role and tied to one metric with an expected delta and a cost estimate.
 - Work ordered so research precedes building, and building precedes publishing.

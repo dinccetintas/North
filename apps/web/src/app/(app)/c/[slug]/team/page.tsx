@@ -52,8 +52,10 @@ export default async function TeamPage({ params }: { params: Params }) {
           ) : (
             <>
               {actions.map((a) => (
-                <div key={a.id} className="whitespace-nowrap">
-                  &gt; [{timeOf(a.createdAt)}] {a.agentRole} {a.kind} {a.tier} {a.status} {a.description}
+                <div key={a.id} className="whitespace-nowrap" data-testid="action-row" data-kind={a.kind} data-status={a.status}>
+                  &gt; [{timeOf(a.createdAt)}] {a.agentRole} {a.kind} {a.tier} {a.supersedes ? "→ " : ""}
+                  {a.status}
+                  {a.sandbox && (a.status === "executed" || a.status === "notified") ? " (sandbox)" : ""} {a.description}
                 </div>
               ))}
               <div className="cursor-blink">&gt; </div>

@@ -4,6 +4,7 @@ import { getOnboardingStep, latestMetric, latestPlan, listArtifacts, listGoals, 
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { ArtifactsStrip } from "@/components/artifacts-strip";
+import { DecisionsSection } from "@/components/decisions-section";
 import { GoalProgress } from "@/components/goal-progress";
 import { LiveRefresh } from "@/components/live-refresh";
 import { TaskList, TaskStatusBadge } from "@/components/task-list";
@@ -29,15 +30,6 @@ function MorningHeader({ name }: { name: string }) {
         {name}
       </h1>
     </div>
-  );
-}
-
-function DecisionsSection() {
-  return (
-    <section className="mt-10">
-      <h2 className="mono-label text-faint">Decisions today · 0 of 3</h2>
-      <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">Nothing to decide yet.</p>
-    </section>
   );
 }
 
@@ -71,7 +63,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
       <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
         <MorningHeader name={company.name} />
         <OnboardingCard slug={slug} />
-        <DecisionsSection />
+        <DecisionsSection slug={slug} companyId={company.id} />
       </main>
     );
   }
@@ -87,7 +79,8 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
   const onboardingTasks = tasks.filter((t) => t.planId === null && !PLANNING_TASK_TYPES.has(t.taskType));
   const planningTask = tasks.find((t) => PLANNING_TASK_TYPES.has(t.taskType) && PENDING_STATUSES.has(t.status));
   const weekTasks = plan ? plan.tasks : [];
-  const live = tasks.some((t) => PENDING_STATUSES.has(t.status)) || plan === null;
+  // Keep polling while agents work or a decision is open, so an answer's effect shows without a reload.
+  const live = tasks.some((t) => PENDING_STATUSES.has(t.status) || t.status === "waiting_decision") || plan === null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -113,7 +106,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
         </div>
       </section>
 
-      <DecisionsSection />
+      <DecisionsSection slug={slug} companyId={company.id} />
 
       <section className="mt-10">
         <div className="flex items-baseline justify-between gap-4">

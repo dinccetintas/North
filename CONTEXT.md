@@ -14,7 +14,7 @@ English `Code name`. Turkish names are the spec's wording.
 | Plan | `Plan` | Chief of Staff's weekly work plan for a goal: tasks with expected metric impact and cost. |
 | Task (Görev) | `Task` | One unit of work for one agent: input, output, status (`queued`, `running`, `waiting_decision`, `done`, `failed`), cost, metric key, attempts. `done` requires evidence. |
 | Evidence (Kanıt) | `Evidence` | A verifiable reference that proves a task finished: URL, deploy ID, sent-message ID, test result. |
-| Action (Eylem) | `Action` | One step that touches the outside world (send email, start campaign, deploy). Always classified into a tier and written to the audit log. Append-only. |
+| Action (Eylem) | `Action` | One step that touches the outside world (send email, start campaign, deploy). Always classified into a tier and written to the audit log. Append-only: a status change (`pending` → `executed`/`declined`) is a new row that `supersedes` the previous one; the latest row of a chain is the action's state. |
 | Tier (Katman) | `Tier` | Risk class of an action, assigned by the rule engine, never by the agent: `K0` automatic, `K1` notify, `K2` decision card, `K3` user only. An agent may raise a tier, never lower it. |
 | Decision Card (Karar Kartı) | `DecisionCard` | A single decision for the user: question, 2-3 options, recommendation, safe default, due time. The only way a K2 action runs. |
 | Decision Quota (Günlük kota) | `DecisionQuota` | Maximum cards per user per day (default 3, range 1-5). Never exceeded. |
