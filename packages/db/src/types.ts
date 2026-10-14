@@ -243,6 +243,7 @@ export type Database = {
           decision: string;
           id: string;
           input: NonNullable<Json>;
+          task_id: string | null;
           tool_name: string;
         };
         ComputedFields: never;
@@ -253,6 +254,7 @@ export type Database = {
           decision: string;
           id?: string;
           input?: NonNullable<Json>;
+          task_id?: string | null;
           tool_name: string;
         };
         Update: {
@@ -262,6 +264,7 @@ export type Database = {
           decision?: string;
           id?: string;
           input?: NonNullable<Json>;
+          task_id?: string | null;
           tool_name?: string;
         };
         Relationships: [
@@ -277,6 +280,13 @@ export type Database = {
             columns: ["company_id"];
             isOneToOne: false;
             referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "audit_tool_calls_task_id_fkey";
+            columns: ["task_id"];
+            isOneToOne: false;
+            referencedRelation: "tasks";
             referencedColumns: ["id"];
           },
         ];

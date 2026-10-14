@@ -30,9 +30,35 @@ export interface ClaudeAgentSdkDeps {
   readonly memorySearch: (companyId: string, query: string) => Promise<readonly MemoryHit[]>;
   readonly audit: (entry: ToolAuditEntry) => Promise<void>;
   readonly workspaceRoot: string;
+  /** Kill switch probe: when it resolves true (or throws) every further tool call is denied. */
+  readonly isKilled?: (companyId: string) => Promise<boolean>;
+  /** Environment handed to the agent subprocess; defaults to `minimalSubprocessEnv(process.env)`. */
+  readonly subprocessEnv?: Readonly<Record<string, string>>;
 }
 
 const NORTH_SERVER_VERSION = "0.1.0";
+
+/** Variables the agent subprocess may see. Everything else (service-role keys, Inngest keys) stays in the worker. */
+export const SUBPROCESS_ENV_ALLOWLIST: readonly string[] = Object.freeze([
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "SHELL",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+]);
+
+/** Filters the host environment down to the allow-list; never includes an empty value. */
+export function minimalSubprocessEnv(source: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
+  const picked: Record<string, string> = {};
+  for (const key of SUBPROCESS_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (value) picked[key] = value;
+  }
+  return Object.freeze(picked);
+}
 
 const isTaskType = (value: string): value is TaskType => (TASK_TYPES as readonly string[]).includes(value);
 
@@ -80,7 +106,10 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
     };
     let reason = permitted ? undefined : `Tool "${hookInput.tool_name}" is not allowed for role "${input.role}"`;
     try {
-      await deps.audit(entry);
+      if (deps.isKilled && (await deps.isKilled(input.companyId))) {
+        reason = "Kill switch is active for this company; all agent actions are stopped";
+      }
+      await deps.audit(reason ? { ...entry, decision: "deny" } : entry);
     } catch (error) {
       reason = `Audit unavailable (${error instanceof Error ? error.message : String(error)}); call denied`;
     }
@@ -96,6 +125,7 @@ export function buildQueryOptions(input: AgentRunInput, role: RoleDefinition, de
   const { system } = buildTaskPrompt(input, role, input.vars ?? {});
   return {
     cwd: taskWorkspace(deps.workspaceRoot, input.taskId),
+    env: { ...(deps.subprocessEnv ?? minimalSubprocessEnv(process.env)) },
     settingSources: [],
     permissionMode: "dontAsk",
     model: resolveModel(role.model),

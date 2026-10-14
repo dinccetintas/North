@@ -1,5 +1,5 @@
-import { createServiceClient, searchMemory, type DbClient } from "@north/db";
-import { loadRoles, selectRuntime, type AgentRuntime, type RoleDefinition } from "@north/agents";
+import { createServiceClient, getKillSwitch, searchMemory, type DbClient } from "@north/db";
+import { loadRoles, minimalSubprocessEnv, selectRuntime, type AgentRuntime, type RoleDefinition } from "@north/agents";
 import { workerEnv, type WorkerEnv } from "./env";
 
 /** Everything a worker function needs; built once per process, injectable in tests. */
@@ -8,6 +8,19 @@ export interface WorkerDeps {
   readonly db: DbClient;
   readonly roles: ReadonlyMap<string, RoleDefinition>;
   readonly runtime: AgentRuntime;
+}
+
+/** Audit payloads are capped so a hostile tool input cannot bloat the log. */
+export const AUDIT_INPUT_MAX_CHARS = 4000;
+
+export function capAuditInput(input: unknown): { readonly json: string; readonly truncated: boolean } {
+  let json: string;
+  try {
+    json = JSON.stringify(input ?? {}) ?? "{}";
+  } catch {
+    json = JSON.stringify({ unserializable: true });
+  }
+  return json.length > AUDIT_INPUT_MAX_CHARS ? { json: json.slice(0, AUDIT_INPUT_MAX_CHARS), truncated: true } : { json, truncated: false };
 }
 
 let cached: Promise<WorkerDeps> | null = null;
@@ -24,17 +37,22 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
     {
       roles,
       workspaceRoot: env.WORKSPACE_ROOT,
+      subprocessEnv: minimalSubprocessEnv(process.env),
       memorySearch: async (companyId, query) => searchMemory(db, companyId, query),
+      isKilled: async (companyId) => getKillSwitch(db, companyId),
       audit: async (entry) => {
-        await db.from("audit_tool_calls").insert({
+        const capped = capAuditInput(entry.input);
+        const { error } = await db.from("audit_tool_calls").insert({
           company_id: entry.companyId,
+          task_id: entry.taskId,
           tool_name: entry.toolName,
-          input: JSON.parse(JSON.stringify(entry.input ?? {})),
+          input: { value: JSON.parse(capped.json), truncated: capped.truncated },
           decision: entry.decision,
         });
+        if (error) throw new Error(`audit insert failed: ${error.message}`);
       },
     },
-    { AGENT_RUNTIME: env.AGENT_RUNTIME, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
+    { AGENT_RUNTIME: env.AGENT_RUNTIME },
   );
   return Object.freeze({ env, db, roles, runtime });
 }

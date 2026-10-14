@@ -1,5 +1,5 @@
 import { CompanyEventSchema, EVENT, TaskDispatchSchema } from "@north/core";
-import { getTask } from "@north/db";
+import { getKillSwitch, getTask } from "@north/db";
 import { inngest } from "./client";
 import { buildDeps } from "../deps";
 import { createOnboardingTasks, seedAgents } from "../services/onboard";
@@ -15,6 +15,7 @@ export const runTask = inngest.createFunction(
     const { companyId, taskId } = TaskDispatchSchema.parse(event.data);
     const deps = await buildDeps();
     const result = await step.run("execute", () => executeTask(deps, taskId));
+    if (result.status === "blocked") return result;
     await step.sendEvent("finished", {
       name: EVENT.taskFinished,
       data: { companyId, taskId, taskType: (await getTask(deps.db, taskId))?.taskType ?? "market_report", status: result.status },
@@ -46,6 +47,8 @@ export const planWeekFn = inngest.createFunction(
   async ({ event, step }) => {
     const { companyId } = CompanyEventSchema.parse(event.data);
     const deps = await buildDeps();
+    const killed = await step.run("check-kill-switch", () => getKillSwitch(deps.db, companyId));
+    if (killed) return { skipped: "kill_switch", companyId };
     const plan = await step.run("plan", () => planWeek(deps, companyId));
     await step.sendEvent("plan-created", { name: EVENT.planCreated, data: { companyId, planId: plan.planId } });
     await step.sendEvent(

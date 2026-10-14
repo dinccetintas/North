@@ -79,6 +79,13 @@ export async function listCompanies(db: DbClient): Promise<readonly CompanySumma
   return Object.freeze((data ?? []).map(toSummary));
 }
 
+/** True when the owner has stopped all agents for this company. Missing company counts as stopped (fail closed). */
+export async function getKillSwitch(db: DbClient, companyId: string): Promise<boolean> {
+  const { data, error } = await db.from("companies").select("kill_switch_active").eq("id", companyId).maybeSingle();
+  if (error) throw new DbError(`Could not read kill switch: ${error.message}`, error);
+  return data?.kill_switch_active ?? true;
+}
+
 /** Kill switch: flips the flag; the worker reacts to the `company/killswitch` event. */
 export async function setKillSwitch(db: DbClient, companyId: string, active: boolean): Promise<void> {
   const { error } = await db

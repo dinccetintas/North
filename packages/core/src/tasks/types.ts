@@ -18,7 +18,20 @@ export const TASK_TYPES = [
 ] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
-export const TASK_OWNER: Readonly<Record<TaskType, string>> = Object.freeze({
+/** The eight staff roles (docs/SPEC.md "AI ekip"). Tasks may only be owned by one of these. */
+export const AGENT_ROLES = [
+  "chief_of_staff",
+  "research",
+  "strategy_product",
+  "engineering",
+  "design",
+  "growth",
+  "sales",
+  "ops_finance",
+] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
+export const TASK_OWNER: Readonly<Record<TaskType, AgentRole>> = Object.freeze({
   market_report: "research",
   personas: "research",
   competitor_map: "research",

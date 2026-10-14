@@ -1,4 +1,5 @@
 import {
+  AGENT_ROLES,
   EvidenceSchema,
   METRIC_KEYS,
   TASK_STATUSES,
@@ -39,7 +40,7 @@ export interface TaskRecord {
 export const CreateTaskInputSchema = z.object({
   companyId: UuidSchema,
   planId: UuidSchema.nullable().default(null),
-  role: z.string().trim().min(1).max(60),
+  role: z.enum(AGENT_ROLES),
   taskType: z.enum(TASK_TYPES),
   title: z.string().trim().min(1).max(200),
   input: z.string().max(4000).default(""),

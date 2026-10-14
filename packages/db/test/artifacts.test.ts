@@ -21,14 +21,14 @@ describe("artifacts repository (ART)", () => {
   });
 
   it("createArtifact uploads markdown under companies/<id>/<kind>/<slug>-v1.md and records v1", async () => {
-    const created = await createArtifact(owned.owner.client, { companyId: owned.companyId, kind: "market_report", title: "Market Report: Clinics", markdown: markdownV1, createdByRole: "research" });
+    const created = await createArtifact(service, { companyId: owned.companyId, kind: "market_report", title: "Market Report: Clinics", markdown: markdownV1, createdByRole: "research" });
     expect(created).toMatchObject({ companyId: owned.companyId, kind: "market_report", title: "Market Report: Clinics", version: 1, createdByRole: "research" });
     expect(created.storagePath).toBe(`companies/${owned.companyId}/market_report/market-report-clinics-v1.md`);
     expect(await getArtifact(owned.owner.client, created.id)).toEqual(created);
   });
 
   it("the same title again becomes v2 and both markdown bodies round-trip through Storage", async () => {
-    const v2 = await createArtifact(owned.owner.client, { companyId: owned.companyId, kind: "market_report", title: "Market Report: Clinics", markdown: markdownV2, createdByRole: "research" });
+    const v2 = await createArtifact(service, { companyId: owned.companyId, kind: "market_report", title: "Market Report: Clinics", markdown: markdownV2, createdByRole: "research" });
     expect(v2.version).toBe(2);
     expect(v2.storagePath.endsWith("-v2.md")).toBe(true);
     const list = await listArtifacts(owned.owner.client, owned.companyId);

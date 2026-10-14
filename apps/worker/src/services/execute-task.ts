@@ -9,6 +9,7 @@ import {
 } from "@north/core";
 import {
   createArtifact,
+  getKillSwitch,
   getTask,
   latestMetric,
   listBudgets,
@@ -28,7 +29,7 @@ import type { WorkerDeps } from "../deps";
 import { companyContext } from "./company-context";
 
 export interface ExecuteTaskResult {
-  readonly status: "done" | "failed";
+  readonly status: "done" | "failed" | "blocked";
   readonly taskId: string;
   readonly artifactIds: readonly string[];
   readonly costUsd: number;
@@ -39,12 +40,16 @@ export interface ExecuteTaskResult {
  * Runs one task through the agent runtime and persists everything it produced.
  * K0 actions are recorded as executed; anything above K0 is recorded as blocked in
  * M1 (the decision layer lands in M2). "Done" requires an artifact as evidence.
+ * While the kill switch is active the task stays queued and nothing runs.
  */
 export async function executeTask(deps: WorkerDeps, taskId: string): Promise<ExecuteTaskResult> {
   const { db, runtime } = deps;
   const task = await getTask(db, taskId);
   if (!task) throw new Error(`task ${taskId} not found`);
   if (task.status === "done") return { status: "done", taskId, artifactIds: [], costUsd: task.costUsd };
+  if (await getKillSwitch(db, task.companyId)) {
+    return { status: "blocked", taskId, artifactIds: [], costUsd: 0, error: "kill switch active" };
+  }
 
   const running = await markTaskRunning(db, taskId);
   const context = await companyContext(db, task.companyId);
@@ -126,10 +131,11 @@ async function persistOutput(db: DbClient, task: TaskRecord, raw: unknown): Prom
 
 /** Every requested action passes the authority gate; M1 executes nothing external. */
 async function gateActions(db: DbClient, task: TaskRecord, actions: readonly ActionSpec[]): Promise<void> {
-  const budgets = await listBudgets(db, task.companyId);
+  if (actions.length === 0) return;
+  const [budgets, killSwitchActive] = await Promise.all([listBudgets(db, task.companyId), getKillSwitch(db, task.companyId)]);
   const dueAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
   for (const action of actions) {
-    const decision: GateDecision = gate({ ...action, companyId: task.companyId }, { killSwitchActive: false, budgets, autoRules: [], cardDueAt: dueAt });
+    const decision: GateDecision = gate({ ...action, companyId: task.companyId }, { killSwitchActive, budgets, autoRules: [], cardDueAt: dueAt });
     await recordAction(db, {
       companyId: task.companyId,
       taskId: task.id,
