@@ -35,6 +35,18 @@ describe("DEC-1 gate(): the single chokepoint", () => {
     expect(decision.card.dueAt).toBe("2026-10-15T09:00:00.000Z");
   });
 
+  it("writes the card rationale in plain words, naming the role and the tier (DEC-2 readability)", () => {
+    const decision = gate(spec({ kind: "ads.start", amountUsd: 50, category: "ads" }), ctx());
+    if (decision.kind !== "card") throw new Error("expected card");
+    expect(decision.card.rationale).toBe(
+      "This action spends money, says something new in public and would exceed the budget cap. Growth asks for it; tier K2.",
+    );
+    const k3 = gate(spec({ kind: "contract.sign", agentRole: "ops_finance" }), ctx());
+    if (k3.kind !== "card") throw new Error("expected card");
+    expect(k3.card.rationale).toBe("This action cannot be undone and is legally binding. Operations and Finance asks for it; tier K3.");
+    expect(k3.card.rationale.length).toBeLessThanOrEqual(600);
+  });
+
   it("opens a card with no default for K3 actions", () => {
     const decision = gate(spec({ kind: "contract.sign" }), ctx());
     expect(decision.kind).toBe("card");

@@ -43,3 +43,6 @@ playwright-transform-cache-*/
 .bun-*.node
 update-check/
 /next-env.d.ts
+
+# docker-free local stack state (scripts/stack)
+.stack/

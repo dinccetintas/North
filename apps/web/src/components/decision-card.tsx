@@ -65,8 +65,16 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
           {formatDue(card.dueAt)}
         </span>
       </div>
-      <h3 className="mt-3 text-2xl">{compact ? <Link href={`/c/${slug}/decisions/${card.id}`} className="hover:underline">{card.question}</Link> : card.question}</h3>
-      {compact ? <p className="mt-2 text-muted">{card.rationale}</p> : null}
+      {compact ? (
+        <>
+          <h3 className="mt-3 text-2xl">
+            <Link href={`/c/${slug}/decisions/${card.id}`} className="hover:underline">
+              {card.question}
+            </Link>
+          </h3>
+          <p className="mt-2 text-muted">{card.rationale}</p>
+        </>
+      ) : null}
       {card.expectedImpact ? <p className="mono-label mt-2 text-faint">expected: {card.expectedImpact}</p> : null}
 
       {answered ? (

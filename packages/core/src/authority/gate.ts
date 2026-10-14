@@ -46,6 +46,44 @@ function budgetFor(spec: ActionSpec, budgets: readonly BudgetState[]): BudgetSta
   return budgets.find((b) => b.category === (spec.category ?? "other"));
 }
 
+/** What each gate reason means to the CEO reading the card; the raw reason stays in the action payload. */
+export const REASON_PHRASES: Readonly<Record<GateReason, string>> = Object.freeze({
+  no_external_effect: "stays inside the platform",
+  reversible_no_spend: "is reversible and spends nothing",
+  spends_money: "spends money",
+  public_statement: "says something new in public",
+  new_contact: "contacts someone for the first time",
+  goes_live: "goes live to customers",
+  irreversible: "cannot be undone",
+  legally_binding: "is legally binding",
+  single_spend_over_limit: "is a single spend over the K3 limit",
+  agent_raised: "was flagged by the agent itself",
+  budget_cap: "would exceed the budget cap",
+  kill_switch: "is stopped by the kill switch",
+  auto_rule: "matches a standing rule",
+});
+
+const ROLE_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  chief_of_staff: "Chief of Staff",
+  research: "Research",
+  strategy_product: "Strategy and Product",
+  engineering: "Engineering",
+  design: "Design",
+  growth: "Growth",
+  sales: "Sales",
+  ops_finance: "Operations and Finance",
+});
+
+const joinPhrases = (phrases: readonly string[]): string =>
+  phrases.length <= 1 ? (phrases[0] ?? "") : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
+
+/** "This action spends money and would exceed the budget cap. Growth asks for it; tier K2." */
+export function cardRationale(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[]): string {
+  const phrases = reasons.map((r) => REASON_PHRASES[r]);
+  const role = ROLE_WORDS[spec.agentRole] ?? spec.agentRole;
+  return `This action ${joinPhrases(phrases)}. ${role} asks for it; tier ${tier}.`;
+}
+
 function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], dueAt: string): CardDraft {
   const isK3 = tier === "K3";
   return Object.freeze({
@@ -56,7 +94,7 @@ function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], d
       { id: "decline", label: "Decline" },
     ],
     recommendedOptionId: "approve",
-    rationale: `Tier ${tier} (${reasons.join(", ")}). Requested by ${spec.agentRole}.`,
+    rationale: cardRationale(spec, tier, reasons),
     expectedImpact: null,
     costUsd: spec.amountUsd ?? 0,
     dueAt,

@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:3100";
+/** A pre-installed Chromium (cloud sessions ship one at /opt/pw-browsers/chromium) instead of the pinned download. */
+const executablePath = process.env.E2E_CHROMIUM_PATH;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -13,6 +15,7 @@ export default defineConfig({
     baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    ...(executablePath ? { launchOptions: { executablePath } } : {}),
   },
   projects: [
     { name: "mobile", use: { ...devices["iPhone 14"], browserName: "chromium", viewport: { width: 390, height: 844 } } },

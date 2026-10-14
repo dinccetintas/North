@@ -18,7 +18,14 @@ Development (after M0 lands):
 ```bash
 pnpm install
 pnpm db:start        # local Supabase in Docker
-pnpm dev             # web (3000) + worker + Inngest Dev Server (8288)
+pnpm dev             # web (3100) + worker (3101) + Inngest Dev Server (8288)
 pnpm validate        # typecheck, lint, unit, integration, smoke
 pnpm e2e             # Playwright
 ```
+
+Without Docker (cloud sessions): `scripts/stack/up.sh --reset` runs the same
+stack on a plain PostgreSQL 16 (GoTrue, PostgREST, storage API, Mailpit behind
+a gateway on :54321), writes the keys to `.stack/env`, and `source .stack/env`
+makes `pnpm test:integration`, `pnpm smoke:m1`, `pnpm smoke:m2` and `pnpm e2e`
+work unchanged. Binaries live under `$NORTH_STACK_TOOLS` (see the script header);
+`scripts/stack/down.sh` stops it.

@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 /**
  * Test-only access to the local stack: Supabase REST with the service role key
@@ -9,7 +8,8 @@ import { fileURLToPath } from "node:url";
  */
 
 const INNGEST_DEV_URL = process.env.E2E_INNGEST_URL ?? "http://localhost:8288";
-const DB_PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../packages/db");
+/** Playwright runs from apps/web and transforms specs to CommonJS, so no import.meta here. */
+const DB_PACKAGE_DIR = resolve(process.cwd(), "../../packages/db");
 
 interface ServiceEnv {
   readonly url: string;

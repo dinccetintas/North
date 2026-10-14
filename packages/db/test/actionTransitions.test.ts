@@ -64,11 +64,20 @@ describe("action state chains (audit NFR: actions stay append-only)", () => {
   it("unsuperseded actions keep appearing next to chain heads, newest first, with supersedes null", async () => {
     const companyId = await createCompanyFor(owned.owner, "mixed");
     const lone = await recordAction(service, { companyId, taskId: null, agentRole: "research", kind: "research", tier: "K0", description: "Searched", status: "executed" });
-    const pending = await recordAction(service, { companyId, taskId: null, agentRole: "sales", kind: "email.send.first_contact", tier: "K2", description: "Email", status: "blocked" });
+    const card = await openCard(service, { ...sampleCardDraft(companyId, { actionKind: "email.send.first_contact", mergeKey: "email.send.first_contact:none" }), taskId: null });
+    const pending = await recordAction(service, { companyId, taskId: null, agentRole: "sales", kind: "email.send.first_contact", tier: "K2", description: "Email", status: "pending", decisionCardId: card.id });
     const declined = await recordActionTransition(service, { actionId: pending, status: "declined" });
     const recent = await listRecentActions(service, companyId);
     expect(recent.map((a) => a.id)).toEqual([declined, lone]);
     expect(recent[1]?.supersedes).toBeNull();
+  });
+
+  it("DEC-1 in the database: a K2 action without a card can only ever be blocked, so it cannot move to declined or executed", async () => {
+    const companyId = await createCompanyFor(owned.owner, "cardless");
+    const blocked = await recordAction(service, { companyId, taskId: null, agentRole: "sales", kind: "email.send.first_contact", tier: "K2", description: "Email", status: "blocked" });
+    await expect(recordActionTransition(service, { actionId: blocked, status: "declined" })).rejects.toThrow(/actions_tier_requires_authority/);
+    await expect(recordActionTransition(service, { actionId: blocked, status: "executed", externalRef: "sandbox:msg:1" })).rejects.toThrow(/actions_tier_requires_authority/);
+    expect((await listRecentActions(service, companyId)).map((a) => a.status)).toEqual(["blocked"]);
   });
 
   it("unknown, invisible or malformed transitions throw and write nothing", async () => {
