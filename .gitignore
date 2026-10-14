@@ -36,3 +36,10 @@ blob-report/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# stray tool caches (tsx, playwright, bun, npm update-check) that once landed in the repo root
+tsx-*/
+playwright-transform-cache-*/
+.bun-*.node
+update-check/
+/next-env.d.ts
