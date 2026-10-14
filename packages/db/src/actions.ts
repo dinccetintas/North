@@ -159,6 +159,28 @@ export async function recordActionTransition(db: DbClient, input: ActionTransiti
   return data.id;
 }
 
+const heads = (rows: readonly ActionRecord[]): readonly ActionRecord[] => {
+  const superseded = new Set(rows.flatMap((r) => (r.supersedes ? [r.supersedes] : [])));
+  return Object.freeze(rows.filter((r) => !superseded.has(r.id)));
+};
+
+/** Current state of every action of a task (chain heads only), oldest first. */
+export async function headActionsForTask(db: DbClient, taskId: string): Promise<readonly ActionRecord[]> {
+  const id = UuidSchema.parse(taskId);
+  const { data, error } = await db.from("actions").select(ACTION_COLUMNS).eq("task_id", id).order("created_at", { ascending: true });
+  if (error) throw dbError("Could not list task actions", error);
+  return heads((data ?? []).map(toRecord));
+}
+
+/** The action a card decides on, in its current state, or null when the card has no action (or it was already settled away). */
+export async function pendingActionForCard(db: DbClient, cardId: string): Promise<ActionRecord | null> {
+  const id = UuidSchema.parse(cardId);
+  const { data, error } = await db.from("actions").select(ACTION_COLUMNS).eq("decision_card_id", id).order("created_at", { ascending: true });
+  if (error) throw dbError("Could not load card action", error);
+  const head = heads((data ?? []).map(toRecord)).find((a) => a.status === "pending");
+  return head ?? null;
+}
+
 /** Actions of the last `sinceHours` hours, newest first; a superseded row is replaced by the head of its chain. */
 export async function listRecentActions(db: DbClient, companyId: string, sinceHours: number = DEFAULT_RECENT_HOURS): Promise<readonly ActionRecord[]> {
   const id = UuidSchema.parse(companyId);
@@ -171,7 +193,5 @@ export async function listRecentActions(db: DbClient, companyId: string, sinceHo
     .gte("created_at", since)
     .order("created_at", { ascending: false });
   if (error) throw dbError("Could not list recent actions", error);
-  const records = (data ?? []).map(toRecord);
-  const superseded = new Set(records.flatMap((r) => (r.supersedes ? [r.supersedes] : [])));
-  return Object.freeze(records.filter((r) => !superseded.has(r.id)));
+  return heads((data ?? []).map(toRecord));
 }

@@ -23,8 +23,9 @@ describe("action state chains (audit NFR: actions stay append-only)", () => {
     const companyId = await createCompanyFor(owned.owner, "chain");
     const task = await createTask(service, { companyId, role: "growth", taskType: "campaign_spec", title: "Ad test" });
     const card = await openCard(service, { ...sampleCardDraft(companyId), taskId: task.id });
-    const pending = await recordAction(owned.owner.client, { companyId, taskId: task.id, agentRole: "growth", kind: "ads.start", tier: "K2", description: "Start ads", status: "pending", decisionCardId: card.id, payload: { amountUsd: 10 } });
-    const executed = await recordActionTransition(owned.owner.client, { actionId: pending, status: "executed", externalRef: "sandbox:campaign-1", note: "approved by user" });
+    const pending = await recordAction(service, { companyId, taskId: task.id, agentRole: "growth", kind: "ads.start", tier: "K2", description: "Start ads", status: "pending", decisionCardId: card.id, payload: { amountUsd: 10 } });
+    await expect(recordActionTransition(owned.owner.client, { actionId: pending, status: "executed", externalRef: "forged" })).rejects.toBeInstanceOf(DbError);
+    const executed = await recordActionTransition(service, { actionId: pending, status: "executed", externalRef: "sandbox:campaign-1", note: "approved by user" });
 
     const recent = await listRecentActions(owned.owner.client, companyId);
     expect(recent.map((a) => a.id)).toEqual([executed]);

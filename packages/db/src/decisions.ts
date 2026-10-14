@@ -260,6 +260,20 @@ export async function answerCard(db: DbClient, cardId: string, input: AnswerCard
   return toCardRecord(data);
 }
 
+/** Unanswered cards past their deadline, oldest first (the deadline cron applies K2 defaults; K3 waits). */
+export async function listOverdueCards(db: DbClient, now: Date = new Date(), limit = 100): Promise<readonly CardRecord[]> {
+  const max = z.number().int().positive().max(1000).parse(limit);
+  const { data, error } = await db
+    .from("decision_cards")
+    .select(CARD_COLUMNS)
+    .is("answered_at", null)
+    .lt("due_at", now.toISOString())
+    .order("due_at", { ascending: true })
+    .limit(max);
+  if (error) throw dbError("Could not list overdue cards", error);
+  return Object.freeze((data ?? []).map(toCardRecord));
+}
+
 /** Cards opened for the company on a given day (UTC date, default today). */
 export async function cardsOpenedToday(db: DbClient, companyId: string, day: string = todayIsoDate()): Promise<number> {
   const id = UuidSchema.parse(companyId);

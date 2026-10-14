@@ -10,7 +10,11 @@ import type { ActionResult } from "@/app/(app)/c/[slug]/decisions/actions";
 const settingsUrl = (outcome: { saved?: true; error?: string }): string =>
   outcome.error ? `/settings?error=${encodeURIComponent(outcome.error)}` : outcome.saved ? "/settings?saved=1" : "/settings";
 
-const message = (error: unknown, fallback: string): string => (error instanceof Error ? error.message : fallback);
+/** Fixed messages for the browser; the cause goes to the server log only. */
+const message = (error: unknown, fallback: string): string => {
+  console.error("[settings]", fallback, error);
+  return fallback;
+};
 
 /** Quota (1-5) and time zone, validated by the repository before any write (DEC-3). */
 export async function updateProfileAction(formData: FormData): Promise<void> {
@@ -23,7 +27,7 @@ export async function updateProfileAction(formData: FormData): Promise<void> {
   try {
     await updateProfile(db, user.id, { dailyDecisionQuota: quota, timezone });
   } catch (cause) {
-    error = message(cause, "Could not save settings");
+    error = message(cause, "Could not save: the quota must be 1 to 5 and the time zone a known IANA name.");
   }
   revalidatePath("/settings");
   redirect(settingsUrl(error ? { error } : { saved: true }));

@@ -1,6 +1,23 @@
-import { listTasks, recordAction } from "@north/db";
+import { listCards, listTasks, pendingActionForCard, recordAction } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./actions";
+
+export interface UnsettledCard {
+  readonly cardId: string;
+  readonly optionId: string;
+  readonly answeredBy: "user" | "default" | "auto_rule";
+}
+
+/** Cards the CEO answered whose action is still pending (a run cancelled by the kill switch, a lost event): resume re-settles them. */
+export async function unsettledAnsweredCards(deps: WorkerDeps, companyId: string): Promise<readonly UnsettledCard[]> {
+  const out: UnsettledCard[] = [];
+  for (const card of await listCards(deps.db, companyId, { limit: 200 })) {
+    if (!card.answeredAt || !card.answeredOptionId) continue;
+    const pending = await pendingActionForCard(deps.db, card.id);
+    if (pending) out.push({ cardId: card.id, optionId: card.answeredOptionId, answeredBy: card.answeredBy ?? "user" });
+  }
+  return Object.freeze(out);
+}
 
 /** Kill switch: pause every active campaign through the ads adapter and record it (K1, notified). */
 export async function pauseEverything(deps: WorkerDeps, companyId: string): Promise<{ readonly paused: readonly string[] }> {

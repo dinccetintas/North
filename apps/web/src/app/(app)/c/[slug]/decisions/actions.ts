@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { AlreadyAnsweredError, answerCard, createAutoRule, getCard, getCompanyBySlug, type CardRecord, type DbClient } from "@north/db";
+import { AlreadyAnsweredError, answerCard, createAutoRule, getCard, getCompanyBySlug, listActiveAutoRules, listAnsweredCards, type CardRecord, type DbClient } from "@north/db";
 import { ACTION_KINDS, BUDGET_CATEGORIES } from "@north/core/authority/action";
+import { suggestAutoRule } from "@north/core/decisions/autorule";
 import { EVENT } from "@north/core/events";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import { inngest } from "@/inngest/client";
@@ -17,10 +18,12 @@ const AutoRuleInputSchema = z.object({
   slug: z.string().trim().min(1).max(200),
   cardId: z.string().uuid(),
   kind: z.enum(ACTION_KINDS),
-  maxAmountUsd: z.number().nonnegative().optional(),
+  maxAmountUsd: z.number().nonnegative(),
   category: z.enum(BUDGET_CATEGORIES).optional(),
 });
 export type AutoRuleInput = z.input<typeof AutoRuleInputSchema>;
+
+const GENERIC_ERROR = "Something went wrong; nothing was changed. Try again.";
 
 /** The card under RLS, checked against the company the URL names; null when either is not the caller's. */
 async function ownedCard(db: DbClient, slug: string, cardId: string): Promise<CardRecord | null> {
@@ -29,12 +32,22 @@ async function ownedCard(db: DbClient, slug: string, cardId: string): Promise<Ca
   return card;
 }
 
-const message = (error: unknown, fallback: string): string => (error instanceof Error ? error.message : fallback);
+/** Tells the worker a card was answered. The answer already stands in the database; the event only wakes settlement. */
+async function wakeWorker(companyId: string, cardId: string, optionId: string): Promise<boolean> {
+  try {
+    await inngest.send({ name: EVENT.decisionAnswered, data: { companyId, cardId, optionId, answeredBy: "user" } });
+    return true;
+  } catch (error) {
+    console.error("[decisions] could not send decision/answered", cardId, error);
+    return false;
+  }
+}
 
 /**
  * DEC-2: one tap answers a card. The answer is written under RLS first, then the
- * worker is told so the waiting task resumes within two seconds. A second answer
- * is refused but reported as success so a double tap never shows an error.
+ * worker is woken so settlement happens within two seconds. A second tap on an
+ * already answered card re-sends the wake-up (harmless) and reports success,
+ * so a double tap or a lost event never shows an error.
  */
 export async function answerCardAction(input: AnswerInput): Promise<ActionResult<{ readonly optionId: string }>> {
   const user = await currentUser();
@@ -47,19 +60,27 @@ export async function answerCardAction(input: AnswerInput): Promise<ActionResult
   const card = await ownedCard(db, slug, cardId);
   if (!card) return { ok: false, error: "Card not found" };
 
+  let recorded = optionId;
   try {
     await answerCard(db, cardId, { optionId, answeredBy: "user" });
   } catch (error) {
-    if (!(error instanceof AlreadyAnsweredError)) return { ok: false, error: message(error, "Could not record the answer") };
-    revalidatePath(`/c/${slug}`, "layout");
-    return { ok: true, value: { optionId: card.answeredOptionId ?? optionId } };
+    if (!(error instanceof AlreadyAnsweredError)) {
+      console.error("[decisions] answerCard failed", cardId, error);
+      return { ok: false, error: GENERIC_ERROR };
+    }
+    recorded = card.answeredOptionId ?? optionId;
   }
-  await inngest.send({ name: EVENT.decisionAnswered, data: { companyId: card.companyId, cardId, optionId, answeredBy: "user" } });
+  const woke = await wakeWorker(card.companyId, cardId, recorded);
   revalidatePath(`/c/${slug}`, "layout");
-  return { ok: true, value: { optionId } };
+  return woke ? { ok: true, value: { optionId: recorded } } : { ok: false, error: "Your answer is saved, but the agents could not be notified yet. It will be picked up within 15 minutes." };
 }
 
-/** DEC-3: "Don't ask again" accepted by the CEO on the card detail page becomes a standing auto rule. */
+/**
+ * DEC-3: "Don't ask again" accepted by the CEO becomes a standing auto rule.
+ * The server recomputes the suggestion from the answer history; the client's
+ * parameters must match it (same kind and category, a ceiling no higher than
+ * the repeated approvals) and the card itself must have been approved.
+ */
 export async function acceptAutoRuleAction(input: AutoRuleInput): Promise<ActionResult> {
   const user = await currentUser();
   if (!user) return { ok: false, error: "Not signed in" };
@@ -70,18 +91,19 @@ export async function acceptAutoRuleAction(input: AutoRuleInput): Promise<Action
   const db = await createClient();
   const card = await ownedCard(db, slug, cardId);
   if (!card) return { ok: false, error: "Card not found" };
-  if (card.actionKind !== kind) return { ok: false, error: "The rule must match the card's action" };
+  if (card.actionKind !== kind || card.answeredOptionId !== "approve") return { ok: false, error: "A rule can only follow an approved card for the same action" };
+
+  const [history, rules] = await Promise.all([listAnsweredCards(db, card.companyId, kind), listActiveAutoRules(db, card.companyId)]);
+  const suggestion = suggestAutoRule(history);
+  const matches = suggestion && suggestion.kind === kind && (suggestion.category ?? undefined) === category && maxAmountUsd <= suggestion.maxAmountUsd;
+  if (!matches) return { ok: false, error: "This decision has not been repeated enough times to become a rule" };
+  if (rules.some((r) => r.kind === kind && (r.category ?? undefined) === category)) return { ok: false, error: "A rule for this action already exists" };
 
   try {
-    await createAutoRule(db, {
-      companyId: card.companyId,
-      kind,
-      createdFromCardId: cardId,
-      ...(maxAmountUsd === undefined ? {} : { maxAmountUsd }),
-      ...(category === undefined ? {} : { category }),
-    });
+    await createAutoRule(db, { companyId: card.companyId, kind, createdFromCardId: cardId, maxAmountUsd, ...(category === undefined ? {} : { category }) });
   } catch (error) {
-    return { ok: false, error: message(error, "Could not save the rule") };
+    console.error("[decisions] createAutoRule failed", cardId, error);
+    return { ok: false, error: GENERIC_ERROR };
   }
   revalidatePath(`/c/${slug}`, "layout");
   revalidatePath("/settings");

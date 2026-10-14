@@ -21,9 +21,19 @@ self.addEventListener("push", (event) => {
   );
 });
 
+/** Only this origin may be opened from a notification, whatever the payload says. */
+function sameOriginUrl(candidate) {
+  try {
+    const url = new URL(candidate, self.location.origin);
+    return url.origin === self.location.origin ? url.href : `${self.location.origin}/companies`;
+  } catch {
+    return `${self.location.origin}/companies`;
+  }
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || "/companies";
+  const url = sameOriginUrl((event.notification.data && event.notification.data.url) || "/companies");
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const open = clients.find((c) => "focus" in c);

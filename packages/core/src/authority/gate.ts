@@ -77,11 +77,48 @@ const ROLE_WORDS: Readonly<Record<string, string>> = Object.freeze({
 const joinPhrases = (phrases: readonly string[]): string =>
   phrases.length <= 1 ? (phrases[0] ?? "") : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
 
-/** "This action spends money and would exceed the budget cap. Growth asks for it; tier K2." */
+const RATIONALE_MAX = 600;
+const FACT_MAX = 120;
+
+const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim().slice(0, FACT_MAX) : null);
+const money = (value: unknown): string | null => (typeof value === "number" && Number.isFinite(value) ? `$${value}` : null);
+
+/**
+ * The load-bearing facts of the payload, so the CEO approves what will run and
+ * not only the agent's sentence: recipient and subject for mail, daily budget
+ * and audience for ads, name for deploys. Values are shown as text only.
+ */
+export function cardFacts(spec: ActionSpec): readonly string[] {
+  const p = spec.payload ?? {};
+  switch (spec.kind) {
+    case "ads.start":
+    case "ads.budget.change": {
+      const daily = money(p.dailyBudgetUsd);
+      return [daily ? `${daily}/day` : null, text(p.audience) ? `audience: ${text(p.audience)}` : null, text(p.name) ? `campaign: ${text(p.name)}` : null].filter((f): f is string => f !== null);
+    }
+    case "email.send.first_contact":
+    case "email.send.reply":
+    case "support.reply.template":
+    case "support.reply.custom":
+      return [text(p.to) ? `to ${text(p.to)}` : null, text(p.subject) ? `subject: ${text(p.subject)}` : null].filter((f): f is string => f !== null);
+    case "deploy.preview":
+    case "deploy.production":
+      return [text(p.name) ? `site: ${text(p.name)}` : null, text(p.url) ? `preview: ${text(p.url)}` : null].filter((f): f is string => f !== null);
+    case "spend.oneoff":
+      return [money(p.amountUsd) ? `${money(p.amountUsd)} once` : null, text(p.vendor) ? `to ${text(p.vendor)}` : null].filter((f): f is string => f !== null);
+    default:
+      return [];
+  }
+}
+
+/** "This action spends money and would exceed the budget cap. Growth asks for it; tier K2. Details: $10/day, audience: …" */
 export function cardRationale(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[]): string {
   const phrases = reasons.map((r) => REASON_PHRASES[r]);
   const role = ROLE_WORDS[spec.agentRole] ?? spec.agentRole;
-  return `This action ${joinPhrases(phrases)}. ${role} asks for it; tier ${tier}.`;
+  const base = `This action ${joinPhrases(phrases)}. ${role} asks for it; tier ${tier}.`;
+  const facts = cardFacts(spec);
+  const full = facts.length > 0 ? `${base} Details: ${facts.join(", ")}.` : base;
+  return full.length <= RATIONALE_MAX ? full : `${full.slice(0, RATIONALE_MAX - 1)}…`;
 }
 
 function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], dueAt: string): CardDraft {

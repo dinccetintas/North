@@ -24,11 +24,11 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
     expect(await cardsOpenedToday(owned.owner.client, companyId)).toBe(0);
     const seqs: number[] = [];
     for (let i = 0; i < 3; i++) {
-      seqs.push((await openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null })).seq);
+      seqs.push((await openCard(service, { ...sampleCardDraft(companyId), taskId: null })).seq);
     }
     expect(seqs).toEqual([1, 2, 3]);
     expect(await cardsOpenedToday(owned.owner.client, companyId)).toBe(3);
-    await expect(openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null })).rejects.toBeInstanceOf(QuotaExceededError);
+    await expect(openCard(service, { ...sampleCardDraft(companyId), taskId: null })).rejects.toBeInstanceOf(QuotaExceededError);
     expect(await cardsOpenedToday(service, companyId)).toBe(3);
     expect(await cardsOpenedToday(service, companyId, "2000-01-01")).toBe(0);
   });
@@ -37,7 +37,7 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
     const task = await createTask(service, { companyId: owned.companyId, role: "growth", taskType: "campaign_spec", title: "Ad test" });
     const actionId = await recordAction(service, { companyId: owned.companyId, taskId: task.id, agentRole: "growth", kind: "ads.start", tier: "K2", description: "Start ads", status: "blocked" });
     const draft = sampleCardDraft(owned.companyId, { costUsd: 12.5, expectedImpact: "+20 signups" });
-    const card = await openCard(owned.owner.client, { ...draft, taskId: task.id, actionId });
+    const card = await openCard(service, { ...draft, taskId: task.id, actionId });
     expect(card).toMatchObject({
       companyId: owned.companyId,
       taskId: task.id,
@@ -74,7 +74,7 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
 
   it("answerCard rejects unknown options, records the answer once, then throws AlreadyAnsweredError", async () => {
     const companyId = await createCompanyFor(owned.owner, "answer");
-    const card = await openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null });
+    const card = await openCard(service, { ...sampleCardDraft(companyId), taskId: null });
     const unknown = answerCard(owned.owner.client, card.id, { optionId: "maybe", answeredBy: "user" });
     await expect(unknown).rejects.toBeInstanceOf(DbError);
     await expect(unknown).rejects.not.toBeInstanceOf(AlreadyAnsweredError);
@@ -134,10 +134,25 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
     expect(await listAnsweredCards(stranger.client, companyId, "ads.start")).toEqual([]);
   });
 
-  it("a stranger cannot open or answer the company's cards", async () => {
+  it("only the worker opens cards: owners and strangers cannot insert, and a stranger cannot answer", async () => {
     await expect(openCard(stranger.client, { ...sampleCardDraft(owned.companyId), taskId: null })).rejects.toBeInstanceOf(DbError);
+    await expect(openCard(owned.owner.client, { ...sampleCardDraft(owned.companyId), taskId: null })).rejects.toBeInstanceOf(DbError);
     const [card] = await listCards(service, owned.companyId);
     await expect(answerCard(stranger.client, card!.id, { optionId: "approve", answeredBy: "user" })).rejects.toBeInstanceOf(DbError);
     expect((await getCard(service, card!.id))?.answeredAt).toBeNull();
+  });
+
+  it("an owner's only write on a card is the answer: tier, default, options and day are the worker's", async () => {
+    const companyId = await createCompanyFor(owned.owner, "owner-write");
+    const card = await openCard(service, { ...sampleCardDraft(companyId), taskId: null });
+    const tamper = await owned.owner.client.from("decision_cards").update({ default_option_id: "approve" }).eq("id", card.id).select("id");
+    expect(tamper.error?.code).toBe("42501");
+    const day = await owned.owner.client.from("decision_cards").update({ day: "2000-01-01" }).eq("id", card.id).select("id");
+    expect(day.error?.code).toBe("42501");
+    expect((await getCard(service, card.id))?.defaultOptionId).toBe("decline");
+    expect((await answerCard(owned.owner.client, card.id, { optionId: "approve", answeredBy: "user" })).answeredOptionId).toBe("approve");
+    const again = await owned.owner.client.from("decision_cards").update({ answered_option_id: "decline" }).eq("id", card.id).select("id");
+    expect(again.data ?? []).toEqual([]);
+    expect((await getCard(service, card.id))?.answeredOptionId).toBe("approve");
   });
 });

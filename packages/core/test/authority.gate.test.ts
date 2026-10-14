@@ -47,6 +47,26 @@ describe("DEC-1 gate(): the single chokepoint", () => {
     expect(k3.card.rationale.length).toBeLessThanOrEqual(600);
   });
 
+  it("shows the payload facts the adapter will act on, so approval is never blind", () => {
+    const ads = gate(spec({ kind: "ads.start", amountUsd: 50, category: "ads", payload: { dailyBudgetUsd: 10, audience: "solo consultants", name: "Launch" } }), ctx());
+    if (ads.kind !== "card") throw new Error("expected card");
+    expect(ads.card.rationale).toContain("Details: $10/day, audience: solo consultants, campaign: Launch.");
+    const mail = gate(spec({ kind: "email.send.first_contact", agentRole: "sales", payload: { to: "mara@example.test", subject: "Hello <b>", text: "secret body" } }), ctx());
+    if (mail.kind !== "card") throw new Error("expected card");
+    expect(mail.card.rationale).toContain("to mara@example.test, subject: Hello <b>");
+    expect(mail.card.rationale).not.toContain("secret body");
+    const long = gate(spec({ kind: "email.send.first_contact", agentRole: "sales", payload: { to: "x@example.test", subject: "s".repeat(1000) } }), ctx());
+    if (long.kind !== "card") throw new Error("expected card");
+    expect(long.card.rationale.length).toBeLessThanOrEqual(600);
+  });
+
+  it("refuses a payload that would spend more than the gated amount", () => {
+    expect(ActionSpecSchema.safeParse({ kind: "ads.start", companyId: "c", agentRole: "growth", description: "d", amountUsd: 10, payload: { dailyBudgetUsd: 1000 } }).success).toBe(false);
+    expect(ActionSpecSchema.safeParse({ kind: "ads.start", companyId: "c", agentRole: "growth", description: "d", payload: { dailyBudgetUsd: 10 } }).success).toBe(false);
+    expect(ActionSpecSchema.safeParse({ kind: "ads.start", companyId: "c", agentRole: "growth", description: "d", amountUsd: 50, payload: { dailyBudgetUsd: 10 } }).success).toBe(true);
+    expect(ActionSpecSchema.safeParse({ kind: "research", companyId: "c", agentRole: "research", description: "d", payload: { dailyBudgetUsd: 1000 } }).success).toBe(true);
+  });
+
   it("opens a card with no default for K3 actions", () => {
     const decision = gate(spec({ kind: "contract.sign" }), ctx());
     expect(decision.kind).toBe("card");

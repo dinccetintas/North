@@ -33,9 +33,19 @@ export interface TaskRecord {
   readonly attempts: number;
   readonly lastError: string | null;
   readonly outputSummary: string | null;
+  /** What the agent run produced, kept so a task parked on a card can finish later with its evidence. */
+  readonly result: TaskResult;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+export const TaskResultSchema = z.object({
+  artifactIds: z.array(UuidSchema).max(20).default([]),
+  costUsd: z.number().nonnegative().default(0),
+  summary: z.string().max(4000).default(""),
+});
+export type TaskResult = z.infer<typeof TaskResultSchema>;
+export type TaskResultInput = z.input<typeof TaskResultSchema>;
 
 export const CreateTaskInputSchema = z.object({
   companyId: UuidSchema,
@@ -62,7 +72,7 @@ export interface ListTasksOptions {
 }
 
 const TASK_COLUMNS =
-  "id, company_id, plan_id, role, task_type, title, input, status, evidence, cost_usd, metric_key, expected_delta, attempts, last_error, output_summary, created_at, updated_at";
+  "id, company_id, plan_id, role, task_type, title, input, status, evidence, cost_usd, metric_key, expected_delta, attempts, last_error, output_summary, result, created_at, updated_at";
 
 const TaskRowSchema = z.object({
   id: z.string(),
@@ -80,9 +90,15 @@ const TaskRowSchema = z.object({
   attempts: z.number().int(),
   last_error: z.string().nullable(),
   output_summary: z.string().nullable(),
+  result: z.unknown(),
   created_at: z.string(),
   updated_at: z.string(),
 });
+
+const toResult = (value: unknown): TaskResult => {
+  const parsed = TaskResultSchema.safeParse(value ?? {});
+  return Object.freeze(parsed.success ? { ...parsed.data, artifactIds: Object.freeze([...parsed.data.artifactIds]) as string[] } : { artifactIds: [], costUsd: 0, summary: "" });
+};
 
 /** Maps a raw row to the immutable `TaskRecord`; throws when the row is malformed. */
 export function toTaskRecord(row: unknown): TaskRecord {
@@ -103,9 +119,18 @@ export function toTaskRecord(row: unknown): TaskRecord {
     attempts: r.attempts,
     lastError: r.last_error,
     outputSummary: r.output_summary,
+    result: toResult(r.result),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   });
+}
+
+/** Stores the run's artifact ids, cost and summary on the task; the settlement path reads them back as evidence. */
+export async function saveTaskResult(db: DbClient, taskId: string, input: TaskResultInput): Promise<void> {
+  const id = UuidSchema.parse(taskId);
+  const result = TaskResultSchema.parse(input);
+  const { error } = await db.from("tasks").update({ result: toJson(result), output_summary: result.summary }).eq("id", id);
+  if (error) throw dbError("Could not save task result", error);
 }
 
 /** Creates a queued task. The free-text input is stored as `{ text }` in the jsonb column. */

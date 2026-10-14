@@ -86,7 +86,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
                   </option>
                 ))}
               </select>
-              <p className="mono-label text-faint">The morning brief and the daily quota follow this clock.</p>
+              <p className="mono-label text-faint">The morning brief follows this clock. The daily card quota resets at midnight UTC for now.</p>
             </div>
           </div>
           <div>

@@ -1,43 +1,56 @@
-import { companyOwnerId, getCard, getCompanyById, getProfile, listPushSubscriptions, recordNotification } from "@north/db";
+import { companyOwnerId, getCard, getCompanyById, getProfile, listPushSubscriptions, recordNotification, type CardRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
-
-export interface NotifyResult {
-  readonly push: number;
-  readonly email: boolean;
-}
 
 /** Deep link to the card detail screen (WP-C2); the web app resolves the slug under RLS. */
 export const cardUrl = (appUrl: string, slug: string, cardId: string): string => `${appUrl.replace(/\/$/, "")}/c/${slug}/decisions/${cardId}`;
 
-/** DEC-2: a new card reaches the CEO by push (every subscription) and by email. */
-export async function notifyDecision(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<NotifyResult> {
-  const { db, integrations } = deps;
-  const [card, company] = await Promise.all([getCard(db, cardId), getCompanyById(db, companyId)]);
+interface Target {
+  readonly card: CardRecord;
+  readonly ownerId: string;
+  readonly url: string;
+  readonly title: string;
+}
+
+async function target(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<Target> {
+  const [card, company] = await Promise.all([getCard(deps.db, cardId), getCompanyById(deps.db, companyId)]);
   if (!card) throw new Error(`card ${cardId} not found`);
   if (!company) throw new Error(`company ${companyId} not found`);
-  const ownerId = await companyOwnerId(db, companyId);
-  const profile = await getProfile(db, ownerId);
-  const url = cardUrl(appUrl, company.slug, cardId);
-  const title = "North: a decision is waiting";
-  const body = card.question;
+  const ownerId = await companyOwnerId(deps.db, companyId);
+  return { card, ownerId, url: cardUrl(appUrl, company.slug, cardId), title: "North: a decision is waiting" };
+}
 
-  const subscriptions = await listPushSubscriptions(db, ownerId);
-  let pushCount = 0;
-  for (const subscription of subscriptions) {
-    const sent = await integrations.push.send(subscription, { title, body, url });
-    await recordNotification(db, { companyId, userId: ownerId, channel: "push", kind: "decision", cardId, payload: { endpoint: subscription.endpoint, error: sent.error ?? null }, status: sent.sandbox ? "sandbox" : sent.ok ? "sent" : "failed" });
-    if (sent.ok) pushCount += 1;
+/** DEC-2 by push: every subscription of the owner; a dead subscription is logged, not fatal. Returns the count delivered. */
+export async function notifyByPush(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<number> {
+  const { db, integrations } = deps;
+  const t = await target(deps, companyId, cardId, appUrl);
+  let delivered = 0;
+  for (const subscription of await listPushSubscriptions(db, t.ownerId)) {
+    const sent = await integrations.push.send(subscription, { title: t.title, body: t.card.question, url: t.url });
+    await recordNotification(db, { companyId, userId: t.ownerId, channel: "push", kind: "decision", cardId, payload: { endpoint: subscription.endpoint, error: sent.error ?? null }, status: sent.sandbox ? "sandbox" : sent.ok ? "sent" : "failed" });
+    if (sent.ok) delivered += 1;
   }
+  return delivered;
+}
 
-  let email = false;
-  if (profile?.email) {
-    try {
-      const sent = await integrations.mail.send({ companyId, to: profile.email, subject: `${title}: ${card.question}`, text: `${card.rationale}\n\nDecide here: ${url}\nDue: ${card.dueAt}`, kind: "notification" });
-      await recordNotification(db, { companyId, userId: ownerId, channel: "email", kind: "decision", cardId, payload: { messageId: sent.messageId }, status: sent.sandbox ? "sandbox" : "sent" });
-      email = true;
-    } catch (error) {
-      await recordNotification(db, { companyId, userId: ownerId, channel: "email", kind: "decision", cardId, payload: { error: error instanceof Error ? error.message : String(error) }, status: "failed" });
-    }
+/** DEC-2 by email to the owner's address; the body carries the question, the rationale and the link, never the payload. */
+export async function notifyByEmail(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<boolean> {
+  const { db, integrations } = deps;
+  const t = await target(deps, companyId, cardId, appUrl);
+  const profile = await getProfile(db, t.ownerId);
+  if (!profile?.email) return false;
+  try {
+    const sent = await integrations.mail.send({ companyId, to: profile.email, subject: `${t.title}: ${t.card.question}`, text: `${t.card.rationale}\n\nDecide here: ${t.url}\nDue: ${t.card.dueAt}`, kind: "notification" });
+    await recordNotification(db, { companyId, userId: t.ownerId, channel: "email", kind: "decision", cardId, payload: { messageId: sent.messageId }, status: sent.sandbox ? "sandbox" : "sent" });
+    return true;
+  } catch (error) {
+    await recordNotification(db, { companyId, userId: t.ownerId, channel: "email", kind: "decision", cardId, payload: { error: error instanceof Error ? error.message : String(error) }, status: "failed" });
+    return false;
   }
-  return { push: pushCount, email };
+}
+
+/** Both channels in one call (tests and scripts); the Inngest function runs them as separate steps. */
+export async function notifyDecision(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<{ readonly push: number; readonly email: boolean }> {
+  const push = await notifyByPush(deps, companyId, cardId, appUrl);
+  const email = await notifyByEmail(deps, companyId, cardId, appUrl);
+  return { push, email };
 }

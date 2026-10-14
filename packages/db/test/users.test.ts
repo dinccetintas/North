@@ -52,10 +52,10 @@ describe("users repository (settings: timezone and decision quota)", () => {
   it("DEC-3: the database quota follows the profile (quota 1 admits one card; raising it admits more)", async () => {
     const companyId = await createCompanyFor(owned.owner, "quota-follow");
     await updateProfile(owned.owner.client, owned.owner.id, { dailyDecisionQuota: 1 });
-    await openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null });
-    await expect(openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null })).rejects.toBeInstanceOf(QuotaExceededError);
+    await openCard(service, { ...sampleCardDraft(companyId), taskId: null });
+    await expect(openCard(service, { ...sampleCardDraft(companyId), taskId: null })).rejects.toBeInstanceOf(QuotaExceededError);
     await updateProfile(owned.owner.client, owned.owner.id, { dailyDecisionQuota: 2 });
-    expect((await openCard(owned.owner.client, { ...sampleCardDraft(companyId), taskId: null })).seq).toBe(2);
+    expect((await openCard(service, { ...sampleCardDraft(companyId), taskId: null })).seq).toBe(2);
   });
 
   it("companyOwnerId returns the owner for the worker and throws for unknown companies", async () => {
