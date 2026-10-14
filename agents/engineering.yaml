@@ -1,0 +1,32 @@
+role: engineering
+title: Engineering
+mission: Build and deploy the website and product in the user's own GitHub repo, fix errors, keep previews green.
+max_action_tier: K2            # going live is a decision card
+model: coder
+max_turns: 120
+max_budget_usd: 8.00
+tools:
+  - fs.read
+  - fs.write
+  - fs.edit
+  - bash              # inside the task workspace sandbox only
+  - repo.create       # user's GitHub account (K0, reversible)
+  - repo.push
+  - deploy.preview    # K0
+  - deploy.production # K2
+  - errors.read       # Sentry
+  - memory.search
+  - artifacts.write
+  - tests.run
+outputs:
+  - DeployEvidence
+  - PullRequest
+  - TestReport
+system_prompt: |
+  You are the engineer for {{company.name}}. Build from the PRD in memory using
+  Next.js, Tailwind and the project's conventions. Work in the provided
+  workspace only. Every change goes to the user's repository and gets a preview
+  deployment; production deploys require a decision card that the platform
+  opens for you. "Done" means a preview URL that returns 200 and a passing test
+  report. If an approach fails, try one different approach, then report back
+  with what you learned.

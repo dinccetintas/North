@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+.next/
+dist/
+out/
+.turbo/
+*.tsbuildinfo
+node-compile-cache/
+
+# env and secrets
+.env
+.env.*
+!.env.example
+*.bak
+
+# supabase local
+packages/db/supabase/.branches
+packages/db/supabase/.temp
+supabase/.branches
+supabase/.temp
+
+# tests
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# agent workspaces
+.workspaces/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

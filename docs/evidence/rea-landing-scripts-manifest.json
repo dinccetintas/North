@@ -1,0 +1,489 @@
+{
+  "capture_path": "/private/tmp/claude-501/-Users-dinccetintas-Github-North/6951073d-2195-4459-8896-0a2dd4bc04bc/scratchpad/rea-captures/landing-capture.json",
+  "capture_sha256": "870089f6065c604b54b6f70dd346bf2f68f68bcd81c1bb1a94a45409a05a1dd4",
+  "capture_kind": "browser-scenario",
+  "source_evidence_id": "ev_05df4bc7a58108a0b51e9e23f86b818f0d7db75997c5df21bb8547d96afd371d",
+  "capture_completeness": {
+    "status": "incomplete",
+    "equality_eligible": false,
+    "missing_sections": [
+      "events"
+    ],
+    "truncated_sections": []
+  },
+  "output_directory": "/private/tmp/claude-501/-Users-dinccetintas-Github-North/6951073d-2195-4459-8896-0a2dd4bc04bc/scratchpad/rea-captures/landing-scripts",
+  "analysis_input": {
+    "input_path": "/private/tmp/claude-501/-Users-dinccetintas-Github-North/6951073d-2195-4459-8896-0a2dd4bc04bc/scratchpad/rea-captures/landing-scripts/files",
+    "format": "directory"
+  },
+  "scripts": [
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-3",
+        "request_sequence": 4,
+        "response_sequence": 100,
+        "status": 200
+      },
+      "url": "https://polsia.com/assets/index-qIk1zfcz.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-5",
+        "request_sequence": 6,
+        "response_sequence": 16,
+        "status": 200
+      },
+      "url": "https://connect.facebook.net/en_US/fbevents.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-6",
+        "request_sequence": 7,
+        "response_sequence": 12,
+        "status": 200
+      },
+      "url": "https://bzrcdn.openai.com/sdk/oaiq.min.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-7",
+        "request_sequence": 8,
+        "response_sequence": 91,
+        "status": 200
+      },
+      "url": "https://www.googletagmanager.com/gtag/js?id=AW-18004328752",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-8",
+        "request_sequence": 9,
+        "response_sequence": 31,
+        "status": 200
+      },
+      "url": "https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=D6MVVDBC77U9JTU05IS0&lib=ttq",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-5-9adb69974a9a198a33703d3a5e30b3506608ff57dc27317c455e59fd41521bf9.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "2bd5550ad7fc3189a87b4dd4c49a29ddccd122f27547bdb6e7a6e6a8e1a514af",
+        "bytes": 9203,
+        "media_type": "application/javascript; charset=UTF-8",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-10",
+        "request_sequence": 18,
+        "response_sequence": 23,
+        "status": 200
+      },
+      "url": "https://connect.facebook.net/signals/config/1314800673710252?v=2.9.419&r=stable&domain=polsia.com&hme=7459fa3e38c2784dbaf309537bed5fa7e8560fab51fb61e53e5ffafeb46a02a9&ex_m=118%2C241%2C171%2C27%2C82%2C83%2C162%2C78%2C77%2C11%2C181%2C102%2C20%2C153%2C141%2C46%2C85%2C90%2C149%2C176%2C183%2C8%2C4%2C5%2C7%2C6%2C3%2C103%2C115%2C32%2C17%2C31%2C18%2C33%2C34%2C35%2C37%2C55%2C163%2C87%2C126%2C22%2C24%2C51%2C47%2C49%2C48%2C95%2C104%2C108%2C124%2C160%2C164%2C53%2C125%2C29%2C26%2C133%2C79%2C43%2C166%2C165%2C167%2C157%2C155%2C30%2C42%2C66%2C123%2C178%2C80%2C21%2C128%2C93%2C76%2C23%2C97%2C98%2C130%2C96%2C151%2C150%2C154%2C109%2C177%2C180%2C41%2C56%2C127%2C54%2C161%2C72%2C185%2C110%2C184%2C210%2C255%2C84%2C274%2C273%2C272%2C14%2C25%2C28%2C40%2C62%2C117%2C68%2C10%2C73%2C111%2C112%2C113%2C119%2C144%2C38%2C36%2C146%2C147%2C148%2C143%2C142%2C172%2C86%2C175%2C173%2C174%2C57%2C69%2C67%2C137%2C19%2C179%2C52%2C324%2C325%2C326%2C323%2C339%2C361%2C248%2C237%2C70%2C238%2C236%2C364%2C355%2C59%2C249%2C121%2C145%2C92%2C135%2C61%2C134%2C140%2C139%2C65%2C74%2C168%2C88%2C89%2C129%2C44%2C39%2C60%2C63%2C114%2C182%2C1%2C138%2C16%2C136%2C12%2C2%2C64%2C105%2C15%2C75%2C71%2C132%2C101%2C100%2C187%2C188%2C106%2C107%2C9%2C116%2C186%2C58%2C158%2C99%2C91%2C81%2C131%2C120%2C169%2C50%2C159%2C0%2C94%2C152%2C156%2C170%2C45%2C122%2C13%2C189",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-11",
+        "request_sequence": 25,
+        "response_sequence": 27,
+        "status": 200
+      },
+      "url": "https://connect.facebook.net/signals/config/1256400136484241?v=2.9.419&r=stable&domain=polsia.com&hme=7459fa3e38c2784dbaf309537bed5fa7e8560fab51fb61e53e5ffafeb46a02a9&ex_m=118%2C241%2C171%2C27%2C82%2C83%2C162%2C78%2C77%2C11%2C181%2C102%2C20%2C153%2C141%2C46%2C85%2C90%2C149%2C176%2C183%2C8%2C4%2C5%2C7%2C6%2C3%2C103%2C115%2C32%2C17%2C31%2C18%2C33%2C34%2C35%2C37%2C55%2C163%2C87%2C126%2C22%2C24%2C51%2C47%2C49%2C48%2C95%2C104%2C108%2C124%2C160%2C164%2C53%2C125%2C29%2C26%2C133%2C79%2C43%2C166%2C165%2C167%2C157%2C155%2C30%2C42%2C66%2C123%2C178%2C80%2C21%2C128%2C93%2C76%2C23%2C97%2C98%2C130%2C96%2C151%2C150%2C154%2C109%2C177%2C180%2C41%2C56%2C127%2C54%2C161%2C72%2C185%2C110%2C184%2C210%2C255%2C84%2C274%2C273%2C272%2C14%2C25%2C28%2C40%2C62%2C117%2C68%2C10%2C73%2C111%2C112%2C113%2C119%2C144%2C38%2C36%2C146%2C147%2C148%2C143%2C142%2C172%2C86%2C175%2C173%2C174%2C57%2C69%2C67%2C137%2C19%2C179%2C52%2C324%2C325%2C326%2C323%2C339%2C361%2C248%2C237%2C70%2C238%2C236%2C364%2C355%2C59%2C249%2C121%2C145%2C92%2C135%2C61%2C134%2C140%2C139%2C65%2C74%2C168%2C88%2C89%2C129%2C44%2C39%2C60%2C63%2C114%2C182%2C1%2C138%2C16%2C136%2C12%2C2%2C64%2C105%2C15%2C75%2C71%2C132%2C101%2C100%2C187%2C188%2C106%2C107%2C9%2C116%2C186%2C58%2C158%2C99%2C91%2C81%2C131%2C120%2C169%2C50%2C159%2C0%2C94%2C152%2C156%2C170%2C45%2C122%2C13%2C189%2C268%2C266%2C261%2C263%2C264%2C265%2C262%2C260%2C247%2C267%2C269%2C259%2C217%2C218%2C270%2C271%2C258%2C257%2C353%2C354%2C200%2C202%2C203%2C207%2C206%2C208%2C204%2C205%2C201%2C199%2C198%2C230%2C225%2C228%2C229%2C223%2C389%2C304%2C308%2C312%2C313%2C314%2C309%2C315%2C307%2C302%2C317%2C318%2C306%2C316%2C320%2C310%2C305%2C311%2C319%2C321%2C303%2C240%2C301%2C226%2C227%2C251%2C224%2C222%2C278%2C242%2C215%2C216%2C212%2C213%2C214%2C211%2C209%2C220%2C221%2C219%2C327%2C382%2C347%2C348%2C350%2C351%2C349%2C346%2C345%2C231%2C281%2C288%2C289%2C282%2C284%2C287%2C285%2C286%2C283%2C280%2C299%2C293%2C296%2C292%2C300%2C297%2C291%2C295%2C298%2C294%2C290%2C341%2C358",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-12",
+        "request_sequence": 33,
+        "response_sequence": 35,
+        "status": 200
+      },
+      "url": "https://analytics.tiktok.com/i18n/pixel/static/main.MWFjYmVlZGY0MQ.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-13",
+        "request_sequence": 37,
+        "response_sequence": 50,
+        "status": 200
+      },
+      "url": "https://analytics.tiktok.com/i18n/pixel/static/identify_0504602d.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-27",
+        "request_sequence": 94,
+        "response_sequence": 116,
+        "status": 200
+      },
+      "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/18004328752/?random=1792001480578&cv=11&fst=1792001480578&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45be6ac1v9245769155za208zd9245769155xecxf1&gcd=13l3l3l3l1l1&dma=0&tag_exp=115616986~115938466~115938468~118897920~118897930~119860442~120213116~120385423~120469145~120469153~121246026~121246034&u_w=1280&u_h=720&url=https%3A%2F%2Fpolsia.com%2F&rcb=8&frm=0&tiba=Polsia%20%E2%80%94%20AI%20That%20Runs%20Your%20Company%20While%20You%20Sleep&hn=www.googleadservices.com&npa=0&pscdl=noapi&auid=1031474688.1792001481&uaa=arm&uab=64&uafvl=Chromium%3B151.0.7922.34%7CNot%253DA%253FBrand%3B99.0.0.0&uamb=0&uam=&uap=macOS&uapv=26.5.1&uaw=0&data=event%3Dgtag.config&ept=9&rfmt=3&fmt=4",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-10-9ff91570b6354045e90f444817c4be4f92135ea3a532d8e62ea656f9fdab587b.js",
+        "layout": "isolated",
+        "layout_reason": "URL path is not an ordinary portable JavaScript module path.",
+        "sha256": "b533e6203142a17a24d49f20e005bf671c851fc2046ee497f34edb993d49fc3a",
+        "bytes": 8030,
+        "media_type": "text/javascript; charset=UTF-8",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-29",
+        "request_sequence": 96,
+        "response_sequence": 142,
+        "status": 200
+      },
+      "url": "https://www.googletagmanager.com/gtag/js?id=G-GWFDYHBFQ6&cx=c&gtm=4e6ac1",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-34",
+        "request_sequence": 112,
+        "response_sequence": 218,
+        "status": 200
+      },
+      "url": "https://e.polsia.com/array/phc_BvXSiVTo7z4s0xI9qIYnq51fejnZRBqjBdsgyDGOql8/config.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "origins/18c32d7ad5d145318991f7fd4a1b997c9e57dc83c9c6ee03e819fc4e08925fc6/array/phc_BvXSiVTo7z4s0xI9qIYnq51fejnZRBqjBdsgyDGOql8/config.js",
+        "layout": "url-path",
+        "layout_reason": null,
+        "sha256": "8af8337e08be7550477ec3f526a62376458b47ee764f39d3032857b68b6dc727",
+        "bytes": 1193,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-56",
+        "request_sequence": 160,
+        "response_sequence": 213,
+        "status": 200
+      },
+      "url": "https://s.axon.ai/pixel.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "origins/8225b68a05f61586f943f8b8adbe157a09cd2b03865692480eb8c68c31314618/pixel.js",
+        "layout": "url-path",
+        "layout_reason": null,
+        "sha256": "de56f5b9af14f4f95e8fc6ec0dd576090154ebf7f5c6edd4f5239db96bf9ecd9",
+        "bytes": 32863,
+        "media_type": "text/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-57",
+        "request_sequence": 161,
+        "response_sequence": 228,
+        "status": 200
+      },
+      "url": "https://res4.applovin.com/p/l/loader.iife.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "origins/cafd4b349dcb550eb72e3c2fea99b290e95cab57d28681318929bbd3f5b606ec/p/l/loader.iife.js",
+        "layout": "url-path",
+        "layout_reason": null,
+        "sha256": "144df737ad38843832edc88c427baa13504968e9a5d278504fcb69a9bc24253e",
+        "bytes": 6074,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-60",
+        "request_sequence": 220,
+        "response_sequence": 233,
+        "status": 200
+      },
+      "url": "https://e.polsia.com/static/posthog-recorder.js?v=1.365.5",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-61",
+        "request_sequence": 221,
+        "response_sequence": 225,
+        "status": 200
+      },
+      "url": "https://e.polsia.com/static/surveys.js?v=1.365.5",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-62",
+        "request_sequence": 230,
+        "response_sequence": 238,
+        "status": 200
+      },
+      "url": "https://res4.applovin.com/p/104/b/bs.c9e1074f5b3f9fc8ea15d152add07294-1.iife.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-63",
+        "request_sequence": 231,
+        "response_sequence": 248,
+        "status": 200
+      },
+      "url": "https://res4.applovin.com/p/104/hs/hs.iife.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "origins/cafd4b349dcb550eb72e3c2fea99b290e95cab57d28681318929bbd3f5b606ec/p/104/hs/hs.iife.js",
+        "layout": "url-path",
+        "layout_reason": null,
+        "sha256": "ef18f4c5e6ff0e7fad5069c5869aae1f47031c48e14be740cb9c4a340e320afb",
+        "bytes": 1879,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-64",
+        "request_sequence": 240,
+        "response_sequence": 250,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/8017fb61-ef58-469b-8ec8-45ea2dc52eb2",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-19-95039cc8f04418aeb6fba8f0e53a23f74c473dbd75a4d8d34325993aee1f6dce.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "940d16ae4536bbc67bf4cd199f3b9d1e4051935c4069fba67b09dd2b917ed16a",
+        "bytes": 1209,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-65",
+        "request_sequence": 241,
+        "response_sequence": 251,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/314293fb-0e18-464a-ac7e-3b57c9f64a6b",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-20-609a50dc69d3d885858e7755fc7ab3ae777a515df8b336ca6c0a18e08f8bccda.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "940d16ae4536bbc67bf4cd199f3b9d1e4051935c4069fba67b09dd2b917ed16a",
+        "bytes": 1209,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-66",
+        "request_sequence": 242,
+        "response_sequence": 253,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/47590f57-0996-4745-8e8e-a3e15ffa351e",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-21-2f48057e10f6b8277a5c5c70cd1219ce1d77649d5be9a9492cba6db33b34477b.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "7c9d4c4fb0ea3fd75c5bdec490cb97cff7541f435fbe06f41e8594799a6045db",
+        "bytes": 1224,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-67",
+        "request_sequence": 243,
+        "response_sequence": 257,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/73db4fb4-f9bf-4f92-ac2c-ba1db5e707d0",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-22-594740e113fb0ee1335913ac08e50c5eb7c62f97fe0c5f4fdaa69e4961484a9f.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "940d16ae4536bbc67bf4cd199f3b9d1e4051935c4069fba67b09dd2b917ed16a",
+        "bytes": 1209,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-68",
+        "request_sequence": 244,
+        "response_sequence": 258,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/c85e4051-daea-4bdb-b4bd-54298f1cb7db",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-23-c8d99f2b8eb722ef38915ac50b3d1dd0309b2e8e6a5eac2b1631c7035e6bab90.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "7c9d4c4fb0ea3fd75c5bdec490cb97cff7541f435fbe06f41e8594799a6045db",
+        "bytes": 1224,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-69",
+        "request_sequence": 245,
+        "response_sequence": 261,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/0e8d9852-8ca1-41a3-862b-572b5668e697",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-24-eba0f29a401f95a6a8d1809bef02f52920f0ae569c670b2622b2100824990b52.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "38c396724d7327150e9c8506f80a8f7a4631e53ce76d8320ce365e0e1c5ccdfe",
+        "bytes": 1502,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-70",
+        "request_sequence": 246,
+        "response_sequence": 262,
+        "status": 200
+      },
+      "url": "blob:https://polsia.com/1c4acea4-d9b6-4760-8404-757fd91b1a27",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-25-bfaaf709defa33ebf1aed95fc4c2e0df6344354a027be1208833c323adf730f3.js",
+        "layout": "isolated",
+        "layout_reason": "Source URL scheme has no local module layout mapping.",
+        "sha256": "c7eca52f7eff77fcd891d651a5e0bb037e1780ac8e0bd5050539d69eb5f87b14",
+        "bytes": 1395,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    }
+  ],
+  "limitations": [
+    "Event sequence records provider receipt order; simultaneous browser causality is not inferred.",
+    "Network content is retained only when selected; Playwright response-body bytes are API results and are not guaranteed to match wire bytes.",
+    "Request bytes are limited to what Playwright exposes; not_exposed does not establish body absence or multipart file coverage.",
+    "Network content reads settle within 5 seconds each and the observer does not request bodies from unfinished responses.",
+    "Captured response-body bytes are the result of Playwright's Response.body() API. Playwright may satisfy that API with a credentialed follow-up load of the request URL when CDP has no body, so transaction and event links do not verify that retained bytes came from the original network transaction.",
+    "Playwright scenario events do not expose request initiator stacks; receipt order does not prove causality.",
+    "Storage values are hashed only after declared-secret redaction.",
+    "Some selected network content was unavailable; per-transaction content states retain the reason.",
+    "Only script bytes retained in this capture are exported. Sources are not refetched or executed, and a response or Debugger source does not prove execution.",
+    "Ordinary unambiguous URL paths preserve relative module layouts by origin, including case-distinct spellings. Query variants, exact path collisions, file/directory prefixes, inline sources, and unrepresentable paths are isolated. A case-distinct pair is isolated only when the destination filesystem cannot store both spellings; the record names that pair. Browser module relationships of isolated paths remain unknown.",
+    "Local JavaScript analysis does not implement browser import maps, root-relative URL resolution, remote URL loading, or browser runtime behavior. It may strip import queries and fragments; isolated variants are not canonical targets.",
+    "Source-map declarations are retained as metadata. No source maps or missing dependencies are fetched or reconstructed.",
+    "Scenario response bytes preserve the output of Playwright's Response.body() API; any source-body provenance caveat from the capture is retained in this manifest. Debugger sources are the exposed text encoded as UTF-8. Redacted bytes are exported exactly as retained, and may no longer parse as JavaScript."
+  ]
+}

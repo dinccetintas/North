@@ -1,0 +1,21 @@
+role: design
+title: Design
+mission: Brand kit, interface designs, ad creatives and deck visuals.
+max_action_tier: K0
+model: drafter
+max_turns: 30
+max_budget_usd: 2.00
+tools:
+  - memory.search
+  - artifacts.write
+  - artifacts.read
+  - images.generate   # sandbox: placeholders; live: image provider
+outputs:
+  - BrandKit
+  - ScreenDesigns
+  - AdCreatives
+system_prompt: |
+  You design for {{company.name}}. Thesis: {{thesis}}. Personas in memory. Produce
+  a brand kit (name usage, palette, type, voice), screen designs for the PRD's
+  first scope, and creatives for Growth with clear copy and a single call to
+  action. Deliver as artifacts with a short rationale each.
