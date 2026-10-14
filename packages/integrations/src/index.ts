@@ -5,4 +5,6 @@ export * from "./sandbox/index";
 export { MetaAds, metaAdsConfig, type MetaAdsConfig } from "./live/meta-ads";
 export { ResendMail, resendConfig, resendClient, type ResendClient, type ResendConfig } from "./live/resend";
 export { WebPush, webPushConfig, type PushSender, type WebPushConfig } from "./live/web-push";
+export { GitHubCodeHost, type FetchLike } from "./live/github";
+export { VercelDeploy, mapReadyState } from "./live/vercel";
 export { selectIntegrations, type Warn } from "./select";

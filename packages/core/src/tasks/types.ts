@@ -13,6 +13,8 @@ export const TASK_TYPES = [
   "business_plan",
   "investor_deck",
   "brand_kit",
+  "screen_designs",
+  "build_site",
   "campaign_spec",
   "outreach_batch",
   "plan_week",
@@ -41,6 +43,8 @@ export const TASK_OWNER: Readonly<Record<TaskType, AgentRole>> = Object.freeze({
   business_plan: "strategy_product",
   investor_deck: "strategy_product",
   brand_kit: "design",
+  screen_designs: "design",
+  build_site: "engineering",
   campaign_spec: "growth",
   outreach_batch: "sales",
   plan_week: "chief_of_staff",
@@ -61,8 +65,49 @@ export const METRIC_KEYS = [
 ] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
-export const ARTIFACT_KINDS = ["market_report", "personas", "competitor_map", "prd", "business_plan", "investor_deck", "brand_kit", "campaign_spec", "outreach_batch", "plan", "brief", "doc"] as const;
+export const ARTIFACT_KINDS = [
+  "market_report",
+  "personas",
+  "competitor_map",
+  "prd",
+  "business_plan",
+  "investor_deck",
+  "brand_kit",
+  "screen_designs",
+  "build_report",
+  "campaign_spec",
+  "outreach_batch",
+  "plan",
+  "brief",
+  "doc",
+] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+export const MAX_OUTPUT_FILES = 60;
+export const MAX_OUTPUT_FILE_BYTES = 512 * 1024;
+export const MAX_OUTPUT_TOTAL_BYTES = 2 * 1024 * 1024;
+
+/** Relative, forward-slash paths inside the task workspace; no traversal, no absolute paths, no hidden dirs. */
+export const WorkspacePathSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/, "relative path: segments of letters, digits, '.', '_' or '-', none starting with '.'");
+
+/** One file an engineering run produced; the worker writes it into the workspace and pushes it to the user's repo. */
+export const OutputFileSchema = z.object({
+  path: WorkspacePathSchema,
+  content: z.string().max(MAX_OUTPUT_FILE_BYTES),
+});
+export type OutputFile = z.infer<typeof OutputFileSchema>;
+
+export const OutputFilesSchema = z
+  .array(OutputFileSchema)
+  .max(MAX_OUTPUT_FILES)
+  .refine((files) => new Set(files.map((f) => f.path)).size === files.length, { message: "duplicate file path" })
+  .refine((files) => files.reduce((sum, f) => sum + new TextEncoder().encode(f.content).length, 0) <= MAX_OUTPUT_TOTAL_BYTES, {
+    message: `files exceed ${MAX_OUTPUT_TOTAL_BYTES} bytes in total`,
+  });
 
 export const MEMORY_KINDS = ["thesis", "persona", "decision", "learning", "doc"] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
@@ -87,6 +132,8 @@ export const AgentOutputSchema = z.object({
   artifacts: z.array(ArtifactDraftSchema).max(10),
   memory: z.array(MemoryDraftSchema).max(20),
   actions: z.array(ActionSpecSchema).max(20).default([]),
+  /** Files for the task workspace (engineering); the mock runtime returns them, the SDK runtime writes them itself. */
+  files: OutputFilesSchema.optional(),
   /** Honest self-assessment the Chief of Staff reads when planning the next week. */
   confidence: z.enum(["low", "medium", "high"]).default("medium"),
 });

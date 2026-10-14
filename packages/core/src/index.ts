@@ -8,3 +8,5 @@ export * from "./tasks/types";
 export * from "./ledger/attribution";
 export * from "./onboarding";
 export * from "./events";
+export * from "./connections";
+export * from "./evidence";

@@ -12,6 +12,7 @@ export const EVENT = {
   planCreated: "plan/created",
   taskDispatch: "task/dispatch",
   taskFinished: "task/finished",
+  taskEscalated: "task/escalated",
   decisionOpened: "decision/opened",
   decisionAnswered: "decision/answered",
   decisionExpired: "decision/expired",
@@ -32,6 +33,15 @@ export const TaskFinishedSchema = z.object({
   taskType: z.enum(TASK_TYPES),
   status: z.enum(["done", "failed", "waiting_decision"]),
 });
+/** AGT-3: both attempts failed; the Chief of Staff (and the brief, M5) take it from here. */
+export const TaskEscalatedSchema = z.object({
+  companyId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  taskType: z.enum(TASK_TYPES),
+  reason: z.string().min(1).max(4000),
+});
+export type TaskEscalatedEvent = z.infer<typeof TaskEscalatedSchema>;
+
 export const DecisionAnsweredSchema = z.object({
   companyId: z.string().uuid(),
   cardId: z.string().uuid(),

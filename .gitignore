@@ -46,3 +46,6 @@ update-check/
 
 # docker-free local stack state (scripts/stack)
 .stack/
+
+# sandbox repos and sites written by the sandbox adapters (worker)
+.sandbox/

@@ -9,6 +9,8 @@ export const ARTIFACT_KIND_FOR_TASK: Readonly<Record<TaskType, ArtifactKind>> = 
   business_plan: "business_plan",
   investor_deck: "investor_deck",
   brand_kit: "brand_kit",
+  screen_designs: "screen_designs",
+  build_site: "build_report",
   campaign_spec: "campaign_spec",
   outreach_batch: "outreach_batch",
   plan_week: "plan",
@@ -63,6 +65,19 @@ export const TASK_GUIDES: Readonly<Record<TaskType, string>> = Object.freeze({
 - Voice and tone: three adjectives, do/don't examples, sample headline and CTA.
 - Logo direction and imagery guidance (described, no binary assets).
 - Accessibility notes (contrast ratios) and a short rationale.`,
+  screen_designs: `Great screen designs contain, for the PRD's first scope:
+- Three to five screens, each with purpose, content order, states (empty, loading, error, success) and the primary action.
+- Mobile layout at 390px first, then desktop; copy written out in full, no lorem ipsum.
+- Components reused from the brand kit (palette, type, voice); placeholders where imagery is needed, described in one line.
+- Accessibility notes: contrast, focus order, labels.
+- A one-paragraph rationale per screen tying it to a persona's job.`,
+  build_site: `A great landing page build contains:
+- A static site in the workspace: index.html with inline or linked CSS from the brand kit, a README.md, no build step required.
+- Above the fold: the one-line promise, who it is for, one primary call to action that collects an email (form posts to a configurable endpoint; never a fake "success").
+- Sections from the PRD: problem, how it works (three steps), proof or plan, pricing or waitlist, FAQ, footer with contact.
+- Semantic HTML, responsive without JavaScript, images as described placeholders, meta title and description, no external trackers.
+- A build_report artifact: what was built, the file list, how to run it locally, and what to test on the preview.
+- No external actions of its own: the platform pushes the files, deploys the preview and opens the go-live card.`,
   campaign_spec: `A great campaign spec contains:
 - One objective tied to the goal metric, with the expected delta and the budget that buys it.
 - Audience definition precise enough to configure, with exclusions.

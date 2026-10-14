@@ -1,5 +1,6 @@
 import type { MockScript } from "../runtime/mock";
 import { brandKitScript } from "./brand-kit";
+import { buildSiteScript } from "./build-site";
 import { businessPlanScript } from "./business-plan";
 import { campaignSpecScript } from "./campaign-spec";
 import { competitorMapScript } from "./competitor-map";
@@ -9,6 +10,7 @@ import { outreachBatchScript } from "./outreach-batch";
 import { personasScript } from "./personas";
 import { planWeekScript } from "./plan-week";
 import { prdScript } from "./prd";
+import { screenDesignsScript } from "./screen-designs";
 
 /**
  * Fixture scripts for `MockRuntime`, keyed `"<role>:<taskType>"` (ADR 0004).
@@ -25,6 +27,8 @@ export const mockScripts: Readonly<Record<string, MockScript>> = Object.freeze({
   "strategy_product:business_plan": businessPlanScript,
   "strategy_product:investor_deck": investorDeckScript,
   "design:brand_kit": brandKitScript,
+  "design:screen_designs": screenDesignsScript,
+  "engineering:build_site": buildSiteScript,
   "growth:campaign_spec": campaignSpecScript,
   "sales:outreach_batch": outreachBatchScript,
   "chief_of_staff:plan_week": planWeekScript,
@@ -33,3 +37,4 @@ export const mockScripts: Readonly<Record<string, MockScript>> = Object.freeze({
 export { fixtureContext, succeeded, type FixtureContext } from "./shared";
 export { FIXTURE_CAMPAIGN_DAILY_USD, FIXTURE_CAMPAIGN_DAYS } from "./campaign-spec";
 export { FIXTURE_PROSPECTS } from "./outreach-batch";
+export { FAIL_ALWAYS_MARKER, FAIL_ONCE_MARKER, landingPageHtml, siteNameFor } from "./build-site";

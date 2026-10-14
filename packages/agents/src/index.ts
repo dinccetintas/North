@@ -5,6 +5,7 @@ export * from "./runtime/mock";
 export * from "./runtime/tool-policy";
 export * from "./runtime/claude-agent-sdk";
 export * from "./runtime/select";
+export * from "./runtime/workspace";
 export * from "./llm/client";
 export * from "./onboarding/clarify";
 export * from "./prompts/build";

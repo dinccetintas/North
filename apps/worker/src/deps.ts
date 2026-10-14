@@ -3,6 +3,12 @@ import { loadRoles, minimalSubprocessEnv, selectRuntime, type AgentRuntime, type
 import { selectIntegrations, type Integrations } from "@north/integrations";
 import { workerEnv, type WorkerEnv } from "./env";
 
+/** How URLs are verified (AGT-2): tests inject a fetch; production uses the global one with a timeout. */
+export interface VerifierConfig {
+  readonly fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+  readonly timeoutMs?: number;
+}
+
 /** Everything a worker function needs; built once per process, injectable in tests. */
 export interface WorkerDeps {
   readonly env: WorkerEnv;
@@ -10,6 +16,7 @@ export interface WorkerDeps {
   readonly roles: ReadonlyMap<string, RoleDefinition>;
   readonly runtime: AgentRuntime;
   readonly integrations: Integrations;
+  readonly verifier: VerifierConfig;
 }
 
 /** Audit payloads are capped so a hostile tool input cannot bloat the log. */
@@ -35,7 +42,12 @@ export function buildDeps(env: WorkerEnv = workerEnv()): Promise<WorkerDeps> {
 async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const db = createServiceClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
   const roles = await loadRoles(env.AGENTS_DIR);
-  const integrations = selectIntegrations({ ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE });
+  const integrations = selectIntegrations({
+    ...process.env,
+    INTEGRATIONS_MODE: env.INTEGRATIONS_MODE,
+    SANDBOX_ROOT: env.SANDBOX_ROOT,
+    SANDBOX_SITE_BASE_URL: process.env.SANDBOX_SITE_BASE_URL ?? `http://127.0.0.1:${env.WORKER_PORT}`,
+  });
   const runtime = selectRuntime(
     {
       roles,
@@ -57,5 +69,5 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
     },
     { AGENT_RUNTIME: env.AGENT_RUNTIME },
   );
-  return Object.freeze({ env, db, roles, runtime, integrations });
+  return Object.freeze({ env, db, roles, runtime, integrations, verifier: { timeoutMs: 10_000 } });
 }

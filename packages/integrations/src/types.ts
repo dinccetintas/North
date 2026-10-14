@@ -7,7 +7,7 @@ import type { IntegrationMode } from "./mode";
  * live code ever sees a malformed request.
  */
 
-export const PROVIDERS = ["ads", "mail", "push"] as const;
+export const PROVIDERS = ["ads", "mail", "push", "code", "deploy", "images"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 /** What an agent asks the ads provider to run; the authority gate has already approved it. */
@@ -89,12 +89,114 @@ export interface PushProvider {
   send(subscription: PushSubscription, payload: PushPayload): Promise<PushResult>;
 }
 
-/** The three providers the worker depends on, plus the mode they were selected for. */
+/** A file to commit or deploy; paths are workspace-relative (validated by core's OutputFilesSchema upstream). */
+export const RepoFileSchema = z.object({ path: z.string().min(1).max(200), content: z.string() });
+export type RepoFile = z.input<typeof RepoFileSchema>;
+
+const repoName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters, digits and dashes");
+
+export const EnsureRepoInputSchema = z.object({ companyId: z.string().min(1), name: repoName, private: z.boolean().default(true) });
+export type EnsureRepoInput = z.input<typeof EnsureRepoInputSchema>;
+
+export interface EnsureRepoResult {
+  readonly repoId: string;
+  /** `owner/name` on the host; `sandbox/<name>` in sandbox. */
+  readonly fullName: string;
+  readonly url: string;
+  readonly created: boolean;
+  readonly sandbox: boolean;
+}
+
+export const PushTreeInputSchema = z.object({
+  companyId: z.string().min(1),
+  fullName: z.string().min(3).max(200),
+  branch: z.string().min(1).max(100).default("main"),
+  message: z.string().trim().min(1).max(500),
+  files: z.array(RepoFileSchema).min(1).max(200),
+});
+export type PushTreeInput = z.input<typeof PushTreeInputSchema>;
+
+export interface PushTreeResult {
+  readonly commitSha: string;
+  readonly url: string;
+  readonly sandbox: boolean;
+}
+
+/** The user's own repository host (EXP-1: code lives in their GitHub). */
+export interface CodeHostProvider {
+  ensureRepo(input: EnsureRepoInput): Promise<EnsureRepoResult>;
+  pushTree(input: PushTreeInput): Promise<PushTreeResult>;
+}
+
+export const DEPLOY_TARGETS = ["preview", "production"] as const;
+export type DeployTarget = (typeof DEPLOY_TARGETS)[number];
+
+export const CreateDeploymentInputSchema = z.object({
+  companyId: z.string().min(1),
+  name: repoName,
+  target: z.enum(DEPLOY_TARGETS).default("preview"),
+  files: z.array(RepoFileSchema).min(1).max(200),
+});
+export type CreateDeploymentInput = z.input<typeof CreateDeploymentInputSchema>;
+
+export const DEPLOYMENT_STATES = ["building", "ready", "error"] as const;
+export type DeploymentState = (typeof DEPLOYMENT_STATES)[number];
+
+export interface DeploymentResult {
+  readonly deployId: string;
+  /** Absolute URL the verifier fetches. */
+  readonly url: string;
+  readonly target: DeployTarget;
+  readonly sandbox: boolean;
+}
+
+export interface DeployProvider {
+  create(input: CreateDeploymentInput): Promise<DeploymentResult>;
+  status(companyId: string, deployId: string): Promise<DeploymentState>;
+}
+
+/** Per-user credentials for a live provider; null means "not connected" and the live adapter refuses. */
+export interface ProviderAuth {
+  readonly token: string;
+  /** Vercel team id or GitHub organisation; optional. */
+  readonly scope?: string;
+}
+
+export const ImageRequestSchema = z.object({
+  prompt: z.string().trim().min(1).max(2000),
+  width: z.number().int().min(64).max(4096).default(1200),
+  height: z.number().int().min(64).max(4096).default(630),
+});
+export type ImageRequest = z.input<typeof ImageRequestSchema>;
+
+export interface ImageResult {
+  /** A URL or data URI the artifact can embed. */
+  readonly url: string;
+  readonly sandbox: boolean;
+}
+
+export interface ImageProvider {
+  generate(input: ImageRequest): Promise<ImageResult>;
+}
+
+/**
+ * Everything the worker depends on, plus the mode they were selected for.
+ * `code` and `deploy` are factories because their credentials belong to the
+ * user (connections), not to the platform; sandbox ignores the auth argument.
+ */
 export interface Integrations {
   readonly mode: IntegrationMode;
   readonly ads: AdsProvider;
   readonly mail: MailProvider;
   readonly push: PushProvider;
+  readonly images: ImageProvider;
+  readonly code: (auth: ProviderAuth | null) => CodeHostProvider;
+  readonly deploy: (auth: ProviderAuth | null) => DeployProvider;
 }
 
 /** What a sandbox adapter records instead of calling a real service. */

@@ -1,59 +1,88 @@
-import { ActionSpecSchema, applyDefault, gate, type ActionSpec, type GateDecision } from "@north/core";
+import { ActionSpecSchema, gate, type ActionKind, type ActionSpec, type GateDecision, type Tier } from "@north/core";
 import {
   QuotaExceededError,
-  answerCard,
   getCard,
   getKillSwitch,
   getTask,
-  latestMetric,
+  headActionsForTask,
   listActiveAutoRules,
   listBudgets,
-  markTaskDone,
   markTaskWaiting,
   openCard,
   recordAction,
   recordActionTransition,
-  recordLedgerEntry,
-  recordMetric,
+  type ActionRecord,
   type DbClient,
   type TaskRecord,
 } from "@north/db";
+import { RepoFileSchema } from "@north/integrations";
+import { z } from "zod";
 import type { WorkerDeps } from "../deps";
+import { ConnectionRequiredError, providerAuthFor } from "./provider-auth";
 
-/** Outcome of gating one action inside the durable function. */
+/**
+ * Outcome of gating one action. `execute` means a pending row exists and the
+ * caller must run `performPending` and `completeAction` as separate durable
+ * steps, so a crash between "did it" and "wrote it down" never repeats the
+ * external call (audit NFR, M2 security review H4).
+ */
 export type GatedAction =
-  | { readonly kind: "executed" | "notified" | "blocked"; readonly actionId: string; readonly externalRef: string | null }
+  | { readonly kind: "execute"; readonly actionId: string; readonly tier: Tier }
+  | { readonly kind: "executed"; readonly actionId: string; readonly externalRef: string }
+  | { readonly kind: "blocked"; readonly actionId: string; readonly reason: string }
   | { readonly kind: "card"; readonly actionId: string; readonly cardId: string; readonly dueAt: string }
   | { readonly kind: "deferred"; readonly actionId: string };
 
 const DEFAULT_CARD_WINDOW_MS = 24 * 3600 * 1000;
 
-/** Internal action kinds never leave the platform; they are recorded and considered executed. */
-const INTERNAL_KINDS: ReadonlySet<ActionSpec["kind"]> = new Set(["research", "draft", "artifact.write", "memory.write"]);
+/** Internal action kinds never leave the platform; they are recorded as executed without an adapter. */
+export const INTERNAL_KINDS: ReadonlySet<ActionKind> = new Set(["research", "draft", "artifact.write", "memory.write"]);
+
+/** Kinds an adapter exists for. Anything else external is recorded `blocked` (`no_adapter`), never faked as executed. */
+export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set([
+  "ads.start",
+  "ads.pause",
+  "email.send.first_contact",
+  "email.send.reply",
+  "support.reply.template",
+  "support.reply.custom",
+  "repo.create",
+  "repo.push",
+  "deploy.preview",
+  "deploy.production",
+]);
+
+export interface PerformResult {
+  readonly externalRef: string;
+  readonly sandbox: boolean;
+}
+
+const str = (payload: Record<string, unknown>, key: string, fallback = ""): string => (typeof payload[key] === "string" ? (payload[key] as string) : fallback);
+const FilesSchema = z.array(RepoFileSchema).min(1);
 
 /**
- * Executes an approved action through the integrations adapters (sandbox in M2).
- * Kinds without an adapter yet return a sandbox no-op reference so the audit
- * trail shows exactly what was not done.
+ * Executes an action through the integrations adapters. Spend is capped by the
+ * gated `amountUsd` (M2 security review H2): the adapter never sees a larger
+ * figure than the card showed. Throws for provider failures; the caller records.
  */
-export async function performAction(deps: WorkerDeps, action: ActionSpec): Promise<string> {
+export async function performAction(deps: WorkerDeps, action: ActionSpec): Promise<PerformResult> {
   const { integrations } = deps;
   const payload = (action.payload ?? {}) as Record<string, unknown>;
-  const str = (key: string, fallback = ""): string => (typeof payload[key] === "string" ? (payload[key] as string) : fallback);
   switch (action.kind) {
     case "ads.start": {
+      const requested = typeof payload.dailyBudgetUsd === "number" ? payload.dailyBudgetUsd : (action.amountUsd ?? 0);
       const started = await integrations.ads.startCampaign({
         companyId: action.companyId,
-        name: str("name", action.description),
-        dailyBudgetUsd: typeof payload.dailyBudgetUsd === "number" ? payload.dailyBudgetUsd : (action.amountUsd ?? 0),
-        audience: str("audience"),
-        creativeMarkdown: str("creativeMarkdown"),
+        name: str(payload, "name", action.description),
+        dailyBudgetUsd: Math.min(requested, action.amountUsd ?? requested),
+        audience: str(payload, "audience"),
+        creativeMarkdown: str(payload, "creativeMarkdown"),
       });
-      return started.campaignId;
+      return { externalRef: started.campaignId, sandbox: started.sandbox };
     }
     case "ads.pause": {
-      await integrations.ads.pauseCampaign(action.companyId, str("campaignId"));
-      return `paused:${str("campaignId")}`;
+      await integrations.ads.pauseCampaign(action.companyId, str(payload, "campaignId"));
+      return { externalRef: `paused:${str(payload, "campaignId")}`, sandbox: integrations.mode === "sandbox" };
     }
     case "email.send.first_contact":
     case "email.send.reply":
@@ -61,68 +90,147 @@ export async function performAction(deps: WorkerDeps, action: ActionSpec): Promi
     case "support.reply.custom": {
       const sent = await integrations.mail.send({
         companyId: action.companyId,
-        to: str("to"),
-        subject: str("subject", action.description),
-        text: str("text"),
+        to: str(payload, "to"),
+        subject: str(payload, "subject", action.description),
+        text: str(payload, "text"),
         kind: action.kind === "email.send.first_contact" ? "first_contact" : "reply",
       });
-      return sent.messageId;
+      return { externalRef: sent.messageId, sandbox: sent.sandbox };
+    }
+    case "repo.create": {
+      const auth = await providerAuthFor(deps, action.companyId, action.kind);
+      const repo = await integrations.code(auth).ensureRepo({ companyId: action.companyId, name: str(payload, "name") });
+      return { externalRef: repo.url, sandbox: repo.sandbox };
+    }
+    case "repo.push": {
+      const auth = await providerAuthFor(deps, action.companyId, action.kind);
+      const pushed = await integrations.code(auth).pushTree({
+        companyId: action.companyId,
+        fullName: str(payload, "fullName"),
+        message: str(payload, "message", action.description),
+        files: FilesSchema.parse(payload.files),
+      });
+      return { externalRef: pushed.url, sandbox: pushed.sandbox };
+    }
+    case "deploy.preview":
+    case "deploy.production": {
+      const auth = await providerAuthFor(deps, action.companyId, action.kind);
+      const deployment = await integrations.deploy(auth).create({
+        companyId: action.companyId,
+        name: str(payload, "name"),
+        target: action.kind === "deploy.production" ? "production" : "preview",
+        files: FilesSchema.parse(payload.files),
+      });
+      return { externalRef: deployment.url, sandbox: deployment.sandbox };
     }
     default:
-      return INTERNAL_KINDS.has(action.kind) ? "internal" : `sandbox:noop:${action.kind}`;
+      throw new Error(`No adapter for action kind ${action.kind}`);
   }
 }
 
+const specKey = (spec: ActionSpec): string => JSON.stringify({ kind: spec.kind, description: spec.description, amountUsd: spec.amountUsd ?? null, category: spec.category ?? null, payload: spec.payload ?? null });
+
+/** A pending action already opened for this exact spec on this task (idempotent gating under step retries). */
+function existingCardFor(actions: readonly ActionRecord[], spec: ActionSpec): ActionRecord | undefined {
+  const key = specKey(spec);
+  return actions.find((a) => a.status === "pending" && a.decisionCardId !== null && specKey(ActionSpecSchema.parse((a.payload as { spec?: unknown }).spec)) === key);
+}
+
+async function parkTask(db: DbClient, task: TaskRecord): Promise<void> {
+  if (task.status === "running") await markTaskWaiting(db, task.id);
+}
+
 /**
- * Gates one requested action (DEC-1). `run` executes immediately, `notify` is
- * recorded for the brief, `block` is recorded, `card` opens a decision card and
- * records a pending action tied to it. Quota breaches defer the action: it is
- * stored as blocked with `quota_deferred` and retried later.
+ * Gates one requested action (DEC-1). K0 internal kinds are recorded executed;
+ * every other `run`/`notify` is recorded `pending` and returned as `execute`;
+ * `block` is recorded; `card` opens a decision card and records a pending
+ * action tied to it (reusing an existing one on retry). Quota breaches defer the
+ * action: stored as blocked with `quota_deferred` and retried later.
  */
 export async function gateAction(deps: WorkerDeps, taskId: string, raw: ActionSpec): Promise<GatedAction> {
   const { db } = deps;
   const task = await getTask(db, taskId);
   if (!task) throw new Error(`task ${taskId} not found`);
   const action = ActionSpecSchema.parse({ ...raw, companyId: task.companyId, agentRole: task.role });
-  const [budgets, autoRules, killSwitchActive] = await Promise.all([
+  const [budgets, autoRules, killSwitchActive, existing] = await Promise.all([
     listBudgets(db, task.companyId),
     listActiveAutoRules(db, task.companyId),
     getKillSwitch(db, task.companyId),
+    headActionsForTask(db, taskId),
   ]);
-  const decision: GateDecision = gate(action, {
-    killSwitchActive,
-    budgets,
-    autoRules,
-    cardDueAt: new Date(Date.now() + DEFAULT_CARD_WINDOW_MS).toISOString(),
-  });
+  const decision: GateDecision = gate(action, { killSwitchActive, budgets, autoRules, cardDueAt: new Date(Date.now() + DEFAULT_CARD_WINDOW_MS).toISOString() });
   const base = { companyId: task.companyId, taskId, agentRole: task.role, kind: action.kind, tier: decision.tier, description: action.description, sandbox: deps.integrations.mode === "sandbox" };
   const payload = { ...(action.payload ?? {}), spec: action, gate: decision.kind, reasons: [...decision.reasons] };
 
-  if (decision.kind === "run") {
-    const externalRef = await performAction(deps, action);
-    const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef, ...(decision.autoRuleId ? { autoRuleId: decision.autoRuleId } : {}) });
-    return { kind: "executed", actionId, externalRef };
-  }
-  if (decision.kind === "notify") {
-    const actionId = await recordAction(db, { ...base, payload, status: "notified" });
-    return { kind: "notified", actionId, externalRef: null };
-  }
   if (decision.kind === "block") {
     const actionId = await recordAction(db, { ...base, payload, status: "blocked" });
-    return { kind: "blocked", actionId, externalRef: null };
+    return { kind: "blocked", actionId, reason: decision.reasons.join(", ") };
+  }
+  if (!INTERNAL_KINDS.has(action.kind) && !ADAPTER_KINDS.has(action.kind)) {
+    // No adapter yet: never open a card for it and never fake a reference (AGT-2).
+    const actionId = await recordAction(db, { ...base, payload: { ...payload, no_adapter: true }, status: "blocked" });
+    return { kind: "blocked", actionId, reason: "no_adapter" };
+  }
+  if (decision.kind === "run" || decision.kind === "notify") {
+    if (INTERNAL_KINDS.has(action.kind)) {
+      const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef: "internal" });
+      return { kind: "executed", actionId, externalRef: "internal" };
+    }
+    const actionId = await recordAction(db, { ...base, payload, status: "pending", ...(decision.kind === "run" && decision.autoRuleId ? { autoRuleId: decision.autoRuleId } : {}) });
+    return { kind: "execute", actionId, tier: decision.tier };
   }
 
+  const reused = existingCardFor(existing, action);
+  if (reused?.decisionCardId) {
+    const card = await getCard(db, reused.decisionCardId);
+    await parkTask(db, task);
+    return { kind: "card", actionId: reused.id, cardId: reused.decisionCardId, dueAt: card?.dueAt ?? decision.card.dueAt };
+  }
   try {
     const card = await openCard(db, { ...decision.card, taskId });
     const actionId = await recordAction(db, { ...base, payload, status: "pending", decisionCardId: card.id });
-    await markTaskWaiting(db, taskId);
+    await parkTask(db, task);
     return { kind: "card", actionId, cardId: card.id, dueAt: card.dueAt };
   } catch (error) {
     if (!(error instanceof QuotaExceededError)) throw error;
     const actionId = await recordAction(db, { ...base, payload: { ...payload, quota_deferred: true }, status: "blocked" });
-    await markTaskWaiting(db, taskId);
+    await parkTask(db, task);
     return { kind: "deferred", actionId };
   }
+}
+
+export type PerformOutcome = { readonly ok: true; readonly externalRef: string; readonly sandbox: boolean } | { readonly ok: false; readonly error: string; readonly connectionRequired?: string };
+
+/** Loads the pending action and executes its stored spec. Provider failures come back as data so the next step can record them. */
+export async function performPending(deps: WorkerDeps, actionId: string): Promise<PerformOutcome> {
+  const { data, error } = await deps.db.from("actions").select("payload, status").eq("id", actionId).single();
+  if (error || !data) return { ok: false, error: `action ${actionId} not found` };
+  if (data.status !== "pending") return { ok: false, error: `action ${actionId} is ${data.status}, not pending` };
+  const spec = ActionSpecSchema.safeParse((data.payload as { spec?: unknown } | null)?.spec);
+  if (!spec.success) return { ok: false, error: "stored action spec is invalid" };
+  try {
+    const result = await performAction(deps, spec.data);
+    return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox };
+  } catch (cause) {
+    if (cause instanceof ConnectionRequiredError) return { ok: false, error: cause.message, connectionRequired: cause.provider };
+    return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+  }
+}
+
+export interface CompletedAction {
+  readonly status: "executed" | "notified" | "failed";
+  readonly externalRef: string | null;
+}
+
+/** Writes the outcome as a new row: `executed` (or `notified` for K1, which the brief reports) with the reference, or `failed` with the reason. */
+export async function completeAction(deps: WorkerDeps, input: { readonly actionId: string; readonly tier: Tier; readonly outcome: PerformOutcome }): Promise<CompletedAction> {
+  if (input.outcome.ok) {
+    const status = input.tier === "K1" ? "notified" : "executed";
+    await recordActionTransition(deps.db, { actionId: input.actionId, status, externalRef: input.outcome.externalRef, note: input.outcome.sandbox ? "sandbox" : "live" });
+    return { status, externalRef: input.outcome.externalRef };
+  }
+  await recordActionTransition(deps.db, { actionId: input.actionId, status: "failed", note: input.outcome.error.slice(0, 500) });
+  return { status: "failed", externalRef: null };
 }
 
 export interface DeferredRow {
@@ -140,19 +248,26 @@ const DEFERRED_SCAN_LIMIT = 1000;
  * transition, so the original row is superseded and never picked up twice.
  */
 export async function listDeferredRows(db: DbClient, taskId?: string): Promise<readonly DeferredRow[]> {
-  const base = db.from("actions").select("id, company_id, task_id, payload, supersedes").eq("status", "blocked").not("task_id", "is", null);
+  const base = db.from("actions").select("id, company_id, task_id, payload, supersedes").eq("status", "blocked").contains("payload", { quota_deferred: true }).not("task_id", "is", null);
   const { data, error } = await (taskId ? base.eq("task_id", taskId) : base).order("created_at", { ascending: true }).limit(DEFERRED_SCAN_LIMIT);
   if (error) throw new Error(`could not load deferred actions: ${error.message}`);
   const rows = data ?? [];
-  const superseded = new Set(rows.flatMap((r) => (r.supersedes ? [r.supersedes] : [])));
+  const ids = rows.map((r) => r.id);
+  const superseded = ids.length === 0 ? new Set<string>() : await supersededAmong(db, ids);
   const out: DeferredRow[] = [];
   for (const row of rows) {
-    const payload = row.payload as { quota_deferred?: boolean; spec?: unknown } | null;
-    if (!payload?.quota_deferred || superseded.has(row.id) || !row.task_id) continue;
-    const parsed = ActionSpecSchema.safeParse(payload.spec);
+    if (superseded.has(row.id) || !row.task_id) continue;
+    const parsed = ActionSpecSchema.safeParse((row.payload as { spec?: unknown }).spec);
     if (parsed.success) out.push({ id: row.id, companyId: row.company_id, taskId: row.task_id, spec: parsed.data });
   }
   return Object.freeze(out);
+}
+
+/** Ids among `ids` that some later row supersedes (the retry marker row carries no quota flag, so it is looked up explicitly). */
+async function supersededAmong(db: DbClient, ids: readonly string[]): Promise<Set<string>> {
+  const { data, error } = await db.from("actions").select("supersedes").in("supersedes", [...ids]);
+  if (error) throw new Error(`could not check action chains: ${error.message}`);
+  return new Set((data ?? []).flatMap((r) => (r.supersedes ? [r.supersedes] : [])));
 }
 
 /** Actions stored as quota-deferred for a task, so a retry re-gates them instead of re-running the agent. Each is marked retried. */
@@ -162,94 +277,4 @@ export async function deferredActionsFor(db: DbClient, task: TaskRecord): Promis
     await recordActionTransition(db, { actionId: row.id, status: "blocked", note: "retried" });
   }
   return Object.freeze(rows.map((r) => r.spec));
-}
-
-export interface SettleInput {
-  readonly taskId: string;
-  readonly actionId: string;
-  readonly cardId: string;
-  /** The answered option, or null when the deadline passed without an answer. */
-  readonly optionId: string | null;
-}
-
-export type SettleResult = { readonly settled: true; readonly outcome: "executed" | "declined"; readonly externalRef: string | null } | { readonly settled: false; readonly reason: string };
-
-/**
- * Applies the decision to its pending action. A missing answer uses the card's
- * safe default (K2); K3 has none, so the action stays pending for the retry cron.
- */
-export async function settleCard(deps: WorkerDeps, input: SettleInput): Promise<SettleResult> {
-  const { db } = deps;
-  const card = await getCard(db, input.cardId);
-  if (!card) throw new Error(`card ${input.cardId} not found`);
-  let optionId = input.optionId ?? card.answeredOptionId;
-  if (!optionId) {
-    optionId = applyDefault(card);
-    if (!optionId) return { settled: false, reason: "K3 decision has no default; waiting for the CEO" };
-    await answerCard(db, card.id, { optionId, answeredBy: "default" });
-  }
-
-  const original = await db.from("actions").select("payload").eq("id", input.actionId).single();
-  const spec = ActionSpecSchema.safeParse((original.data?.payload as { spec?: unknown } | null)?.spec);
-  if (optionId !== "approve" || !spec.success) {
-    await recordActionTransition(db, { actionId: input.actionId, status: "declined", note: `option ${optionId}` });
-    return { settled: true, outcome: "declined", externalRef: null };
-  }
-  const externalRef = await performAction(deps, spec.data);
-  await recordActionTransition(db, { actionId: input.actionId, status: "executed", externalRef, note: `option ${optionId}` });
-  return { settled: true, outcome: "executed", externalRef };
-}
-
-export interface FinishInput {
-  readonly taskId: string;
-  readonly artifactIds: readonly string[];
-  readonly costUsd: number;
-  readonly summary: string;
-  readonly executedRefs: readonly string[];
-  readonly unsettled: number;
-}
-
-/** Marks the task done with evidence (artifact or executed action ref) and records the outcome (OUT-1). */
-export async function finishTask(deps: WorkerDeps, input: FinishInput): Promise<{ readonly status: "done" | "waiting_decision" | "failed" }> {
-  const { db } = deps;
-  const task = await getTask(db, input.taskId);
-  if (!task) throw new Error(`task ${input.taskId} not found`);
-  if (task.status === "done") return { status: "done" };
-  if (input.unsettled > 0) return { status: "waiting_decision" };
-
-  const evidenceRef = input.artifactIds[0] ?? input.executedRefs[0] ?? null;
-  if (!evidenceRef) {
-    const { markTaskFailed } = await import("@north/db");
-    await markTaskFailed(db, task.id, "no artifact and no executed action: nothing verifiable to show (AGT-2)");
-    return { status: "failed" };
-  }
-  const sandbox = deps.integrations.mode === "sandbox" || deps.runtime.name === "mock";
-  const evidence = input.artifactIds[0]
-    ? ({ kind: "artifact_id", ref: evidenceRef, verified: true, sandbox } as const)
-    : ({ kind: "message_id", ref: evidenceRef, verified: true, sandbox } as const);
-  if (task.status === "waiting_decision") {
-    // Resume so the state machine allows completion.
-    const { markTaskRunning } = await import("@north/db");
-    await markTaskRunning(db, task.id);
-  }
-  await markTaskDone(db, task.id, { evidence, costUsd: input.costUsd, outputSummary: input.summary });
-  await recordOutcome(db, task, input.artifactIds.length, input.costUsd);
-  return { status: "done" };
-}
-
-/** OUT-1 for K0 work: the `artifacts` metric moves by the number produced. */
-async function recordOutcome(db: DbClient, task: TaskRecord, produced: number, costUsd: number): Promise<void> {
-  const before = (await latestMetric(db, task.companyId, "artifacts"))?.value ?? 0;
-  const after = before + produced;
-  await recordMetric(db, { companyId: task.companyId, metricKey: "artifacts", value: after, source: "worker" });
-  await recordLedgerEntry(db, {
-    companyId: task.companyId,
-    taskId: task.id,
-    metricKey: task.metricKey ?? "artifacts",
-    before,
-    after,
-    costUsd,
-    channel: task.role,
-    note: `${task.taskType}: ${produced} artifact(s)`,
-  });
 }

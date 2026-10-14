@@ -20,4 +20,6 @@ export * from "./autoRules";
 export * from "./pushSubscriptions";
 export * from "./notifications";
 export * from "./users";
+export * from "./connections";
+export { generateEncryptionKey, sealSecret, openSecret, encryptionKey, type SealedSecret } from "./secrets";
 export type { Database, Json, Tables, TablesInsert, TablesUpdate } from "./types";

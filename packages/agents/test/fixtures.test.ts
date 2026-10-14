@@ -20,7 +20,10 @@ const K0_KEYS = [
 /** K2 fixtures (M2): the same shape plus external action requests the decision layer gates. */
 const K2_KEYS = ["growth:campaign_spec", "sales:outreach_batch"];
 
-const EXPECTED_KEYS = [...K0_KEYS, ...K2_KEYS];
+/** M3 fixtures: design screens (artifact only) and the engineering build (artifact plus workspace files, no actions). */
+const M3_KEYS = ["design:screen_designs", "engineering:build_site"];
+
+const EXPECTED_KEYS = [...K0_KEYS, ...K2_KEYS, ...M3_KEYS];
 
 const runKey = (key: string) => {
   const [role, taskType] = key.split(":") as [string, string];
@@ -54,7 +57,7 @@ describe("mock fixtures", () => {
     expect(result.sessionId).toBe(`mock-${taskType}`);
   });
 
-  it.each(K0_KEYS)("%s requests no external action", (key) => {
+  it.each([...K0_KEYS, ...M3_KEYS])("%s requests no external action", (key) => {
     const result = runKey(key);
     expect(result.status === "succeeded" ? result.actions : null).toEqual([]);
   });
@@ -68,6 +71,34 @@ describe("mock fixtures", () => {
     expect(action).toMatchObject({ kind: "ads.start", companyId: "company-1", agentRole: "growth", category: "ads", amountUsd: FIXTURE_CAMPAIGN_DAILY_USD * FIXTURE_CAMPAIGN_DAYS });
     expect(action?.payload).toMatchObject({ dailyBudgetUsd: FIXTURE_CAMPAIGN_DAILY_USD, audience: expect.any(String), creativeMarkdown: expect.any(String) });
     expect(classify(action!).tier).toBe("K2");
+  });
+
+  it("M3: engineering:build_site returns a static site as workspace files and fails on purpose with the test markers (AGT-3)", () => {
+    const result = runKey("engineering:build_site");
+    expect(result.status).toBe("succeeded");
+    if (result.status !== "succeeded") return;
+    const output = AgentOutputSchema.parse(result.output);
+    expect(output.files?.map((f) => f.path)).toEqual(["index.html", "styles.css", "README.md"]);
+    expect(output.files?.[0]?.content).toContain("<title>Lumen Ledger");
+    expect(output.files?.[0]?.content).not.toMatch(/<script/i);
+    expect(output.artifacts[0]?.kind).toBe("build_report");
+
+    const once = mockScripts["engineering:build_site"]!(makeInput({ role: "engineering", taskType: "build_site", instructions: "Build it [[fail-once]]" }));
+    expect(once.status).toBe("failed");
+    const retry = mockScripts["engineering:build_site"]!(makeInput({ role: "engineering", taskType: "build_site", instructions: "Attempt #2. Build it [[fail-once]]" }));
+    expect(retry.status).toBe("succeeded");
+    const always = mockScripts["engineering:build_site"]!(makeInput({ role: "engineering", taskType: "build_site", instructions: "Attempt #2. Build it [[fail-always]]" }));
+    expect(always.status).toBe("failed");
+  });
+
+  it("M3: design:screen_designs delivers three screens with placeholder images and no actions", () => {
+    const result = runKey("design:screen_designs");
+    expect(result.status).toBe("succeeded");
+    if (result.status !== "succeeded") return;
+    const output = AgentOutputSchema.parse(result.output);
+    expect(output.artifacts[0]?.kind).toBe("screen_designs");
+    expect(output.artifacts[0]?.markdown.match(/^## \d\. /gm)).toHaveLength(3);
+    expect(output.artifacts[0]?.markdown).toContain("data:image/svg+xml;base64,");
   });
 
   it("DEC-1: sales:outreach_batch requests one K2 first-contact email per prospect, all on the reserved .test domain", () => {

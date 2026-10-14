@@ -476,32 +476,74 @@ export type Database = {
           },
         ];
       };
+      connection_secrets: {
+        Row: {
+          ciphertext: string;
+          connection_id: string;
+          created_at: string;
+          iv: string;
+          tag: string;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          ciphertext: string;
+          connection_id: string;
+          created_at?: string;
+          iv: string;
+          tag: string;
+          updated_at?: string;
+        };
+        Update: {
+          ciphertext?: string;
+          connection_id?: string;
+          created_at?: string;
+          iv?: string;
+          tag?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "connection_secrets_connection_id_fkey";
+            columns: ["connection_id"];
+            isOneToOne: true;
+            referencedRelation: "connections";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       connections: {
         Row: {
+          account_label: string;
           created_at: string;
           id: string;
           provider: string;
           scopes: string[];
           status: string;
+          updated_at: string;
           user_id: string;
           vault_secret_id: string | null;
         };
         ComputedFields: never;
         Insert: {
+          account_label?: string;
           created_at?: string;
           id?: string;
           provider: string;
           scopes?: string[];
           status?: string;
+          updated_at?: string;
           user_id: string;
           vault_secret_id?: string | null;
         };
         Update: {
+          account_label?: string;
           created_at?: string;
           id?: string;
           provider?: string;
           scopes?: string[];
           status?: string;
+          updated_at?: string;
           user_id?: string;
           vault_secret_id?: string | null;
         };
@@ -993,6 +1035,7 @@ export type Database = {
           metric_key: string | null;
           output_summary: string | null;
           plan_id: string | null;
+          result: NonNullable<Json>;
           role: string;
           status: string;
           task_type: string;
@@ -1014,6 +1057,7 @@ export type Database = {
           metric_key?: string | null;
           output_summary?: string | null;
           plan_id?: string | null;
+          result?: NonNullable<Json>;
           role: string;
           status?: string;
           task_type?: string;
@@ -1034,6 +1078,7 @@ export type Database = {
           metric_key?: string | null;
           output_summary?: string | null;
           plan_id?: string | null;
+          result?: NonNullable<Json>;
           role?: string;
           status?: string;
           task_type?: string;

@@ -22,6 +22,7 @@ step "smoke (domain)"; pnpm smoke
 if up http://localhost:3101/health && up http://localhost:8288; then
   step "smoke M1 (worker + inngest + supabase)"; pnpm smoke:m1
   step "smoke M2 (decision layer)"; pnpm smoke:m2
+  step "smoke M3 (build pipeline)"; pnpm smoke:m3
 else
   echo "skip: smoke M1 needs the worker (:3101) and the Inngest Dev Server (:8288); run 'pnpm dev'" >&2
   if [ "${REQUIRE_SMOKE_M1:-0}" = "1" ]; then exit 1; fi

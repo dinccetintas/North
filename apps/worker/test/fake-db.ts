@@ -1,12 +1,14 @@
 import { vi } from "vitest";
-import type { ActionSpec } from "@north/core";
+import { transition, type ActionSpec, type TaskEvent } from "@north/core";
 import type { WorkerDeps } from "../src/deps";
 import { createSandboxIntegrations, type SandboxEvent } from "@north/integrations";
 
 /**
- * In-memory stand-in for the `@north/db` repositories the action services use.
+ * In-memory stand-in for the `@north/db` repositories the services use.
  * Tests install it with `vi.mock("@north/db", () => fakeDbModule(state))`; the
- * state object is shared so assertions can read what was written.
+ * state object is shared so assertions can read what was written. Task status
+ * changes run the real core state machine, so illegal transitions surface here
+ * exactly as they would against Postgres.
  */
 
 export interface FakeTask {
@@ -21,18 +23,22 @@ export interface FakeTask {
   outputSummary: string | null;
   evidence: unknown;
   attempts: number;
+  result: { artifactIds: string[]; costUsd: number; summary: string };
 }
 
 export interface FakeAction {
   id: string;
   companyId: string;
   taskId: string | null;
+  agentRole: string;
   kind: string;
-  tier: string;
+  tier: "K0" | "K1" | "K2" | "K3";
+  description: string;
   status: string;
   externalRef: string | null;
   decisionCardId: string | null;
   autoRuleId: string | null;
+  sandbox: boolean;
   payload: Record<string, unknown>;
   supersedes: string | null;
   createdAt: string;
@@ -48,6 +54,7 @@ export interface FakeCard {
   options: { id: string; label: string }[];
   defaultOptionId: string | null;
   dueAt: string;
+  day: string;
   actionKind: string;
   answeredOptionId: string | null;
   answeredAt: string | null;
@@ -68,36 +75,53 @@ export interface FakeState {
   pushSubscriptions: { endpoint: string; p256dh: string; auth: string }[];
   companies: Map<string, { id: string; slug: string; name: string; ownerId: string }>;
   profiles: Map<string, { id: string; email: string; timezone: string; dailyDecisionQuota: number; plan: string }>;
+  memory: { companyId: string; item: unknown }[];
 }
 
 export function emptyState(): FakeState {
-  return {
-    tasks: new Map(),
-    actions: [],
-    cards: new Map(),
-    killSwitch: new Map(),
-    budgets: new Map(),
-    autoRules: new Map(),
-    quotaExhausted: false,
-    metrics: [],
-    ledger: [],
-    notifications: [],
-    pushSubscriptions: [],
-    companies: new Map(),
-    profiles: new Map(),
-  };
+  return { tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), budgets: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
 }
 
 let counter = 0;
 export const nextId = (prefix: string): string => `${prefix}-${++counter}`;
 
-/** Minimal PostgREST-like builder for the two raw queries the services make against `actions`. */
+const heads = (rows: readonly FakeAction[]): FakeAction[] => {
+  const superseded = new Set(rows.flatMap((a) => (a.supersedes ? [a.supersedes] : [])));
+  return rows.filter((a) => !superseded.has(a.id));
+};
+
+/** `companies` rows the pipeline reads for the site name. */
+function fakeCompanyQuery(state: FakeState) {
+  let id: string | null = null;
+  const api = {
+    select: () => api,
+    eq: (_col: string, value: unknown) => {
+      id = String(value);
+      return api;
+    },
+    single: async () => {
+      const company = id ? state.companies.get(id) : undefined;
+      return company ? { data: { name: company.name, slug: company.slug }, error: null } : { data: null, error: { message: "no rows" } };
+    },
+  };
+  return api;
+}
+
+/** Minimal PostgREST-like builder for the raw `actions` queries the services make. */
 function fakeQuery(state: FakeState) {
   const filters: ((a: FakeAction) => boolean)[] = [];
   const api = {
     select: () => api,
     eq: (col: string, value: unknown) => {
-      filters.push((a) => (col === "id" ? a.id === value : col === "task_id" ? a.taskId === value : col === "status" ? a.status === value : true));
+      filters.push((a) => (col === "id" ? a.id === value : col === "task_id" ? a.taskId === value : col === "status" ? a.status === value : col === "decision_card_id" ? a.decisionCardId === value : true));
+      return api;
+    },
+    in: (col: string, values: unknown[]) => {
+      filters.push((a) => (col === "supersedes" ? values.includes(a.supersedes) : true));
+      return api;
+    },
+    contains: (_col: string, value: Record<string, unknown>) => {
+      filters.push((a) => Object.entries(value).every(([k, v]) => a.payload[k] === v));
       return api;
     },
     not: (col: string) => {
@@ -106,11 +130,11 @@ function fakeQuery(state: FakeState) {
     },
     order: () => api,
     limit: () => api,
-    rows: () =>
-      state.actions
-        .filter((a) => filters.every((f) => f(a)))
-        .map((a) => ({ id: a.id, payload: a.payload, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId })),
-    single: async () => ({ data: api.rows()[0] ?? null, error: null }),
+    rows: () => state.actions.filter((a) => filters.every((f) => f(a))).map((a) => ({ id: a.id, payload: a.payload, status: a.status, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId })),
+    single: async () => {
+      const row = api.rows()[0];
+      return row ? { data: row, error: null } : { data: null, error: { message: "no rows" } };
+    },
     then: (resolve: (v: { data: unknown[]; error: null }) => unknown) => resolve({ data: api.rows(), error: null }),
   };
   return api;
@@ -124,31 +148,48 @@ export function fakeDbModule(state: FakeState) {
     if (value === undefined) throw new DbError(`${what} not found`);
     return value;
   };
-  const setStatus = (taskId: string, status: FakeTask["status"]) => {
+  const apply = (taskId: string, event: TaskEvent) => {
     const task = must(state.tasks.get(taskId), "task");
-    task.status = status;
+    const next = transition({ status: task.status, attempts: task.attempts, evidence: task.evidence as never }, event);
+    Object.assign(task, { status: next.status, attempts: next.attempts, evidence: next.evidence });
     return { ...task };
   };
+  const toRecord = (a: FakeAction) => ({ ...a, payload: { ...a.payload } });
   return {
     DbError,
     QuotaExceededError,
     AlreadyAnsweredError,
-    getTask: vi.fn(async (_db: unknown, id: string) => state.tasks.get(id) ?? null),
+    getTask: vi.fn(async (_db: unknown, id: string) => {
+      const task = state.tasks.get(id);
+      return task ? { ...task, result: { ...task.result, artifactIds: [...task.result.artifactIds] } } : null;
+    }),
+    saveTaskResult: vi.fn(async (_db: unknown, id: string, result: FakeTask["result"]) => {
+      const task = must(state.tasks.get(id), "task");
+      task.result = { artifactIds: [...result.artifactIds], costUsd: result.costUsd, summary: result.summary };
+      task.outputSummary = result.summary;
+    }),
     listBudgets: vi.fn(async (_db: unknown, companyId: string) => state.budgets.get(companyId) ?? []),
     listActiveAutoRules: vi.fn(async (_db: unknown, companyId: string) => state.autoRules.get(companyId) ?? []),
     getKillSwitch: vi.fn(async (_db: unknown, companyId: string) => state.killSwitch.get(companyId) ?? false),
     recordAction: vi.fn(async (_db: unknown, input: Record<string, unknown>) => {
+      const tier = String(input.tier) as FakeAction["tier"];
+      const status = String(input.status);
+      const authority = Boolean(input.decisionCardId) || Boolean(input.autoRuleId);
+      if (((tier === "K2" && !authority) || (tier === "K3" && !input.decisionCardId)) && status !== "blocked") throw new DbError("actions_tier_requires_authority");
       const id = nextId("action");
       state.actions.push({
         id,
         companyId: String(input.companyId),
         taskId: (input.taskId as string | null) ?? null,
+        agentRole: String(input.agentRole),
         kind: String(input.kind),
-        tier: String(input.tier),
-        status: String(input.status),
+        tier,
+        description: String(input.description),
+        status,
         externalRef: (input.externalRef as string | undefined) ?? null,
         decisionCardId: (input.decisionCardId as string | undefined) ?? null,
         autoRuleId: (input.autoRuleId as string | undefined) ?? null,
+        sandbox: (input.sandbox as boolean | undefined) ?? true,
         payload: (input.payload as Record<string, unknown>) ?? {},
         supersedes: null,
         createdAt: new Date().toISOString(),
@@ -157,9 +198,17 @@ export function fakeDbModule(state: FakeState) {
     }),
     recordActionTransition: vi.fn(async (_db: unknown, input: { actionId: string; status: string; externalRef?: string; note?: string }) => {
       const prev = must(state.actions.find((a) => a.id === input.actionId), "action");
+      if (state.actions.some((a) => a.supersedes === prev.id)) throw new DbError("actions_supersedes_idx");
+      const authority = Boolean(prev.decisionCardId) || Boolean(prev.autoRuleId);
+      if (((prev.tier === "K2" && !authority) || (prev.tier === "K3" && !prev.decisionCardId)) && input.status !== "blocked") throw new DbError("actions_tier_requires_authority");
       const id = nextId("action");
       state.actions.push({ ...prev, id, status: input.status, externalRef: input.externalRef ?? prev.externalRef, payload: { supersedes: prev.id, note: input.note }, supersedes: prev.id, createdAt: new Date().toISOString() });
       return id;
+    }),
+    headActionsForTask: vi.fn(async (_db: unknown, taskId: string) => heads(state.actions.filter((a) => a.taskId === taskId)).map(toRecord)),
+    pendingActionForCard: vi.fn(async (_db: unknown, cardId: string) => {
+      const head = heads(state.actions.filter((a) => a.decisionCardId === cardId)).find((a) => a.status === "pending");
+      return head ? toRecord(head) : null;
     }),
     openCard: vi.fn(async (_db: unknown, draft: Record<string, unknown>) => {
       if (state.quotaExhausted) throw new QuotaExceededError("quota");
@@ -174,6 +223,7 @@ export function fakeDbModule(state: FakeState) {
         options: draft.options as { id: string; label: string }[],
         defaultOptionId: (draft.defaultOptionId as string | null) ?? null,
         dueAt: String(draft.dueAt),
+        day: new Date().toISOString().slice(0, 10),
         actionKind: String(draft.actionKind),
         answeredOptionId: null,
         answeredAt: null,
@@ -182,21 +232,23 @@ export function fakeDbModule(state: FakeState) {
       state.cards.set(id, card);
       return { ...card, seq: state.cards.size };
     }),
-    getCard: vi.fn(async (_db: unknown, id: string) => state.cards.get(id) ?? null),
+    getCard: vi.fn(async (_db: unknown, id: string) => (state.cards.get(id) ? { ...state.cards.get(id) } : null)),
+    listCards: vi.fn(async (_db: unknown, companyId: string) => [...state.cards.values()].filter((c) => c.companyId === companyId).map((c) => ({ ...c }))),
+    listOverdueCards: vi.fn(async (_db: unknown, now: Date = new Date()) => [...state.cards.values()].filter((c) => !c.answeredAt && Date.parse(c.dueAt) < now.getTime()).map((c) => ({ ...c }))),
     answerCard: vi.fn(async (_db: unknown, id: string, answer: { optionId: string; answeredBy: string }) => {
       const card = must(state.cards.get(id), "card");
       if (card.answeredAt) throw new AlreadyAnsweredError("answered");
+      if (answer.answeredBy === "default" && (card.tier === "K3" || card.defaultOptionId !== answer.optionId)) throw new DbError("default must be the safe default");
       Object.assign(card, { answeredOptionId: answer.optionId, answeredAt: new Date().toISOString(), answeredBy: answer.answeredBy });
       return { ...card };
     }),
-    markTaskWaiting: vi.fn(async (_db: unknown, id: string) => setStatus(id, "waiting_decision")),
-    markTaskRunning: vi.fn(async (_db: unknown, id: string) => setStatus(id, "running")),
-    markTaskFailed: vi.fn(async (_db: unknown, id: string) => setStatus(id, "failed")),
-    markTaskDone: vi.fn(async (_db: unknown, id: string, input: { evidence: unknown; costUsd: number; outputSummary: string }) => {
-      const task = must(state.tasks.get(id), "task");
-      if (task.status !== "running") throw new DbError(`cannot complete from ${task.status}`);
-      Object.assign(task, { status: "done", evidence: input.evidence, costUsd: input.costUsd, outputSummary: input.outputSummary });
-      return { ...task };
+    markTaskWaiting: vi.fn(async (_db: unknown, id: string) => apply(id, { type: "wait_decision" })),
+    markTaskRunning: vi.fn(async (_db: unknown, id: string) => apply(id, must(state.tasks.get(id), "task").status === "waiting_decision" ? { type: "resume" } : { type: "start" })),
+    markTaskFailed: vi.fn(async (_db: unknown, id: string, reason: string) => apply(id, { type: "fail", reason })),
+    markTaskDone: vi.fn(async (_db: unknown, id: string, input: { evidence: never; costUsd: number; outputSummary: string }) => {
+      const task = apply(id, { type: "complete", evidence: input.evidence });
+      Object.assign(must(state.tasks.get(id), "task"), { costUsd: input.costUsd, outputSummary: input.outputSummary });
+      return task;
     }),
     latestMetric: vi.fn(async (_db: unknown, companyId: string, key: string) => {
       const hit = [...state.metrics].reverse().find((m) => m.companyId === companyId && m.metricKey === key);
@@ -213,28 +265,36 @@ export function fakeDbModule(state: FakeState) {
     companyOwnerId: vi.fn(async (_db: unknown, companyId: string) => must(state.companies.get(companyId), "company").ownerId),
     getCompanyById: vi.fn(async (_db: unknown, companyId: string) => state.companies.get(companyId) ?? null),
     getProfile: vi.fn(async (_db: unknown, userId: string) => state.profiles.get(userId) ?? null),
+    getConnection: vi.fn(async () => null),
+    readConnectionSecret: vi.fn(async () => "token"),
     listPushSubscriptions: vi.fn(async () => state.pushSubscriptions),
     recordNotification: vi.fn(async (_db: unknown, input: unknown) => {
       state.notifications.push(input);
       return nextId("notification");
     }),
-    listTasks: vi.fn(async (_db: unknown, companyId: string, opts: { status?: string[] }) =>
-      [...state.tasks.values()].filter((t) => t.companyId === companyId && (!opts.status || opts.status.includes(t.status))),
-    ),
+    writeMemoryItems: vi.fn(async (_db: unknown, companyId: string, items: unknown[]) => {
+      state.memory.push(...items.map((item) => ({ companyId, item })));
+    }),
+    getArtifact: vi.fn(async (_db: unknown, id: string) => (id.startsWith("art-") ? { id, title: "Artifact", version: 1 } : null)),
+    listTasks: vi.fn(async (_db: unknown, companyId: string, opts: { status?: string[] }) => [...state.tasks.values()].filter((t) => t.companyId === companyId && (!opts.status || opts.status.includes(t.status)))),
   };
 }
 
-/** Worker deps around the fake db and real sandbox integrations; sandbox events are collected. */
-export function fakeDeps(state: FakeState, events: SandboxEvent[] = []): WorkerDeps {
-  const db = { from: (_table: string) => fakeQuery(state) } as unknown as WorkerDeps["db"];
+/** Worker deps around the fake db and real sandbox integrations; sandbox events are collected; URL checks answer 200 unless told otherwise. */
+export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200): WorkerDeps {
+  const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
   return {
     env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: "sandbox" } as WorkerDeps["env"],
     db,
     roles: new Map(),
     runtime: { name: "mock", run: async () => ({ status: "failed", error: "not used", sessionId: null, usage: { model: "mock", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 } }) },
-    integrations: createSandboxIntegrations((e) => void events.push(e)),
+    integrations: createSandboxIntegrations((e) => void events.push(e), { root: "/tmp/north-test-sandbox", siteBaseUrl: "http://127.0.0.1:3101" }),
+    verifier: { fetchImpl: async () => new Response("ok", { status: verifyStatus }), timeoutMs: 1000 },
   };
 }
+
+/** A step runner that just runs; the unit tests do not need Inngest's memoisation. */
+export const directSteps = { run: <T>(_id: string, fn: () => Promise<T>) => fn() };
 
 export function seedTask(state: FakeState, overrides: Partial<FakeTask> = {}): FakeTask {
   const task: FakeTask = {
@@ -249,6 +309,7 @@ export function seedTask(state: FakeState, overrides: Partial<FakeTask> = {}): F
     outputSummary: null,
     evidence: null,
     attempts: 1,
+    result: { artifactIds: [], costUsd: 0, summary: "" },
     ...overrides,
   };
   state.tasks.set(task.id, task);

@@ -14,11 +14,19 @@ const EnvSchema = z
     /** Required in production so only Inngest can invoke the serve endpoint. */
     INNGEST_SIGNING_KEY: z.string().min(10).optional(),
     WORKSPACE_ROOT: z.string().default(resolve(process.cwd(), ".workspaces")),
+    /** Sandbox repos and sites (served at /sandbox/sites in sandbox mode). */
+    SANDBOX_ROOT: z.string().default(resolve(process.cwd(), ".sandbox")),
+    /** AES-256-GCM key for connection tokens (ADR 0008); required only in live mode. */
+    CONNECTIONS_ENCRYPTION_KEY: z.string().optional(),
     AGENTS_DIR: z.string().default(resolve(process.cwd(), "../../agents")),
   })
   .refine((env) => env.NODE_ENV !== "production" || Boolean(env.INNGEST_SIGNING_KEY), {
     message: "INNGEST_SIGNING_KEY is required in production",
     path: ["INNGEST_SIGNING_KEY"],
+  })
+  .refine((env) => env.INTEGRATIONS_MODE !== "live" || Boolean(env.CONNECTIONS_ENCRYPTION_KEY), {
+    message: "CONNECTIONS_ENCRYPTION_KEY is required when INTEGRATIONS_MODE=live",
+    path: ["CONNECTIONS_ENCRYPTION_KEY"],
   });
 export type WorkerEnv = z.infer<typeof EnvSchema>;
 
