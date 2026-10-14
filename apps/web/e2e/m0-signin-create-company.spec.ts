@@ -25,8 +25,12 @@ test("M0: sign in with a magic link, create a company, see the kill switch", asy
   await page.getByLabel("Thesis").fill("Done-for-you cold email for B2B agencies without an outbound arm, sold as a monthly retainer.");
   await page.getByRole("button", { name: "Create company" }).click();
 
-  await expect(page).toHaveURL(/\/c\/cold-hive/);
+  // M1: creating a company lands on the onboarding wizard; the home shows a card until it is done.
+  await expect(page).toHaveURL(/\/c\/cold-hive[^/]*\/onboarding/);
+  const slug = new URL(page.url()).pathname.split("/")[2];
+  await page.goto(`/c/${slug}`);
   await expect(page.getByTestId("company-name")).toHaveText("Cold Hive");
+  await expect(page.getByTestId("onboarding-card")).toBeVisible();
   await expect(page.getByTestId("kill-switch")).toHaveText("Stop all agents");
   await expect(page.getByText("Decisions today")).toBeVisible();
 

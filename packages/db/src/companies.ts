@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { DbClient } from "./client";
+import { DbError } from "./errors";
 import { slugify, uniqueSlug } from "./slug";
 
 export const CreateCompanyInputSchema = z.object({
@@ -17,16 +18,6 @@ export interface CompanySummary {
   readonly slug: string;
   readonly status: string;
   readonly killSwitchActive: boolean;
-}
-
-export class DbError extends Error {
-  constructor(
-    message: string,
-    override readonly cause?: unknown,
-  ) {
-    super(message);
-    this.name = "DbError";
-  }
 }
 
 type CompanyRow = { id: string; name: string; slug: string; status: string; kill_switch_active: boolean };

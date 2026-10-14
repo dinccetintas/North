@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createCompany } from "../src/companies";
 import type { Database } from "../src/types";
 import { localSupabaseEnv } from "./env";
 
@@ -35,4 +36,16 @@ export async function createTestUser(label: string): Promise<TestUser> {
 
 export async function deleteTestUser(user: TestUser): Promise<void> {
   await service.auth.admin.deleteUser(user.id);
+}
+
+export interface OwnedCompany {
+  readonly owner: TestUser;
+  readonly companyId: string;
+}
+
+/** A fresh owner signed in under RLS plus one company (with its v1 thesis) created through the repository. */
+export async function createOwnerWithCompany(label: string, thesis = "A test company whose thesis is long enough to pass validation."): Promise<OwnedCompany> {
+  const owner = await createTestUser(label);
+  const company = await createCompany(owner.client, { ownerId: owner.id, name: `${label} Co`, thesis });
+  return { owner, companyId: company.id };
 }

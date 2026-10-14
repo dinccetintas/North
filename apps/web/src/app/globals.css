@@ -100,13 +100,17 @@ body {
   min-height: 100vh;
 }
 
-h1,
-h2,
-h3 {
-  font-family: var(--font-display);
-  font-weight: 400;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
+/* In the base layer so utilities such as `mono-label` can restyle a heading. */
+@layer base {
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
 }
 
 @utility mono-label {
@@ -167,4 +171,115 @@ h3 {
   .cursor-blink::after {
     animation: none;
   }
+}
+
+/* Agent-written markdown (artifacts): serif body, display headings, mono labels and code. */
+.prose-north {
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.6;
+  max-width: 68ch;
+}
+.prose-north > * + * {
+  margin-top: 1em;
+}
+.prose-north h1,
+.prose-north h2,
+.prose-north h3,
+.prose-north h4 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin-top: 1.6em;
+}
+.prose-north h1 {
+  font-size: 2rem;
+}
+.prose-north h2 {
+  font-size: 1.6rem;
+}
+.prose-north h3 {
+  font-size: 1.3rem;
+}
+.prose-north h4 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.prose-north a {
+  color: var(--link);
+  text-decoration: underline;
+}
+.prose-north strong {
+  font-weight: 600;
+}
+.prose-north ul,
+.prose-north ol {
+  padding-left: 1.5em;
+}
+.prose-north ul {
+  list-style: disc;
+}
+.prose-north ol {
+  list-style: decimal;
+}
+.prose-north li + li {
+  margin-top: 0.35em;
+}
+.prose-north blockquote {
+  border-left: 1px solid var(--border);
+  padding-left: 1em;
+  color: var(--muted);
+  font-style: italic;
+}
+.prose-north code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  padding: 0 0.3em;
+}
+.prose-north pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+  padding: 1em;
+  overflow-x: auto;
+}
+.prose-north pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+}
+.prose-north table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+.prose-north th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 400;
+  color: var(--faint);
+  text-align: left;
+}
+.prose-north th,
+.prose-north td {
+  border-bottom: 1px solid var(--surface-border);
+  padding: 0.5em 0.75em 0.5em 0;
+  vertical-align: top;
+}
+.prose-north hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.prose-north img {
+  max-width: 100%;
 }

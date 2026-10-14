@@ -1,0 +1,66 @@
+import { notFound } from "next/navigation";
+import { listAgents, listRecentActions } from "@north/db";
+import { companyBySlug } from "@/lib/company";
+import { createClient } from "@/lib/supabase/server";
+import { roleTitle } from "@/lib/labels";
+
+export const metadata = { title: "Team" };
+
+type Params = Promise<{ slug: string }>;
+
+const ACTION_WINDOW_HOURS = 24;
+
+const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+export default async function TeamPage({ params }: { params: Params }) {
+  const { slug } = await params;
+  const company = await companyBySlug(slug);
+  if (!company) notFound();
+
+  const db = await createClient();
+  const [agents, actions] = await Promise.all([listAgents(db, company.id), listRecentActions(db, company.id, ACTION_WINDOW_HOURS)]);
+
+  return (
+    <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+      <p className="mono-label text-faint">{agents.length} roles</p>
+      <h1 className="mt-1 text-4xl">Team</h1>
+
+      {agents.length === 0 ? (
+        <p className="mt-8 border border-surface-border bg-surface p-5 text-muted">
+          The eight roles are created when onboarding completes.
+        </p>
+      ) : (
+        <ul className="mt-8 grid grid-cols-2 gap-px border border-surface-border bg-surface-border sm:grid-cols-4" data-testid="role-cards">
+          {agents.map((agent) => (
+            <li key={agent.id} className="flex flex-col gap-2 bg-bg p-4" data-testid="role-card">
+              <span className="font-display text-xl leading-tight">{roleTitle(agent.role)}</span>
+              <span className="mono-label text-faint">{agent.role}</span>
+              <span className="mt-auto flex items-center gap-2">
+                <span className="mono-label hairline px-1.5 py-0.5">max {agent.maxActionTier}</span>
+                <span className={`mono-label ${agent.enabled ? "text-success" : "text-faint"}`}>{agent.enabled ? "enabled" : "off"}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">Last {ACTION_WINDOW_HOURS} hours</h2>
+        <div className="terminal mt-3 overflow-x-auto px-4 py-3" data-testid="action-stream" aria-label="Agent actions">
+          {actions.length === 0 ? (
+            <div className="cursor-blink">&gt; no actions in the last {ACTION_WINDOW_HOURS} hours </div>
+          ) : (
+            <>
+              {actions.map((a) => (
+                <div key={a.id} className="whitespace-nowrap">
+                  &gt; [{timeOf(a.createdAt)}] {a.agentRole} {a.kind} {a.tier} {a.status} {a.description}
+                </div>
+              ))}
+              <div className="cursor-blink">&gt; </div>
+            </>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}

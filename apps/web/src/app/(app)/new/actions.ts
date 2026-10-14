@@ -26,5 +26,5 @@ export async function createCompanyAction(formData: FormData): Promise<void> {
   const company = await createCompany(supabase, parsed.data);
   await inngest.send({ name: EVENT.companyCreated, data: { companyId: company.id } });
   revalidatePath("/companies");
-  redirect(`/c/${company.slug}`);
+  redirect(`/c/${company.slug}/onboarding`);
 }

@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$1"; }
+up() { node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" "$1"; }
 
 step "typecheck"; pnpm -r typecheck
 step "lint";      pnpm -r lint
@@ -16,5 +17,13 @@ else
   if [ "${REQUIRE_INTEGRATION:-0}" = "1" ]; then exit 1; fi
 fi
 
-step "smoke"; pnpm smoke
+step "smoke (domain)"; pnpm smoke
+
+if up http://localhost:3101/health && up http://localhost:8288; then
+  step "smoke M1 (worker + inngest + supabase)"; pnpm smoke:m1
+else
+  echo "skip: smoke M1 needs the worker (:3101) and the Inngest Dev Server (:8288); run 'pnpm dev'" >&2
+  if [ "${REQUIRE_SMOKE_M1:-0}" = "1" ]; then exit 1; fi
+fi
+
 printf '\n\033[1;32mvalidate: all green\033[0m\n'

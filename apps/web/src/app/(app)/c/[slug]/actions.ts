@@ -26,6 +26,6 @@ export async function toggleKillSwitchAction(input: { companyId: string; active:
     name: parsed.data.active ? EVENT.companyKillSwitch : EVENT.companyResume,
     data: { companyId: parsed.data.companyId },
   });
-  revalidatePath(`/c/${parsed.data.slug}`);
+  revalidatePath(`/c/${parsed.data.slug}`, "layout");
   return { ok: true };
 }

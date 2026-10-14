@@ -414,6 +414,7 @@ export type Database = {
           id: string;
           kill_switch_active: boolean;
           name: string;
+          onboarding_step: string;
           owner_id: string;
           public_page_enabled: boolean;
           slug: string;
@@ -426,6 +427,7 @@ export type Database = {
           id?: string;
           kill_switch_active?: boolean;
           name: string;
+          onboarding_step?: string;
           owner_id: string;
           public_page_enabled?: boolean;
           slug: string;
@@ -437,6 +439,7 @@ export type Database = {
           id?: string;
           kill_switch_active?: boolean;
           name?: string;
+          onboarding_step?: string;
           owner_id?: string;
           public_page_enabled?: boolean;
           slug?: string;
@@ -677,6 +680,7 @@ export type Database = {
           embedding: string | null;
           id: string;
           kind: string;
+          search: unknown;
           title: string;
         };
         ComputedFields: never;
@@ -688,6 +692,7 @@ export type Database = {
           embedding?: string | null;
           id?: string;
           kind: string;
+          search?: never;
           title: string;
         };
         Update: {
@@ -698,6 +703,7 @@ export type Database = {
           embedding?: string | null;
           id?: string;
           kind?: string;
+          search?: never;
           title?: string;
         };
         Relationships: [
@@ -753,6 +759,7 @@ export type Database = {
           goal_id: string | null;
           id: string;
           rationale: string;
+          status: string;
           summary: string;
           week_start: string;
         };
@@ -763,6 +770,7 @@ export type Database = {
           goal_id?: string | null;
           id?: string;
           rationale?: string;
+          status?: string;
           summary: string;
           week_start: string;
         };
@@ -772,6 +780,7 @@ export type Database = {
           goal_id?: string | null;
           id?: string;
           rationale?: string;
+          status?: string;
           summary?: string;
           week_start?: string;
         };
@@ -854,9 +863,11 @@ export type Database = {
           input: NonNullable<Json>;
           last_error: string | null;
           metric_key: string | null;
+          output_summary: string | null;
           plan_id: string | null;
           role: string;
           status: string;
+          task_type: string;
           title: string;
           updated_at: string;
         };
@@ -873,9 +884,11 @@ export type Database = {
           input?: NonNullable<Json>;
           last_error?: string | null;
           metric_key?: string | null;
+          output_summary?: string | null;
           plan_id?: string | null;
           role: string;
           status?: string;
+          task_type?: string;
           title: string;
           updated_at?: string;
         };
@@ -891,9 +904,11 @@ export type Database = {
           input?: NonNullable<Json>;
           last_error?: string | null;
           metric_key?: string | null;
+          output_summary?: string | null;
           plan_id?: string | null;
           role?: string;
           status?: string;
+          task_type?: string;
           title?: string;
           updated_at?: string;
         };
@@ -923,6 +938,7 @@ export type Database = {
       };
       theses: {
         Row: {
+          clarifications: NonNullable<Json>;
           company_id: string;
           created_at: string;
           id: string;
@@ -933,6 +949,7 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          clarifications?: NonNullable<Json>;
           company_id: string;
           created_at?: string;
           id?: string;
@@ -942,6 +959,7 @@ export type Database = {
           why_now?: string;
         };
         Update: {
+          clarifications?: NonNullable<Json>;
           company_id?: string;
           created_at?: string;
           id?: string;
@@ -1035,6 +1053,16 @@ export type Database = {
       is_company_owner: {
         Args: { target_company_id: string };
         Returns: boolean;
+      };
+      search_memory: {
+        Args: { p_company_id: string; p_limit?: number; p_query: string };
+        Returns: {
+          content: string;
+          id: string;
+          kind: string;
+          rank: number;
+          title: string;
+        }[];
       };
     };
     Enums: {

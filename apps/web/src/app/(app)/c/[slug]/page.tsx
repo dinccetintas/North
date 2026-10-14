@@ -1,55 +1,157 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getCompanyBySlug } from "@north/db";
+import { getOnboardingStep, latestMetric, latestPlan, listArtifacts, listGoals, listTasks } from "@north/db";
+import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
-import { KillSwitch } from "@/components/kill-switch";
+import { ArtifactsStrip } from "@/components/artifacts-strip";
+import { GoalProgress } from "@/components/goal-progress";
+import { LiveRefresh } from "@/components/live-refresh";
+import { TaskList, TaskStatusBadge } from "@/components/task-list";
 
 type Params = Promise<{ slug: string }>;
+
+const PENDING_STATUSES: ReadonlySet<string> = new Set(["queued", "running"]);
+/** Chief of Staff tasks that produce the plan itself; shown under "This week", not in the first-24-hours list. */
+const PLANNING_TASK_TYPES: ReadonlySet<string> = new Set(["plan_week", "brief"]);
 
 export async function generateMetadata({ params }: { params: Params }) {
   const { slug } = await params;
   return { title: slug };
 }
 
+function MorningHeader({ name }: { name: string }) {
+  return (
+    <div>
+      <p className="mono-label text-faint">
+        Morning · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}
+      </p>
+      <h1 className="mt-1 text-4xl" data-testid="company-name">
+        {name}
+      </h1>
+    </div>
+  );
+}
+
+function DecisionsSection() {
+  return (
+    <section className="mt-10">
+      <h2 className="mono-label text-faint">Decisions today · 0 of 3</h2>
+      <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">Nothing to decide yet.</p>
+    </section>
+  );
+}
+
+function OnboardingCard({ slug }: { slug: string }) {
+  return (
+    <section className="mt-10" data-testid="onboarding-card">
+      <h2 className="mono-label text-faint">Before the first plan</h2>
+      <div className="mt-3 border border-surface-border bg-surface p-5">
+        <p className="text-muted">
+          The agents are waiting on your answers, a goal and a budget. Four short steps; the research agent starts the
+          moment you approve.
+        </p>
+        <Link href={`/c/${slug}/onboarding`} className="retro-button retro-button-primary mt-5 inline-block">
+          Continue onboarding
+        </Link>
+      </div>
+    </section>
+  );
+}
+
 export default async function CompanyHomePage({ params }: { params: Params }) {
   const { slug } = await params;
-  const supabase = await createClient();
-  const company = await getCompanyBySlug(supabase, slug);
+  const company = await companyBySlug(slug);
   if (!company) notFound();
+
+  const db = await createClient();
+  const step = await getOnboardingStep(db, company.id);
+
+  if (step !== "done") {
+    return (
+      <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+        <MorningHeader name={company.name} />
+        <OnboardingCard slug={slug} />
+        <DecisionsSection />
+      </main>
+    );
+  }
+
+  const [goals, plan, tasks, artifacts] = await Promise.all([
+    listGoals(db, company.id),
+    latestPlan(db, company.id),
+    listTasks(db, company.id, {}),
+    listArtifacts(db, company.id),
+  ]);
+  const goal = goals.find((g) => g.status === "active") ?? goals[0] ?? null;
+  const metric = goal ? await latestMetric(db, company.id, goal.metricKey) : null;
+  const onboardingTasks = tasks.filter((t) => t.planId === null && !PLANNING_TASK_TYPES.has(t.taskType));
+  const planningTask = tasks.find((t) => PLANNING_TASK_TYPES.has(t.taskType) && PENDING_STATUSES.has(t.status));
+  const weekTasks = plan ? plan.tasks : [];
+  const live = tasks.some((t) => PENDING_STATUSES.has(t.status)) || plan === null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="mono-label text-faint">Morning · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</p>
-          <h1 className="mt-1 text-4xl" data-testid="company-name">
-            {company.name}
-          </h1>
-        </div>
-        <KillSwitch companyId={company.id} active={company.killSwitchActive} />
+        <MorningHeader name={company.name} />
+        <LiveRefresh active={live} />
       </div>
-
-      {company.killSwitchActive ? (
-        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="status">
-          All agents are stopped. Queue frozen, campaigns paused.
-        </p>
-      ) : null}
-
-      <section className="mt-10">
-        <h2 className="mono-label text-faint">Brief</h2>
-        <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">
-          Your first brief arrives after the research agent finishes the market report and the Chief of Staff writes
-          the weekly plan.
-        </p>
-      </section>
-
-      <section className="mt-10">
-        <h2 className="mono-label text-faint">Decisions today · 0 of 3</h2>
-        <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">Nothing to decide yet.</p>
-      </section>
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Goal</h2>
-        <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">No goal set. Step 2 of onboarding.</p>
+        <div className="mt-3">
+          {goal ? (
+            <GoalProgress
+              metricKey={goal.metricKey}
+              targetValue={goal.targetValue}
+              dueDate={goal.dueDate}
+              current={metric?.value ?? null}
+              measuredAt={metric?.measuredAt ?? null}
+            />
+          ) : (
+            <p className="border border-surface-border bg-surface p-5 text-muted">No goal set.</p>
+          )}
+        </div>
+      </section>
+
+      <DecisionsSection />
+
+      <section className="mt-10">
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="mono-label text-faint">This week</h2>
+          {plan ? <span className="mono-label text-faint">week of {plan.weekStart}</span> : null}
+        </div>
+        {plan ? (
+          <div className="mt-3" data-testid="week-plan">
+            <p className="border border-surface-border bg-surface p-5">{plan.summary}</p>
+            <div className="mt-3">
+              <TaskList tasks={weekTasks} testId="week-tasks" emptyText="The plan has no tasks yet." />
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 border border-surface-border bg-surface p-5 text-muted" data-testid="week-plan">
+            {planningTask ? (
+              <>
+                <TaskStatusBadge status={planningTask.status} /> The Chief of Staff is writing the first weekly plan.
+              </>
+            ) : (
+              "The Chief of Staff writes the first weekly plan once the research is in."
+            )}
+          </p>
+        )}
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">First 24 hours</h2>
+        <div className="mt-3">
+          <TaskList tasks={onboardingTasks} testId="onboarding-tasks" emptyText="Queueing the research tasks…" />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">Artifacts</h2>
+        <div className="mt-3">
+          <ArtifactsStrip slug={slug} artifacts={artifacts} />
+        </div>
       </section>
     </main>
   );

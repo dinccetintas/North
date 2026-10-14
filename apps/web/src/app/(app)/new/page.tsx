@@ -9,7 +9,7 @@ export default async function NewCompanyPage({ searchParams }: { searchParams: S
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6">
-      <p className="mono-label text-faint">Step 1 of 4 · Thesis</p>
+      <p className="mono-label text-faint">Thesis · before step 1 of 4</p>
       <h1 className="mt-2 text-4xl">What are we building?</h1>
       <p className="mt-3 text-muted">
         One paragraph: the idea, who it is for, and why now. The research agent starts from this. Goal, budget and

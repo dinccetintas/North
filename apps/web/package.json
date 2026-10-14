@@ -13,6 +13,7 @@
     "e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@north/agents": "workspace:*",
     "@north/core": "workspace:*",
     "@north/db": "workspace:*",
     "@supabase/ssr": "0.12.7",
@@ -22,6 +23,8 @@
     "next": "16.4.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "zod": "4.6.7"
   },
   "devDependencies": {

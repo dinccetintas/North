@@ -13,6 +13,8 @@ export interface AgentRunInput {
   readonly outputSchema: Record<string, unknown>;
   /** Answer to a decision card when resuming a waiting task. */
   readonly resume?: { readonly sessionId: string; readonly cardId: string; readonly optionId: string };
+  /** Values for the role prompt placeholders ({{company.name}}, {{thesis}}, {{goals}}, {{budgets}}, {{quota}}). */
+  readonly vars?: Readonly<Record<string, string>>;
 }
 
 export interface AgentRunUsage {
