@@ -32,6 +32,15 @@ export const MAX_DAILY_QUOTA = 5;
 
 export const QuotaSchema = z.number().int().min(MIN_DAILY_QUOTA).max(MAX_DAILY_QUOTA);
 
+/**
+ * DEC-2: when a card reaches its deadline unanswered, the safe default applies
+ * for K2. K3 has no default and returns null (the card stays open).
+ */
+export function applyDefault(card: Pick<CardDraft, "tier" | "defaultOptionId">): string | null {
+  if (card.tier === "K3") return null;
+  return card.defaultOptionId;
+}
+
 export interface AnsweredCard {
   readonly actionKind: CardDraft["actionKind"];
   readonly mergeKey: string;
