@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createCompany, getCompanyBySlug, listCompanies, setKillSwitch } from "../src/companies.js";
-import { createTestUser, deleteTestUser, service, type TestUser } from "./fixtures.js";
+import { createCompany, getCompanyBySlug, listCompanies, setKillSwitch } from "../src/companies";
+import { createTestUser, deleteTestUser, service, type TestUser } from "./fixtures";
 
 /**
  * M0 acceptance: user A cannot see, change or delete user B's company or any

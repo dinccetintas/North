@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "../src/types.js";
-import { localSupabaseEnv } from "./env.js";
+import type { Database } from "../src/types";
+import { localSupabaseEnv } from "./env";
 
 export type Client = SupabaseClient<Database>;
 /** Untyped service client for tables not yet present in the generated types. */

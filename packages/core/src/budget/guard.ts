@@ -1,4 +1,4 @@
-import type { BudgetCategory } from "../authority/action.js";
+import type { BudgetCategory } from "../authority/action";
 
 /** Snapshot of one budget category at decision time. Amounts in USD. */
 export interface BudgetState {

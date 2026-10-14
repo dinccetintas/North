@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { planCards, priorityScore } from "../src/decisions/quota.js";
-import { CardDraftSchema, DEFAULT_DAILY_QUOTA, QuotaSchema, type CardDraft } from "../src/decisions/types.js";
+import { planCards, priorityScore } from "../src/decisions/quota";
+import { CardDraftSchema, DEFAULT_DAILY_QUOTA, QuotaSchema, type CardDraft } from "../src/decisions/types";
 
 const card = (over: Partial<CardDraft>): CardDraft =>
   CardDraftSchema.parse({

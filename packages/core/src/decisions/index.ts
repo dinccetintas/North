@@ -1,3 +1,3 @@
-export * from "./types.js";
-export * from "./quota.js";
-export * from "./autorule.js";
+export * from "./types";
+export * from "./quota";
+export * from "./autorule";

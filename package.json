@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "concurrently -k -n web,worker,inngest -c blue,magenta,yellow \"pnpm --filter @north/web dev\" \"pnpm --filter @north/worker dev\" \"pnpm inngest:dev\"",
-    "inngest:dev": "npx --yes inngest-cli@latest dev -u http://localhost:3000/api/inngest -u http://localhost:3001/api/inngest --no-discovery",
+    "inngest:dev": "npx --yes inngest-cli@latest dev -u http://localhost:3100/api/inngest -u http://localhost:3101/api/inngest --no-discovery",
     "db:start": "pnpm --filter @north/db start",
     "db:stop": "pnpm --filter @north/db stop",
     "db:reset": "pnpm --filter @north/db reset",

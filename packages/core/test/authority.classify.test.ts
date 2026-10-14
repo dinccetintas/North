@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classify, ActionSpecSchema, K3_SINGLE_SPEND_USD, type ActionSpec } from "../src/authority/index.js";
+import { classify, ActionSpecSchema, K3_SINGLE_SPEND_USD, type ActionSpec } from "../src/authority/index";
 
 const spec = (over: Partial<ActionSpec>): ActionSpec =>
   ActionSpecSchema.parse({ kind: "research", companyId: "c1", agentRole: "research", description: "x", ...over });

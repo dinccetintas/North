@@ -15,7 +15,7 @@ export async function latestMagicLink(email: string, timeoutMs = 20_000): Promis
     if (mail) {
       const full = (await fetch(`${MAIL_API}/message/${mail.ID}`).then((r) => r.json())) as { Text?: string; HTML?: string };
       const body = `${full.Text ?? ""}\n${full.HTML ?? ""}`;
-      const match = body.match(/https?:\/\/[^\s"'<>]+(?:token_hash|code)=[^\s"'<>]+/);
+      const match = body.match(/https?:\/\/[^\s"'<>]+(?:[?&](?:token|token_hash|code)=)[^\s"'<>]+/);
       if (match) return match[0].replace(/&amp;/g, "&");
     }
     await new Promise((r) => setTimeout(r, 1000));

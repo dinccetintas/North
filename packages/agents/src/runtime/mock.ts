@@ -1,4 +1,4 @@
-import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types.js";
+import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types";
 
 export type MockScript = (input: AgentRunInput) => AgentRunResult;
 

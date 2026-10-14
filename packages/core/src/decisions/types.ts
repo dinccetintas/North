@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { TIERS } from "../tiers.js";
-import { ACTION_KINDS } from "../authority/action.js";
+import { TIERS } from "../tiers";
+import { ACTION_KINDS } from "../authority/action";
 
 export const CardOptionSchema = z.object({
   id: z.string().min(1),

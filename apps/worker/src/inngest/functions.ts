@@ -1,5 +1,5 @@
 import { EVENT } from "@north/core/events";
-import { inngest } from "./client.js";
+import { inngest } from "./client";
 
 /** M0: the worker acknowledges the kill switch; M2 wires cancellation and campaign pauses. */
 export const killSwitchAck = inngest.createFunction(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MockRuntime, mockUsage } from "../src/runtime/mock.js";
-import type { AgentRunInput } from "../src/runtime/types.js";
+import { MockRuntime, mockUsage } from "../src/runtime/mock";
+import type { AgentRunInput } from "../src/runtime/types";
 
 const input: AgentRunInput = {
   companyId: "c",

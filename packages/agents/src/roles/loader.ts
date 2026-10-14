@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { REQUIRED_ROLES, RoleDefinitionSchema, type RoleDefinition } from "./schema.js";
+import { REQUIRED_ROLES, RoleDefinitionSchema, type RoleDefinition } from "./schema";
 
 export class RoleConfigError extends Error {
   constructor(message: string) {

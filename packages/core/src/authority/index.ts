@@ -1,3 +1,3 @@
-export * from "./action.js";
-export * from "./classify.js";
-export * from "./gate.js";
+export * from "./action";
+export * from "./classify";
+export * from "./gate";

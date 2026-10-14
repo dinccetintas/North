@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createCompany } from "../src/companies.js";
-import { createTestUser, deleteTestUser, raw, type TestUser } from "./fixtures.js";
+import { createCompany } from "../src/companies";
+import { createTestUser, deleteTestUser, raw, type TestUser } from "./fixtures";
 
 /**
  * Database-level guarantees behind the non-negotiables: DEC-1 (K2/K3 need a

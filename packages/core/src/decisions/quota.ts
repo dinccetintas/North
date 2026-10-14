@@ -1,5 +1,5 @@
-import type { CardDraft } from "./types.js";
-import { tierRank } from "../tiers.js";
+import type { CardDraft } from "./types";
+import { tierRank } from "../tiers";
 
 export interface QuotaPlan {
   /** Cards to open today, in priority order; never more than the free slots. */

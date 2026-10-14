@@ -1,8 +1,8 @@
-import type { ActionSpec } from "./action.js";
-import { classify, type ClassifyReason } from "./classify.js";
-import type { Tier } from "../tiers.js";
-import { wouldExceedBudget, type BudgetState } from "../budget/guard.js";
-import type { CardDraft } from "../decisions/types.js";
+import type { ActionSpec } from "./action";
+import { classify, type ClassifyReason } from "./classify";
+import type { Tier } from "../tiers";
+import { wouldExceedBudget, type BudgetState } from "../budget/guard";
+import type { CardDraft } from "../decisions/types";
 
 export interface AutoRule {
   readonly id: string;

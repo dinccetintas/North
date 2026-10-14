@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { loadRoles, parseRoleYaml, RoleConfigError } from "../src/roles/loader.js";
-import { REQUIRED_ROLES } from "../src/roles/schema.js";
+import { loadRoles, parseRoleYaml, RoleConfigError } from "../src/roles/loader";
+import { REQUIRED_ROLES } from "../src/roles/schema";
 import { tierWithin } from "@north/core";
 
 const here = dirname(fileURLToPath(import.meta.url));

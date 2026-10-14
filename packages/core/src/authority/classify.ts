@@ -1,7 +1,7 @@
-import type { ActionSpec } from "./action.js";
-import { ACTION_PROFILES } from "./action.js";
-import type { Tier } from "../tiers.js";
-import { maxTier } from "../tiers.js";
+import type { ActionSpec } from "./action";
+import { ACTION_PROFILES } from "./action";
+import type { Tier } from "../tiers";
+import { maxTier } from "../tiers";
 
 /** Any single spend above this amount is K3 (spec: "$500 üstü tek harcama"). */
 export const K3_SINGLE_SPEND_USD = 500;

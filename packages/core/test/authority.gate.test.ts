@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { gate, ActionSpecSchema, type ActionSpec, type PolicyContext } from "../src/authority/index.js";
-import type { BudgetState } from "../src/budget/guard.js";
+import { gate, ActionSpecSchema, type ActionSpec, type PolicyContext } from "../src/authority/index";
+import type { BudgetState } from "../src/budget/guard";
 
 const spec = (over: Partial<ActionSpec>): ActionSpec =>
   ActionSpecSchema.parse({ kind: "research", companyId: "c1", agentRole: "growth", description: "Start a $10/day test campaign", ...over });

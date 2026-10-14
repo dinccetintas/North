@@ -1,8 +1,8 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { serve as inngestServe } from "inngest/hono";
-import { inngest } from "./inngest/client.js";
-import { functions } from "./inngest/functions.js";
+import { inngest } from "./inngest/client";
+import { functions } from "./inngest/functions";
 
 const PORT = Number(process.env.WORKER_PORT ?? 3001);
 

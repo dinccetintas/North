@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { attribute, channelReport, type LedgerEntry } from "../src/ledger/attribution.js";
-import { applySpend, headroom, wouldExceedBudget, type BudgetState } from "../src/budget/guard.js";
-import { MODEL_ROUTING, resolveModel } from "../src/models.js";
-import { maxTier, tierWithin } from "../src/tiers.js";
+import { attribute, channelReport, type LedgerEntry } from "../src/ledger/attribution";
+import { applySpend, headroom, wouldExceedBudget, type BudgetState } from "../src/budget/guard";
+import { MODEL_ROUTING, resolveModel } from "../src/models";
+import { maxTier, tierWithin } from "../src/tiers";
 
 describe("OUT-1 ledger attribution", () => {
   it("computes delta and cost per unit", () => {

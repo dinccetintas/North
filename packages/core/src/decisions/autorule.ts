@@ -1,5 +1,5 @@
-import type { AnsweredCard } from "./types.js";
-import type { ActionKind, BudgetCategory } from "../authority/action.js";
+import type { AnsweredCard } from "./types";
+import type { ActionKind, BudgetCategory } from "../authority/action";
 
 export const AUTO_RULE_REPEATS = 3;
 

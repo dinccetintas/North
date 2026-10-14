@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TIERS } from "../tiers.js";
+import { TIERS } from "../tiers";
 
 /**
  * Every action an agent can take on the outside world, by kind.

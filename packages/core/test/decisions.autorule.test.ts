@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { suggestAutoRule } from "../src/decisions/autorule.js";
-import type { AnsweredCard } from "../src/decisions/types.js";
+import { suggestAutoRule } from "../src/decisions/autorule";
+import type { AnsweredCard } from "../src/decisions/types";
 
 const answered = (i: number, over: Partial<AnsweredCard> = {}): AnsweredCard => ({
   actionKind: "ads.start",

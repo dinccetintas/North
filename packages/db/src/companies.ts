@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { DbClient } from "./client.js";
-import { slugify, uniqueSlug } from "./slug.js";
+import type { DbClient } from "./client";
+import { slugify, uniqueSlug } from "./slug";
 
 export const CreateCompanyInputSchema = z.object({
   ownerId: z.string().uuid(),

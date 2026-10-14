@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canRetry, MAX_ATTEMPTS, transition, TaskTransitionError, type TaskState } from "../src/tasks/lifecycle.js";
+import { canRetry, MAX_ATTEMPTS, transition, TaskTransitionError, type TaskState } from "../src/tasks/lifecycle";
 
 const queued: TaskState = { status: "queued", attempts: 0, evidence: null };
 
