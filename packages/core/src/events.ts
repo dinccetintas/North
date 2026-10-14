@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TASK_TYPES } from "./tasks/types";
 
 /**
  * Event names and payload schemas shared by apps/web and apps/worker.
@@ -24,6 +25,12 @@ export type EventName = (typeof EVENT)[keyof typeof EVENT];
 
 export const CompanyEventSchema = z.object({ companyId: z.string().uuid() });
 export const TaskDispatchSchema = z.object({ companyId: z.string().uuid(), taskId: z.string().uuid() });
+export const TaskFinishedSchema = z.object({
+  companyId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  taskType: z.enum(TASK_TYPES),
+  status: z.enum(["done", "failed", "waiting_decision"]),
+});
 export const DecisionAnsweredSchema = z.object({
   companyId: z.string().uuid(),
   cardId: z.string().uuid(),
@@ -33,4 +40,5 @@ export const DecisionAnsweredSchema = z.object({
 
 export type CompanyEvent = z.infer<typeof CompanyEventSchema>;
 export type TaskDispatchEvent = z.infer<typeof TaskDispatchSchema>;
+export type TaskFinishedEvent = z.infer<typeof TaskFinishedSchema>;
 export type DecisionAnsweredEvent = z.infer<typeof DecisionAnsweredSchema>;

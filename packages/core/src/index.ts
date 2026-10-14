@@ -4,4 +4,7 @@ export * from "./authority/index";
 export * from "./budget/guard";
 export * from "./decisions/index";
 export * from "./tasks/lifecycle";
+export * from "./tasks/types";
 export * from "./ledger/attribution";
+export * from "./onboarding";
+export * from "./events";

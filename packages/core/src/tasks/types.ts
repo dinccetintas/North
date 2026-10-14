@@ -1,0 +1,100 @@
+import { z } from "zod";
+import { ActionSpecSchema } from "../authority/action";
+
+/**
+ * Task types the platform knows how to run. Each belongs to one role and
+ * produces one structured output shape (see AgentOutputSchema / PlanOutputSchema).
+ */
+export const TASK_TYPES = [
+  "market_report",
+  "personas",
+  "competitor_map",
+  "prd",
+  "business_plan",
+  "investor_deck",
+  "brand_kit",
+  "plan_week",
+  "brief",
+] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+
+export const TASK_OWNER: Readonly<Record<TaskType, string>> = Object.freeze({
+  market_report: "research",
+  personas: "research",
+  competitor_map: "research",
+  prd: "strategy_product",
+  business_plan: "strategy_product",
+  investor_deck: "strategy_product",
+  brand_kit: "design",
+  plan_week: "chief_of_staff",
+  brief: "chief_of_staff",
+});
+
+/** Metric keys a goal or task can point at. Extend here, never inline strings. */
+export const METRIC_KEYS = [
+  "paying_customers",
+  "signups",
+  "waitlist",
+  "demo_calls",
+  "mrr_usd",
+  "revenue_usd",
+  "site_visitors",
+  "email_replies",
+  "artifacts",
+] as const;
+export type MetricKey = (typeof METRIC_KEYS)[number];
+
+export const ARTIFACT_KINDS = ["market_report", "personas", "competitor_map", "prd", "business_plan", "investor_deck", "brand_kit", "plan", "brief", "doc"] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+export const MEMORY_KINDS = ["thesis", "persona", "decision", "learning", "doc"] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+export const ArtifactDraftSchema = z.object({
+  kind: z.enum(ARTIFACT_KINDS),
+  title: z.string().min(1).max(120),
+  markdown: z.string().min(1),
+});
+export type ArtifactDraft = z.infer<typeof ArtifactDraftSchema>;
+
+export const MemoryDraftSchema = z.object({
+  kind: z.enum(MEMORY_KINDS),
+  title: z.string().min(1).max(120),
+  content: z.string().min(1).max(4000),
+});
+export type MemoryDraft = z.infer<typeof MemoryDraftSchema>;
+
+/** What every non-planning agent run returns. Artifacts and memory are persisted by the worker; actions are gated. */
+export const AgentOutputSchema = z.object({
+  summary: z.string().min(1).max(2000),
+  artifacts: z.array(ArtifactDraftSchema).max(10),
+  memory: z.array(MemoryDraftSchema).max(20),
+  actions: z.array(ActionSpecSchema).max(20).default([]),
+  /** Honest self-assessment the Chief of Staff reads when planning the next week. */
+  confidence: z.enum(["low", "medium", "high"]).default("medium"),
+});
+export type AgentOutput = z.infer<typeof AgentOutputSchema>;
+
+export const PlannedTaskSchema = z.object({
+  taskType: z.enum(TASK_TYPES),
+  title: z.string().min(1).max(200),
+  input: z.string().max(4000).default(""),
+  metricKey: z.enum(METRIC_KEYS),
+  expectedDelta: z.number(),
+  costEstimateUsd: z.number().nonnegative(),
+});
+export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
+
+/** Chief of Staff output for `plan_week` (PLN-1). */
+export const PlanOutputSchema = z.object({
+  summary: z.string().min(1).max(2000),
+  rationale: z.string().min(1).max(4000),
+  tasks: z.array(PlannedTaskSchema).min(1).max(12),
+});
+export type PlanOutput = z.infer<typeof PlanOutputSchema>;
+
+/** JSON schema the Agent SDK validates against; derived from the zod schema so there is one source of truth. */
+export function outputJsonSchema(taskType: TaskType): Record<string, unknown> {
+  const schema = taskType === "plan_week" ? PlanOutputSchema : AgentOutputSchema;
+  return z.toJSONSchema(schema) as Record<string, unknown>;
+}
