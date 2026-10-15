@@ -18,12 +18,18 @@
     "@north/integrations": "workspace:*",
     "@sentry/node": "^10.76.2",
     "@supabase/supabase-js": "2.117.3",
+    "archiver": "^8.0.0",
     "hono": "^4.7.0",
     "inngest": "4.24.0",
+    "langfuse": "^3.39.2",
+    "pdf-lib": "^1.17.1",
+    "pptxgenjs": "^4.0.1",
+    "undici": "^8.12.2",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
+    "@types/archiver": "^8.0.0",
     "eslint": "^9.30.0",
     "tsx": "^4.20.0",
     "typescript": "5.9.3",
