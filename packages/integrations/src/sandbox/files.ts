@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import type { RepoFile } from "../types";
@@ -16,9 +16,21 @@ export function safeJoin(dir: string, relative: string): string {
   return target;
 }
 
-/** Replaces the directory's content with the given files (atomic enough for a sandbox). */
-export async function writeTree(dir: string, files: readonly RepoFile[]): Promise<void> {
-  await rm(dir, { recursive: true, force: true });
+/** Removes everything at the top of `dir` except the entries named in `keep`. */
+async function clearExcept(dir: string, keep: readonly string[]): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  const entries = await readdir(dir);
+  for (const entry of entries) if (!keep.includes(entry)) await rm(join(dir, entry), { recursive: true, force: true });
+}
+
+/**
+ * Replaces the directory's content with the given files (atomic enough for a
+ * sandbox). `keep` names top-level entries that survive the rewrite: the
+ * sandbox repo keeps its branches and pull requests across main pushes.
+ */
+export async function writeTree(dir: string, files: readonly RepoFile[], keep: readonly string[] = []): Promise<void> {
+  if (keep.length === 0) await rm(dir, { recursive: true, force: true });
+  else await clearExcept(dir, keep);
   await mkdir(dir, { recursive: true });
   for (const file of files) {
     const target = safeJoin(dir, file.path);

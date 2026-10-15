@@ -51,8 +51,17 @@ export interface AgentRunInput {
   /**
    * Values for the role prompt placeholders ({{company.name}}, {{thesis}},
    * {{goals}}, {{budgets}}, {{quota}}) plus structured hand-overs encoded as
-   * strings: `leads` (JSON `LeadVar[]`, the next unsent leads for
-   * `outreach_batch`; read with `parseLeadsVar`).
+   * strings (parsers in `runtime/vars.ts`):
+   * - `leads`: JSON `LeadVar[]`, the next unsent leads for `outreach_batch`
+   *   (`parseLeadsVar`).
+   * - `plan.previous`: JSON `PreviousPlanVar` ({ weekStart?, tasks: [{ taskType,
+   *   title, status }] }), the latest plan for a `plan_week` rewrite
+   *   (`parsePreviousPlanVar`); absent for a company's first plan.
+   * - `ledger.report`: JSON `ChannelReportRow[]` (core `channelReport`) for the
+   *   ledger entries since that plan (`parseLedgerReportVar`).
+   * - `leads.count`: the company's lead count as a string (`parseLeadsCountVar`).
+   * - `site.url`: the live site, else the latest preview, else empty
+   *   (`parseSiteUrlVar`).
    */
   readonly vars?: Readonly<Record<string, string>>;
 }

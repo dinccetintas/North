@@ -1,6 +1,7 @@
 export * from "./mode";
 export * from "./types";
 export * from "./errors";
+export * from "./competitor-ref";
 export * from "./sandbox/index";
 export { MetaAds, META_GRAPH_API, CONVERSION_ACTION_TYPES, creativeFromMarkdown, mapMetaStatus, metaScopes, type MetaScopes } from "./live/meta-ads";
 export { GmailOutreach, GMAIL_API, buildRawMessage, countReplies, normaliseAddress, parseGmailRef } from "./live/gmail";
@@ -11,4 +12,8 @@ export { ResendMail, resendConfig, resendClient, type ResendClient, type ResendC
 export { WebPush, webPushConfig, type PushSender, type WebPushConfig } from "./live/web-push";
 export { GitHubCodeHost, type FetchLike } from "./live/github";
 export { VercelDeploy, mapReadyState } from "./live/vercel";
-export { selectIntegrations, type Warn } from "./select";
+export { RedditSignals, REDDIT_SEARCH_URL, REDDIT_USER_AGENT, redditCandidate, type RedditOptions } from "./live/reddit";
+export { CompetitorSites, COMPETITOR_MAX_BYTES, COMPETITOR_EXCERPT_CHARS, visibleText, pageTitle, contentHash, readCapped, type AllowUrl, type CompetitorSitesOptions } from "./live/competitor-sites";
+export { ProductHuntSignals, PRODUCTHUNT_NOT_CONFIGURED } from "./live/producthunt";
+export { GoogleTrendsSignals, GOOGLE_TRENDS_NOT_CONFIGURED } from "./live/google-trends";
+export { selectIntegrations, type Warn, type SelectOptions } from "./select";

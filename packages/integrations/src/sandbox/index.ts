@@ -10,6 +10,7 @@ import { SandboxMail } from "./mail";
 import { SandboxOutreach } from "./outreach";
 import { SandboxPayments } from "./payments";
 import { SandboxPush } from "./push";
+import { createSandboxSignals } from "./signals";
 
 export interface SandboxOptions {
   /** Folder for sandbox repos, sites, campaigns and mail; defaults to `SANDBOX_ROOT` or a temp dir. */
@@ -46,7 +47,7 @@ export function createSandboxIntegrations(sink?: SandboxSink, options: SandboxOp
   const outreach = new SandboxOutreach(sink, root, clock);
   const analytics = new SandboxAnalytics(sink, root);
   const payments = new SandboxPayments(sink);
-  const code = new SandboxCodeHost(sink, root);
+  const code = new SandboxCodeHost(sink, root, clock);
   const deploy = new SandboxDeploy(sink, root, baseUrl);
   return Object.freeze({
     mode: "sandbox" as const,
@@ -59,6 +60,7 @@ export function createSandboxIntegrations(sink?: SandboxSink, options: SandboxOp
     images: new SandboxImages(sink),
     code: () => code,
     deploy: () => deploy,
+    signals: createSandboxSignals(clock),
     sandbox: Object.freeze({ ads, outreach, analytics, payments }),
   });
 }
@@ -70,7 +72,8 @@ export { SandboxAnalytics } from "./analytics";
 export { SandboxPayments } from "./payments";
 export { SandboxMail } from "./mail";
 export { SandboxPush } from "./push";
-export { SandboxCodeHost } from "./code";
+export { SandboxCodeHost, SandboxPullRequestSchema, BRANCHES_DIR, PULLS_DIR, type SandboxPullRequest } from "./code";
+export { SandboxReddit, SandboxProductHunt, SandboxGoogleTrends, SandboxCompetitorSites, createSandboxSignals, sandboxSignalRefs, SANDBOX_CHANGE_HASH } from "./signals";
 export { SandboxDeploy, SANDBOX_SITES_PATH, defaultSiteBaseUrl, liveSiteDir } from "./deploy";
 export { SandboxImages, placeholderSvg } from "./images";
 export { defaultSandboxRoot, safeJoin, writeTree } from "./files";

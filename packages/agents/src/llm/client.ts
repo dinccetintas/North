@@ -95,7 +95,16 @@ export class AnthropicLlm implements LlmClient {
   }
 }
 
-/** Deterministic client: answers come from a map keyed by `args.key`; unknown keys throw. */
+/**
+ * A scripted answer that depends on the call: the `signal:score` fixture
+ * reads the candidate ids out of the prompt and scores them by pattern. A
+ * plain value is returned as is.
+ */
+export type MockResponder = (args: StructuredArgs<unknown>) => unknown;
+
+const isResponder = (value: unknown): value is MockResponder => typeof value === "function";
+
+/** Deterministic client: answers come from a map keyed by `args.key` (a value or a `MockResponder`); unknown keys throw. */
 export class MockLlm implements LlmClient {
   readonly name = "mock" as const;
   private readonly calls: StructuredArgs<unknown>[] = [];
@@ -114,7 +123,9 @@ export class MockLlm implements LlmClient {
     this.calls.push(args);
     const key = args.key ?? "";
     if (!this.responses.has(key)) throw new LlmError(`MockLlm has no response for key "${key}"`);
-    return parseStructured(args.schema, JSON.stringify(this.responses.get(key)));
+    const scripted = this.responses.get(key);
+    const value = isResponder(scripted) ? scripted(args) : scripted;
+    return parseStructured(args.schema, JSON.stringify(value));
   }
 }
 

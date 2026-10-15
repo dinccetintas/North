@@ -24,7 +24,10 @@ const K2_KEYS = ["growth:campaign_spec", "sales:outreach_batch"];
 /** M3 fixtures: design screens (artifact only) and the engineering build (artifact plus workspace files, no actions). */
 const M3_KEYS = ["design:screen_designs", "engineering:build_site"];
 
-const EXPECTED_KEYS = [...K0_KEYS, ...K2_KEYS, ...M3_KEYS];
+/** M5 fixtures: signal research (artifact only) and the error fix (artifact plus workspace files, no actions). */
+const M5_KEYS = ["research:signal_research", "engineering:fix_error"];
+
+const EXPECTED_KEYS = [...K0_KEYS, ...K2_KEYS, ...M3_KEYS, ...M5_KEYS];
 
 const runKey = (key: string) => {
   const [role, taskType] = key.split(":") as [string, string];
@@ -58,7 +61,7 @@ describe("mock fixtures", () => {
     expect(result.sessionId).toBe(`mock-${taskType}`);
   });
 
-  it.each([...K0_KEYS, ...M3_KEYS])("%s requests no external action", (key) => {
+  it.each([...K0_KEYS, ...M3_KEYS, ...M5_KEYS])("%s requests no external action", (key) => {
     const result = runKey(key);
     expect(result.status === "succeeded" ? result.actions : null).toEqual([]);
   });

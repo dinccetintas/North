@@ -3,10 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NotConfiguredError } from "../src/errors";
+import { CompetitorSites } from "../src/live/competitor-sites";
+import type { FetchLike } from "../src/live/github";
 import { GmailOutreach } from "../src/live/gmail";
 import { GoogleAds } from "../src/live/google-ads";
+import { GOOGLE_TRENDS_NOT_CONFIGURED, GoogleTrendsSignals } from "../src/live/google-trends";
 import { MetaAds } from "../src/live/meta-ads";
 import { PostHogAnalytics } from "../src/live/posthog";
+import { PRODUCTHUNT_NOT_CONFIGURED, ProductHuntSignals } from "../src/live/producthunt";
+import { RedditSignals } from "../src/live/reddit";
 import { ResendMail } from "../src/live/resend";
 import { StripeReadPayments } from "../src/live/stripe-read";
 import { WebPush } from "../src/live/web-push";
@@ -17,6 +22,7 @@ import { SandboxMail } from "../src/sandbox/mail";
 import { SandboxOutreach } from "../src/sandbox/outreach";
 import { SandboxPayments } from "../src/sandbox/payments";
 import { SandboxPush } from "../src/sandbox/push";
+import { SandboxCompetitorSites, SandboxGoogleTrends, SandboxProductHunt, SandboxReddit } from "../src/sandbox/signals";
 import { selectIntegrations } from "../src/select";
 import type { SandboxEvent } from "../src/types";
 
@@ -27,6 +33,8 @@ const warnings = () => {
   const lines: string[] = [];
   return { lines, warn: (line: string) => void lines.push(line) };
 };
+
+const scan = { companyId: "c1", queries: ["bookkeeping"], competitorUrls: ["https://incumbent-a.example/pricing"], since: "2026-10-12T07:00:00.000Z" };
 
 describe("createSandboxIntegrations", () => {
   it("wires every sandbox provider to one sink", async () => {
@@ -68,7 +76,7 @@ describe("selectIntegrations", () => {
 
   it("BUD-2: in live mode ads and outreach are always the user-connection adapters, which refuse without auth", async () => {
     const { lines, warn } = warnings();
-    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, warn);
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, warn, { allowUrl: async () => true });
     expect(integrations.mode).toBe("live");
     expect(integrations.ads({ token: "t", scopes: ["act:1"] })).toBeInstanceOf(MetaAds);
     expect(integrations.outreach({ token: "t" })).toBeInstanceOf(GmailOutreach);
@@ -98,7 +106,7 @@ describe("selectIntegrations", () => {
     expect(integrations.mail).toBeInstanceOf(SandboxMail);
     expect(integrations.push).toBeInstanceOf(SandboxPush);
     expect(integrations.ads(null)).toBeInstanceOf(MetaAds);
-    expect(lines).toHaveLength(2);
+    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(2);
     expect(lines.join("\n")).toMatch(/mail/);
     expect(lines.join("\n")).toMatch(/push/);
     expect(lines.join("\n")).not.toMatch(/ads/);
@@ -108,7 +116,7 @@ describe("selectIntegrations", () => {
     const { lines, warn } = warnings();
     const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", META_ACCESS_TOKEN: "tok", META_AD_ACCOUNT_ID: "act_1", ...RESEND, ...VAPID }, undefined, warn);
     expect(integrations.ads(null)).toBeInstanceOf(MetaAds);
-    expect(lines).toEqual([]);
+    expect(lines.filter((l) => !/competitor/.test(l))).toEqual([]);
   });
 
   it("treats a half-configured provider as missing", () => {
@@ -116,7 +124,7 @@ describe("selectIntegrations", () => {
     const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", RESEND_API_KEY: "re_x", VAPID_PUBLIC_KEY: "pub" }, undefined, warn);
     expect(integrations.mail).toBeInstanceOf(SandboxMail);
     expect(integrations.push).toBeInstanceOf(SandboxPush);
-    expect(lines).toHaveLength(2);
+    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(2);
   });
 
   it("passes the sink to the sandbox fallbacks in live mode", async () => {
@@ -124,5 +132,49 @@ describe("selectIntegrations", () => {
     const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live" }, (e) => void events.push(e), () => undefined);
     await integrations.mail.send({ companyId: "c1", to: "a@example.test", subject: "s", text: "t", kind: "reply" });
     expect(events).toHaveLength(1);
+  });
+});
+
+describe("B5-3 selectIntegrations: signal sources (PRO-1)", () => {
+  it("sandbox mode hands out the four sandbox sources in scan order", () => {
+    const integrations = selectIntegrations({}, undefined, () => undefined);
+    expect(integrations.signals.map((s) => s.id)).toEqual(["reddit", "producthunt", "google_trends", "competitor_sites"]);
+    expect(integrations.signals[0]).toBeInstanceOf(SandboxReddit);
+    expect(integrations.signals[1]).toBeInstanceOf(SandboxProductHunt);
+    expect(integrations.signals[2]).toBeInstanceOf(SandboxGoogleTrends);
+    expect(integrations.signals[3]).toBeInstanceOf(SandboxCompetitorSites);
+  });
+
+  it("live mode: reddit and competitor sites read the public web; Product Hunt and Google Trends are stubs that say why", async () => {
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, () => undefined);
+    expect(integrations.signals.map((s) => s.id)).toEqual(["reddit", "competitor_sites", "producthunt", "google_trends"]);
+    expect(integrations.signals[0]).toBeInstanceOf(RedditSignals);
+    expect(integrations.signals[1]).toBeInstanceOf(CompetitorSites);
+    expect(integrations.signals[2]).toBeInstanceOf(ProductHuntSignals);
+    expect(integrations.signals[3]).toBeInstanceOf(GoogleTrendsSignals);
+    await expect(integrations.signals[2]!.scan(scan)).rejects.toBeInstanceOf(NotConfiguredError);
+    await expect(integrations.signals[2]!.scan(scan)).rejects.toThrow(/developer token/);
+    await expect(integrations.signals[3]!.scan(scan)).rejects.toBeInstanceOf(NotConfiguredError);
+    await expect(integrations.signals[3]!.scan(scan)).rejects.toThrow(/terms/);
+    expect(PRODUCTHUNT_NOT_CONFIGURED).toMatch(/GraphQL/);
+    expect(GOOGLE_TRENDS_NOT_CONFIGURED).toMatch(/no official API/);
+  });
+
+  it("live competitor sites need an injected host policy: without one every URL is skipped and a warning says so at selection", async () => {
+    const { lines, warn } = warnings();
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      calls.push(url);
+      return new Response("<title>T</title>", { status: 200, headers: { "content-type": "text/html" } });
+    };
+    const denied = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, warn, { fetchImpl });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/allowUrl/);
+    expect(await denied.signals[1]!.scan(scan)).toEqual([]);
+    expect(calls).toEqual([]);
+
+    const allowed = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, () => undefined, { fetchImpl, allowUrl: async () => true });
+    expect(await allowed.signals[1]!.scan(scan)).toHaveLength(1);
+    expect(calls).toEqual(["https://incumbent-a.example/pricing"]);
   });
 });

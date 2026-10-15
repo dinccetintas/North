@@ -14,7 +14,9 @@ tools:
   - memory.search
   - memory.write
   - artifacts.write
-  - signals.emit
+  - signals.emit       # M5: the worker's scan (scan-signals cron, signal/scan) reads the sources and
+                       # inserts signal rows itself; the role keeps the tool name for signal_research
+                       # reports, but a signal becomes a card only through the worker's gate (ADR 0012)
 outputs:
   - MarketReport
   - Personas

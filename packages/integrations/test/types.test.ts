@@ -4,16 +4,22 @@ import {
   CampaignInsightsSchema,
   CampaignSpecSchema,
   MESSAGE_STATUSES,
+  OpenPullRequestInputSchema,
   PROVIDERS,
+  PushTreeInputSchema,
   RepliesInputSchema,
+  SIGNAL_SOURCE_IDS,
+  ScanInputSchema,
   TargetingSchema,
   scopeValue,
   type AdsProvider,
   type AnalyticsProvider,
+  type CodeHostProvider,
   type Integrations,
   type OutreachMailProvider,
   type PaymentsProvider,
   type ProviderAuth,
+  type SignalSource,
 } from "../src/types";
 
 const base = { companyId: "c1", name: "Launch test", dailyBudgetUsd: 10 };
@@ -56,7 +62,7 @@ describe("B4-1 insights, statuses and reply input (OUT-2)", () => {
   it("lists the provider campaign and message statuses the worker switches on", () => {
     expect(CAMPAIGN_PROVIDER_STATUSES).toEqual(["active", "paused", "ended", "unknown"]);
     expect(MESSAGE_STATUSES).toEqual(["sent", "unknown"]);
-    expect(PROVIDERS).toEqual(["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images"]);
+    expect(PROVIDERS).toEqual(["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals"]);
   });
 
   it("replies input needs a company and 1-500 message ids", () => {
@@ -92,5 +98,63 @@ describe("B4-1 ProviderAuth scopes (BUD-2: user connections, never platform keys
     const integrations: Pick<Integrations, "ads" | "outreach" | "analytics" | "payments"> = { ads: () => ads, outreach: () => outreach, analytics: () => analytics, payments: () => payments };
     expect(integrations.ads(null)).toBe(ads);
     expect(integrations.outreach({ token: "t" })).toBe(outreach);
+  });
+});
+
+describe("B5-1 signal sources (PRO-1)", () => {
+  const scan = { companyId: "c1", since: "2026-10-08T00:00:00.000Z" };
+
+  it("lists the four scannable sources (metrics and sentry are the worker's own)", () => {
+    expect(SIGNAL_SOURCE_IDS).toEqual(["reddit", "producthunt", "google_trends", "competitor_sites"]);
+  });
+
+  it("ScanInputSchema defaults the lists and the limit and bounds every list", () => {
+    const parsed = ScanInputSchema.parse(scan);
+    expect(parsed).toEqual({ ...scan, queries: [], communities: [], competitorUrls: [], knownRefs: [], limit: 25 });
+    expect(ScanInputSchema.safeParse({ ...scan, queries: Array.from({ length: 7 }, (_, i) => `q${i}`) }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, communities: Array.from({ length: 11 }, (_, i) => `r/c${i}`) }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, competitorUrls: Array.from({ length: 11 }, (_, i) => `https://c${i}.example/`) }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, competitorUrls: ["javascript:alert(1)"] }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, knownRefs: Array.from({ length: 501 }, (_, i) => `ref-${i}`) }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, limit: 26 }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, limit: 0 }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ ...scan, since: "yesterday" }).success).toBe(false);
+    expect(ScanInputSchema.safeParse({ companyId: "", since: scan.since }).success).toBe(false);
+  });
+
+  it("a SignalSource has an id from the list and a scan that returns core candidates; Integrations.signals is a list of them", () => {
+    const source: SignalSource = {
+      id: "reddit",
+      scan: async () => [{ source: "reddit", sourceRef: "t3_1", title: "t", excerpt: "", url: null, observedAt: scan.since, baseline: false }],
+    };
+    const integrations: Pick<Integrations, "signals"> = { signals: [source] };
+    expect(integrations.signals.map((s) => s.id)).toEqual(["reddit"]);
+  });
+});
+
+describe("B5-1 pull requests and branches (PRO-2, EXP-1)", () => {
+  it("OpenPullRequestInputSchema defaults base to main and an empty body, bounds the title", () => {
+    const parsed = OpenPullRequestInputSchema.parse({ companyId: "c1", fullName: "mara/site", head: "fix/web-12", title: "Fix WEB-12" });
+    expect(parsed).toEqual({ companyId: "c1", fullName: "mara/site", head: "fix/web-12", base: "main", title: "Fix WEB-12", body: "" });
+    expect(OpenPullRequestInputSchema.safeParse({ companyId: "c1", fullName: "mara/site", head: "fix/web-12", title: "" }).success).toBe(false);
+    expect(OpenPullRequestInputSchema.safeParse({ companyId: "c1", fullName: "mara/site", head: "../x", title: "t" }).success).toBe(false);
+    expect(OpenPullRequestInputSchema.safeParse({ companyId: "c1", fullName: "mara/site", head: "fix/a b", title: "t" }).success).toBe(false);
+  });
+
+  it("PushTreeInput.branch defaults to main and refuses traversal or spaces", () => {
+    const files = [{ path: "index.html", content: "x" }];
+    expect(PushTreeInputSchema.parse({ companyId: "c1", fullName: "sandbox/site", message: "m", files }).branch).toBe("main");
+    expect(PushTreeInputSchema.parse({ companyId: "c1", fullName: "sandbox/site", branch: "fix/web-12", message: "m", files }).branch).toBe("fix/web-12");
+    expect(PushTreeInputSchema.safeParse({ companyId: "c1", fullName: "sandbox/site", branch: "../main", message: "m", files }).success).toBe(false);
+    expect(PushTreeInputSchema.safeParse({ companyId: "c1", fullName: "sandbox/site", branch: "fix web", message: "m", files }).success).toBe(false);
+  });
+
+  it("CodeHostProvider has openPullRequest next to ensureRepo and pushTree", async () => {
+    const code: CodeHostProvider = {
+      ensureRepo: async () => ({ repoId: "r", fullName: "sandbox/site", url: "sandbox://repos/sandbox/site", created: true, sandbox: true }),
+      pushTree: async () => ({ commitSha: "a", url: "u", sandbox: true }),
+      openPullRequest: async () => ({ url: "sandbox://repos/sandbox/site/pull/1", number: 1, sandbox: true }),
+    };
+    await expect(code.openPullRequest({ companyId: "c1", fullName: "sandbox/site", head: "fix/x", title: "t" })).resolves.toMatchObject({ number: 1 });
   });
 });

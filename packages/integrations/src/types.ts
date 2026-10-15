@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AdsProvider, AnalyticsProvider, OutreachMailProvider, PaymentsProvider } from "./growth-types";
 import type { IntegrationMode } from "./mode";
+import type { SignalSource } from "./signals-types";
 
 /**
  * Provider contracts for everything that touches the outside world (ADR 0005).
@@ -8,11 +9,13 @@ import type { IntegrationMode } from "./mode";
  * live code ever sees a malformed request.
  */
 
-export const PROVIDERS = ["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images"] as const;
+export const PROVIDERS = ["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 /** Ads, outreach, analytics and payments contracts (M4) live in growth-types.ts and are part of this module's surface. */
 export * from "./growth-types";
+/** Signal source contracts (M5, PRO-1) live in signals-types.ts and are part of this module's surface. */
+export * from "./signals-types";
 
 export const MAIL_KINDS = ["first_contact", "reply", "notification"] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
@@ -89,10 +92,22 @@ export interface EnsureRepoResult {
   readonly sandbox: boolean;
 }
 
+/** A git branch name as North writes them (`main`, `fix/<shortId>`): segments of letters, digits, `.`, `_`, `-`; no traversal, no spaces. */
+const branchName = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/, "branch: segments of letters, digits, '.', '_' or '-', none starting with '.'")
+  .refine((value) => !value.includes(".."), { message: "branch must not contain '..'" });
+
+/** The branch North pushes to when none is named; a fix pushes to `fix/<shortId>` and opens a pull request against it. */
+export const DEFAULT_BRANCH = "main";
+
 export const PushTreeInputSchema = z.object({
   companyId: z.string().min(1),
   fullName: z.string().min(3).max(200),
-  branch: z.string().min(1).max(100).default("main"),
+  /** Created from `main` when missing (`createBranchIfMissing` semantics); `main` itself is created on an empty repository. */
+  branch: branchName.default(DEFAULT_BRANCH),
   message: z.string().trim().min(1).max(500),
   files: z.array(RepoFileSchema).min(1).max(200),
 });
@@ -104,10 +119,30 @@ export interface PushTreeResult {
   readonly sandbox: boolean;
 }
 
+/** PRO-2: the pull request a fix opens in the user's repository (`repo.pull_request`, K1); the user merges it themselves (EXP-1). */
+export const OpenPullRequestInputSchema = z.object({
+  companyId: z.string().min(1),
+  fullName: z.string().min(3).max(200),
+  head: branchName,
+  base: branchName.default(DEFAULT_BRANCH),
+  title: z.string().trim().min(1).max(200),
+  body: z.string().max(20_000).default(""),
+});
+export type OpenPullRequestInput = z.input<typeof OpenPullRequestInputSchema>;
+
+export interface OpenPullRequestResult {
+  /** The PR page; `sandbox://repos/<owner>/<name>/pull/<n>` in sandbox. */
+  readonly url: string;
+  readonly number: number;
+  readonly sandbox: boolean;
+}
+
 /** The user's own repository host (EXP-1: code lives in their GitHub). */
 export interface CodeHostProvider {
   ensureRepo(input: EnsureRepoInput): Promise<EnsureRepoResult>;
   pushTree(input: PushTreeInput): Promise<PushTreeResult>;
+  /** Opens a PR from `head` into `base`; an existing open PR for the pair is returned, never duplicated. */
+  openPullRequest(input: OpenPullRequestInput): Promise<OpenPullRequestResult>;
 }
 
 export const DEPLOY_TARGETS = ["preview", "production"] as const;
@@ -180,7 +215,8 @@ export interface ImageProvider {
  * factories because their credentials belong to the user (connections, ADR
  * 0010), not to the platform; sandbox ignores the auth argument. `mail`
  * (platform Resend) and `push` stay platform-configured: they only carry
- * decision notifications to the CEO.
+ * decision notifications to the CEO. `signals` (M5) are keyless public reads
+ * the worker's scan runs one by one; each entry is its own step.
  */
 export interface Integrations {
   readonly mode: IntegrationMode;
@@ -193,6 +229,7 @@ export interface Integrations {
   readonly images: ImageProvider;
   readonly code: (auth: ProviderAuth | null) => CodeHostProvider;
   readonly deploy: (auth: ProviderAuth | null) => DeployProvider;
+  readonly signals: readonly SignalSource[];
 }
 
 /** What a sandbox adapter records instead of calling a real service. */
