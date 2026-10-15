@@ -22,7 +22,12 @@ export const UpsertConnectionInputSchema = z.object({
   provider: z.enum(CONNECTION_PROVIDERS),
   scopes: z.array(z.string().min(1).max(100)).max(50).default([]),
   accountLabel: z.string().trim().max(200).default(""),
+  /** `error` while a token is being exchanged or after a failed one; flipped to `connected` by `setConnectionStatus`. */
+  status: z.enum(["connected", "error"]).default("connected"),
 });
+
+/** Marks a connection that carries no real token: recorded by the owner in sandbox mode, never usable by the live adapters. */
+export const SANDBOX_SCOPE = "sandbox";
 export type UpsertConnectionInput = z.input<typeof UpsertConnectionInputSchema>;
 
 const CONNECTION_COLUMNS = "id, user_id, provider, status, scopes, account_label, created_at, updated_at";
@@ -69,16 +74,37 @@ export async function getConnection(db: DbClient, userId: string, provider: Conn
   return data ? toRecord(data) : null;
 }
 
-/** Creates or re-activates the provider row (status `connected`). Works under RLS for the owner and with the service client. */
+/**
+ * Creates or re-activates the provider row. Under RLS an owner may only write
+ * a sandbox-scoped row (migration 0007); real connections are written by the
+ * worker after the OAuth exchange.
+ */
 export async function upsertConnection(db: DbClient, input: UpsertConnectionInput): Promise<ConnectionRecord> {
   const c = UpsertConnectionInputSchema.parse(input);
   const { data, error } = await db
     .from("connections")
-    .upsert({ user_id: c.userId, provider: c.provider, status: "connected", scopes: [...c.scopes], account_label: c.accountLabel }, { onConflict: "user_id,provider" })
+    .upsert({ user_id: c.userId, provider: c.provider, status: c.status, scopes: [...c.scopes], account_label: c.accountLabel }, { onConflict: "user_id,provider" })
     .select(CONNECTION_COLUMNS)
     .single();
   if (error || !data) throw dbError("Could not save connection", error);
   return toRecord(data);
+}
+
+/** Service role: `connected` once the secret is stored, `error` when the token cannot be read or exchanged. */
+export async function setConnectionStatus(db: DbClient, connectionId: string, status: ConnectionStatus): Promise<void> {
+  const id = UuidSchema.parse(connectionId);
+  const s = z.enum(CONNECTION_STATUSES).parse(status);
+  const { error } = await db.from("connections").update({ status: s }).eq("id", id);
+  if (error) throw dbError("Could not update connection status", error);
+}
+
+/** Service role: drops every secret whose connection is no longer `connected` (safety net behind `connection/revoked`). Returns how many. */
+export async function dropOrphanSecrets(db: DbClient): Promise<number> {
+  const { data, error } = await db.from("connection_secrets").select("connection_id, connections!inner(status)").neq("connections.status", "connected");
+  if (error) throw dbError("Could not list orphan secrets", error);
+  const ids = (data ?? []).map((row) => (row as { connection_id: string }).connection_id);
+  for (const id of ids) await dropConnectionSecret(db, id);
+  return ids.length;
 }
 
 /**

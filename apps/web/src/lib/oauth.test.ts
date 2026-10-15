@@ -29,12 +29,20 @@ describe("ONB-3 OAuth helpers (web side: public ids and CSRF state only)", () =>
     expect(stateMatches(a, null)).toBe(false);
   });
 
-  it("the cookie binds the state to a provider", () => {
-    const value = stateCookieValue("github", "abc.def");
-    expect(parseStateCookie(value)).toEqual({ provider: "github", state: "abc.def" });
-    expect(parseStateCookie("vercel.")).toBeNull();
-    expect(parseStateCookie("stripe.x")).toBeNull();
+  it("the cookie binds the state to a provider and to the signed-in user", () => {
+    const userId = "11111111-1111-4111-8111-111111111111";
+    const value = stateCookieValue("github", userId, "abc.def");
+    expect(parseStateCookie(value)).toEqual({ provider: "github", userId, state: "abc.def" });
+    expect(parseStateCookie(`vercel.${userId}.`)).toBeNull();
+    expect(parseStateCookie(`stripe.${userId}.x`)).toBeNull();
+    expect(parseStateCookie("github.not-a-uuid.x")).toBeNull();
+    expect(parseStateCookie("github.x")).toBeNull();
     expect(parseStateCookie(undefined)).toBeNull();
     expect(parseStateCookie("nodot")).toBeNull();
+  });
+
+  it("GITHUB_OAUTH_SCOPE narrows the default repo scope", () => {
+    const url = new URL(oauthConfig("github", { GITHUB_CLIENT_ID: "x", GITHUB_OAUTH_SCOPE: "public_repo" })!.authorizeUrl("s", "http://x/cb"));
+    expect(url.searchParams.get("scope")).toBe("public_repo");
   });
 });

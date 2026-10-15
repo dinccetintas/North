@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { revokeConnection, upsertConnection } from "@north/db";
+import { revokeConnection, SANDBOX_SCOPE, upsertConnection } from "@north/db";
 import { EVENT } from "@north/core/events";
 import { inngest } from "@/inngest/client";
+import { integrationsMode } from "@/lib/env";
 import { oauthConfig, OauthProviderSchema } from "@/lib/oauth";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import type { ActionResult } from "@/app/(app)/c/[slug]/decisions/actions";
@@ -32,9 +33,10 @@ export async function connectSandboxAction(input: ProviderInput): Promise<Action
   if (!parsed.success) return { ok: false, error: "Unknown provider" };
   const { provider } = parsed.data;
   if (oauthConfig(provider)) return { ok: false, error: "This provider is configured for OAuth; use Connect instead" };
-  if (process.env.INTEGRATIONS_MODE === "live") return { ok: false, error: "Sandbox connections are not allowed in live mode" };
+  if (integrationsMode() === "live") return { ok: false, error: "Sandbox connections are not allowed in live mode" };
   try {
-    await upsertConnection(await createClient(), { userId: user.id, provider, scopes: ["sandbox"], accountLabel: "sandbox" });
+    // RLS lets an owner write sandbox-scoped rows only (migration 0007); the live adapters refuse them.
+    await upsertConnection(await createClient(), { userId: user.id, provider, scopes: [SANDBOX_SCOPE], accountLabel: "sandbox" });
   } catch (error) {
     return { ok: false, error: message(error, "Could not record the sandbox connection") };
   }
@@ -54,11 +56,12 @@ export async function disconnectAction(input: ProviderInput): Promise<ActionResu
   } catch (error) {
     return { ok: false, error: message(error, "Could not disconnect") };
   }
+  revalidatePath(CONNECTIONS_PATH);
   try {
     await inngest.send({ name: EVENT.connectionRevoked, data: { userId: user.id, provider } });
   } catch (error) {
     console.error("[connections] could not send connection/revoked", provider, error);
+    return { ok: false, error: "Disconnected. The agents could not be told to drop the token yet; it is removed within the hour." };
   }
-  revalidatePath(CONNECTIONS_PATH);
   return { ok: true, value: undefined };
 }

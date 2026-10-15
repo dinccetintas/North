@@ -55,6 +55,8 @@ export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set([
 export interface PerformResult {
   readonly externalRef: string;
   readonly sandbox: boolean;
+  /** Provider facts later steps need (e.g. the repository's `fullName`), kept out of the reference itself. */
+  readonly meta?: Readonly<Record<string, string>>;
 }
 
 const str = (payload: Record<string, unknown>, key: string, fallback = ""): string => (typeof payload[key] === "string" ? (payload[key] as string) : fallback);
@@ -100,7 +102,7 @@ export async function performAction(deps: WorkerDeps, action: ActionSpec): Promi
     case "repo.create": {
       const auth = await providerAuthFor(deps, action.companyId, action.kind);
       const repo = await integrations.code(auth).ensureRepo({ companyId: action.companyId, name: str(payload, "name") });
-      return { externalRef: repo.url, sandbox: repo.sandbox };
+      return { externalRef: repo.url, sandbox: repo.sandbox, meta: { fullName: repo.fullName } };
     }
     case "repo.push": {
       const auth = await providerAuthFor(deps, action.companyId, action.kind);
@@ -199,7 +201,9 @@ export async function gateAction(deps: WorkerDeps, taskId: string, raw: ActionSp
   }
 }
 
-export type PerformOutcome = { readonly ok: true; readonly externalRef: string; readonly sandbox: boolean } | { readonly ok: false; readonly error: string; readonly connectionRequired?: string };
+export type PerformOutcome =
+  | { readonly ok: true; readonly externalRef: string; readonly sandbox: boolean; readonly meta?: Readonly<Record<string, string>> }
+  | { readonly ok: false; readonly error: string; readonly connectionRequired?: string };
 
 /** Loads the pending action and executes its stored spec. Provider failures come back as data so the next step can record them. */
 export async function performPending(deps: WorkerDeps, actionId: string): Promise<PerformOutcome> {
@@ -210,7 +214,7 @@ export async function performPending(deps: WorkerDeps, actionId: string): Promis
   if (!spec.success) return { ok: false, error: "stored action spec is invalid" };
   try {
     const result = await performAction(deps, spec.data);
-    return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox };
+    return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox, ...(result.meta ? { meta: result.meta } : {}) };
   } catch (cause) {
     if (cause instanceof ConnectionRequiredError) return { ok: false, error: cause.message, connectionRequired: cause.provider };
     return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };

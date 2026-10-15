@@ -1,4 +1,4 @@
-import { ACTION_KINDS, TIERS, type Tier } from "@north/core";
+import { ACTION_KINDS, TIERS, isHttpUrl, type Tier } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
 import { DbError, dbError } from "./errors";
@@ -202,7 +202,7 @@ export async function siteUrls(db: DbClient, companyId: string): Promise<SiteUrl
     .order("created_at", { ascending: false })
     .limit(DEPLOY_SCAN_LIMIT);
   if (error) throw dbError("Could not load deploy actions", error);
-  const done = heads((data ?? []).map(toRecord)).filter((a) => (a.status === "executed" || a.status === "notified") && a.externalRef?.startsWith("http"));
+  const done = heads((data ?? []).map(toRecord)).filter((a) => (a.status === "executed" || a.status === "notified") && isHttpUrl(a.externalRef));
   const live = done.find((a) => a.kind === "deploy.production")?.externalRef ?? null;
   const preview = done.find((a) => a.kind === "deploy.preview")?.externalRef ?? null;
   return Object.freeze({ live, preview });

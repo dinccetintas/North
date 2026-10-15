@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { getCard, getTask, headActionsForTask, listActiveAutoRules, listAnsweredCards, listArtifacts, type ArtifactRecord, type TaskRecord } from "@north/db";
 import { isConnectCard } from "@north/core/connections";
+import { isHttpUrl } from "@north/core/url";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
@@ -51,7 +52,7 @@ export default async function DecisionPage({ params }: { params: Params }) {
   ]);
   const evidence = evidenceFor(task, artifacts);
   const suggestion = card.answeredAt && !rules.some((r) => r.kind === card.actionKind) ? suggestAutoRule(history) : null;
-  const previewUrl = card.actionKind === "deploy.production" ? (actions.find((a) => a.kind === "deploy.preview" && a.externalRef?.startsWith("http"))?.externalRef ?? null) : null;
+  const previewUrl = card.actionKind === "deploy.production" ? (actions.find((a) => a.kind === "deploy.preview" && isHttpUrl(a.externalRef))?.externalRef ?? null) : null;
   const connect = isConnectCard(card);
 
   return (

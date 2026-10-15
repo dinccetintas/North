@@ -1,6 +1,7 @@
 import type { ConnectionOauthCodeEvent } from "@north/core";
-import { dropConnectionSecret, getConnection, storeConnectionSecret, upsertConnection } from "@north/db";
+import { dropConnectionSecret, getConnection, readConnectionSecret, setConnectionStatus, storeConnectionSecret, upsertConnection } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { TEAM_SCOPE_PREFIX } from "./provider-auth";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -8,6 +9,11 @@ export interface OauthClient {
   readonly clientId: string;
   readonly clientSecret: string;
 }
+
+const PROVIDER_TIMEOUT_MS = 10_000;
+
+/** Every call to a provider carries a timeout so a hung endpoint never holds an Inngest step open. */
+export const timedFetch: FetchLike = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
 
 /** Client credentials per provider, from the worker env only (the web app has the ids, never the secrets). */
 export function oauthClients(env: NodeJS.ProcessEnv): Readonly<Record<"github" | "vercel", OauthClient | null>> {
@@ -49,24 +55,61 @@ export async function exchangeVercelCode(client: OauthClient, code: string, redi
 }
 
 /**
- * ONB-3: completes a connection from the one-time code the web callback
- * forwarded. The token is encrypted and stored by the service role; the
- * connection row shows the account label to the owner.
+ * Tells the provider the token is no longer wanted (best effort, before the
+ * ciphertext is dropped). GitHub has an endpoint for OAuth-app tokens; Vercel
+ * integration tokens are revoked by uninstalling the integration in the
+ * dashboard, which is left to the user and documented on the settings page.
  */
-export async function completeConnection(deps: WorkerDeps, event: ConnectionOauthCodeEvent, fetchImpl: FetchLike = (i, init) => fetch(i, init)): Promise<{ readonly connected: boolean; readonly accountLabel: string }> {
+export async function revokeProviderToken(provider: "github" | "vercel", client: OauthClient | null, token: string, fetchImpl: FetchLike): Promise<boolean> {
+  if (provider !== "github" || !client) return false;
+  const basic = Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64");
+  const response = await fetchImpl(`https://api.github.com/applications/${encodeURIComponent(client.clientId)}/token`, {
+    method: "DELETE",
+    headers: { authorization: `Basic ${basic}`, accept: "application/vnd.github+json", "content-type": "application/json" },
+    body: JSON.stringify({ access_token: token }),
+  });
+  return response.status === 204 || response.status === 404;
+}
+
+/**
+ * ONB-3: completes a connection from the one-time code the web callback
+ * forwarded. The row is written as `error` first, the token is encrypted and
+ * stored by the service role, then the row becomes `connected`: a row never
+ * says "connected" without a secret behind it. The account label is for
+ * display; a Vercel team id travels as a `team:<id>` scope.
+ */
+export async function completeConnection(deps: WorkerDeps, event: ConnectionOauthCodeEvent, fetchImpl: FetchLike = timedFetch): Promise<{ readonly connected: boolean; readonly accountLabel: string }> {
   const clients = oauthClients(process.env);
   const client = clients[event.provider];
   if (!client) throw new Error(`${event.provider} OAuth is not configured on the worker (client id and secret)`);
-  const exchanged = event.provider === "github" ? await exchangeGithubCode(client, event.code, event.redirectUri, fetchImpl) : await exchangeVercelCode(client, event.code, event.redirectUri, fetchImpl);
-  const connection = await upsertConnection(deps.db, { userId: event.userId, provider: event.provider, scopes: [...exchanged.scopes], accountLabel: exchanged.scope ? `${exchanged.accountLabel} (${exchanged.scope})` : exchanged.accountLabel });
+  let exchanged: ExchangedToken;
+  try {
+    exchanged = event.provider === "github" ? await exchangeGithubCode(client, event.code, event.redirectUri, fetchImpl) : await exchangeVercelCode(client, event.code, event.redirectUri, fetchImpl);
+  } catch (cause) {
+    await upsertConnection(deps.db, { userId: event.userId, provider: event.provider, scopes: [], accountLabel: "", status: "error" });
+    throw cause;
+  }
+  const scopes = [...exchanged.scopes, ...(exchanged.scope ? [`${TEAM_SCOPE_PREFIX}${exchanged.scope}`] : [])];
+  const connection = await upsertConnection(deps.db, { userId: event.userId, provider: event.provider, scopes, accountLabel: exchanged.accountLabel, status: "error" });
   await storeConnectionSecret(deps.db, connection.id, exchanged.token);
+  await setConnectionStatus(deps.db, connection.id, "connected");
   return { connected: true, accountLabel: connection.accountLabel };
 }
 
-/** The owner revoked from the settings page; the worker drops the token it alone can reach. */
-export async function dropRevokedSecret(deps: WorkerDeps, userId: string, provider: "github" | "vercel" | "gmail" | "stripe" | "meta_ads"): Promise<{ readonly dropped: boolean }> {
+/** The owner revoked from the settings page; the worker revokes at the provider when it can and drops the token it alone can reach. */
+export async function dropRevokedSecret(deps: WorkerDeps, userId: string, provider: "github" | "vercel" | "gmail" | "stripe" | "meta_ads", fetchImpl: FetchLike = timedFetch): Promise<{ readonly dropped: boolean; readonly revokedAtProvider: boolean }> {
   const connection = await getConnection(deps.db, userId, provider);
-  if (!connection || connection.status === "connected") return { dropped: false };
+  if (!connection || connection.status === "connected") return { dropped: false, revokedAtProvider: false };
+  let revokedAtProvider = false;
+  if (provider === "github" || provider === "vercel") {
+    try {
+      const token = await readConnectionSecret(deps.db, connection.id);
+      revokedAtProvider = await revokeProviderToken(provider, oauthClients(process.env)[provider], token, fetchImpl);
+    } catch (cause) {
+      // No secret (sandbox row, already dropped) or the provider refused: the ciphertext still goes.
+      console.error(`[connections] ${provider} revoke at provider skipped: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
   await dropConnectionSecret(deps.db, connection.id);
-  return { dropped: true };
+  return { dropped: true, revokedAtProvider };
 }

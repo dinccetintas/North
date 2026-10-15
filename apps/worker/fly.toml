@@ -1,8 +1,13 @@
 # Fly.io app definition for the North worker (ADR 0007). Deploy from the repo root:
 #   fly launch --no-deploy --copy-config --config apps/worker/fly.toml   (first time)
 #   fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... ANTHROPIC_API_KEY=... \
-#                   INNGEST_EVENT_KEY=... INNGEST_SIGNING_KEY=... CONNECTIONS_ENCRYPTION_KEY=...
+#                   INNGEST_EVENT_KEY=... INNGEST_SIGNING_KEY=... CONNECTIONS_ENCRYPTION_KEY=... \
+#                   GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... VERCEL_CLIENT_ID=... VERCEL_CLIENT_SECRET=...
 #   fly deploy --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
+#
+# Integrations default to sandbox and the mock runtime (CLAUDE.md #5). Going
+# live is the founder's decision, made outside this file:
+#   fly secrets set INTEGRATIONS_MODE=live AGENT_RUNTIME=claude-agent-sdk
 app = "north-worker"
 primary_region = "ams"
 
@@ -13,8 +18,6 @@ primary_region = "ams"
   NODE_ENV = "production"
   WORKER_HOST = "0.0.0.0"
   WORKER_PORT = "3101"
-  AGENT_RUNTIME = "claude-agent-sdk"
-  INTEGRATIONS_MODE = "live"
   WORKSPACE_ROOT = "/data/workspaces"
   SANDBOX_ROOT = "/data/sandbox"
 

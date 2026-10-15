@@ -5,8 +5,8 @@ import { z } from "zod";
  * ONB-3 connection flows (ADR 0008). The web app knows only the public client
  * ids: it starts the provider's authorize flow and, on return, hands the
  * one-time code to the worker, which holds the client secret and stores the
- * token. CSRF protection is a random `state` kept in an httpOnly cookie and
- * compared on the callback.
+ * token. CSRF protection is a random `state` kept in an httpOnly cookie,
+ * bound to the provider and the signed-in user, and compared on the callback.
  */
 
 export const OAUTH_PROVIDERS = ["github", "vercel"] as const;
@@ -15,6 +15,10 @@ export const OauthProviderSchema = z.enum(OAUTH_PROVIDERS);
 
 export const STATE_COOKIE = "north_oauth_state";
 export const STATE_TTL_SECONDS = 10 * 60;
+/** `repo` is needed to create private repositories; `public_repo` is the narrower choice when public sites are fine (.env.example). */
+const DEFAULT_GITHUB_SCOPE = "repo";
+
+export type EnvLike = Readonly<Record<string, string | undefined>>;
 
 export interface OauthProviderConfig {
   /** GitHub: the OAuth app's client id; Vercel: the integration's URL slug. */
@@ -23,19 +27,18 @@ export interface OauthProviderConfig {
 }
 
 /** Public config per provider, from the web env; null means the button falls back to a sandbox connection. */
-export type EnvLike = Readonly<Record<string, string | undefined>>;
-
 export function oauthConfig(provider: OauthProvider, env: EnvLike = process.env): OauthProviderConfig | null {
   if (provider === "github") {
     const id = env.GITHUB_CLIENT_ID;
     if (!id) return null;
+    const scope = env.GITHUB_OAUTH_SCOPE?.trim() || DEFAULT_GITHUB_SCOPE;
     return {
       publicId: id,
       authorizeUrl: (state, redirectUri) => {
         const url = new URL("https://github.com/login/oauth/authorize");
         url.searchParams.set("client_id", id);
         url.searchParams.set("redirect_uri", redirectUri);
-        url.searchParams.set("scope", "repo");
+        url.searchParams.set("scope", scope);
         url.searchParams.set("state", state);
         return url.toString();
       },
@@ -64,14 +67,20 @@ export function stateMatches(cookieValue: string | undefined, returned: string |
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** The state cookie carries the provider too, so a GitHub state cannot complete a Vercel callback. */
-export const stateCookieValue = (provider: OauthProvider, state: string): string => `${provider}.${state}`;
+export interface StateCookie {
+  readonly provider: OauthProvider;
+  readonly userId: string;
+  readonly state: string;
+}
 
-export function parseStateCookie(value: string | undefined): { readonly provider: OauthProvider; readonly state: string } | null {
+/** The cookie carries provider and user too, so a GitHub state cannot complete a Vercel callback, nor another session's. */
+export const stateCookieValue = (provider: OauthProvider, userId: string, state: string): string => `${provider}.${userId}.${state}`;
+
+export function parseStateCookie(value: string | undefined): StateCookie | null {
   if (!value) return null;
-  const dot = value.indexOf(".");
-  if (dot <= 0) return null;
-  const provider = OauthProviderSchema.safeParse(value.slice(0, dot));
-  const state = value.slice(dot + 1);
-  return provider.success && state.length > 0 ? { provider: provider.data, state } : null;
+  const [rawProvider, userId, ...rest] = value.split(".");
+  const state = rest.join(".");
+  const provider = OauthProviderSchema.safeParse(rawProvider);
+  if (!provider.success || !userId || !z.string().uuid().safeParse(userId).success || state.length === 0) return null;
+  return { provider: provider.data, userId, state };
 }

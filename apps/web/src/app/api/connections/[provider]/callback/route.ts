@@ -9,8 +9,9 @@ const CODE_MAX_LENGTH = 2048;
 
 /**
  * ONB-3: the provider sends the user back here with a one-time code. The
- * state must match the cookie set by `start` (same provider, same browser),
- * and the user must still be signed in. The code goes to the worker as a
+ * state must match the cookie set by `start` (same provider, same browser,
+ * same signed-in user, so a login-CSRF cannot bind the victim's GitHub to an
+ * attacker's North account). The code goes to the worker as a
  * `connection/oauth_code` event; the token never touches the web app.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string }> }) {
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const cookie = parseStateCookie(request.cookies.get(STATE_COOKIE)?.value);
   const returnedState = request.nextUrl.searchParams.get("state");
-  if (!cookie || cookie.provider !== provider.data || !stateMatches(cookie.state, returnedState)) return back(`error=${provider.data}-state`);
+  if (!cookie || cookie.provider !== provider.data || cookie.userId !== user.id || !stateMatches(cookie.state, returnedState)) return back(`error=${provider.data}-state`);
 
   const code = request.nextUrl.searchParams.get("code");
   if (!code || code.length > CODE_MAX_LENGTH) return back(`error=${provider.data}-denied`);

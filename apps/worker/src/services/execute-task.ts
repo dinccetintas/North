@@ -6,6 +6,7 @@ import {
   createArtifact,
   getKillSwitch,
   getTask,
+  headActionsForTask,
   listPendingCardsForTask,
   markTaskFailed,
   markTaskRunning,
@@ -61,18 +62,7 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   if (!task) throw new Error(`task ${taskId} not found`);
   if (task.status === "done") return noActions("ran", taskId, { costUsd: task.costUsd, artifactIds: task.result.artifactIds });
   if (await getKillSwitch(db, task.companyId)) return noActions("blocked", taskId, { error: "kill switch active" });
-  if (task.status === "waiting_decision") {
-    // Only quota-deferred actions are re-gated; a task waiting on an open card has nothing to do (a duplicate dispatch must not finish or fail it).
-    const deferred = await deferredActionsFor(db, task);
-    if (deferred.length > 0) return noActions("ran", taskId, { pendingActions: deferred, costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary, attempt: task.attempts });
-    const openCards = await listPendingCardsForTask(db, taskId);
-    if (openCards.length > 0) return noActions("blocked", taskId, { error: "waiting on an open decision card" });
-    // A connect card was answered "connected": resume the build pipeline from the files still in the workspace (ONB-3).
-    const files = task.taskType === "build_site" ? await workspaceFiles(`${deps.env.WORKSPACE_ROOT}/${task.id}`) : [];
-    if (files.length === 0) return noActions("blocked", taskId, { error: "nothing to resume" });
-    await markTaskRunning(db, taskId);
-    return noActions("ran", taskId, { files, costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary, attempt: task.attempts });
-  }
+  if (task.status === "waiting_decision") return resumeParkedTask(deps, task);
   if (task.status === "running") return noActions("blocked", taskId, { error: "already running" });
 
   const running = await markTaskRunning(db, taskId);
@@ -112,6 +102,39 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
     files,
     attempt: running.attempts,
   });
+}
+
+const PIPELINE_KINDS: ReadonlySet<string> = new Set(["repo.create", "repo.push", "deploy.preview"]);
+
+/**
+ * A parked task comes back for one of three reasons: quota-deferred actions
+ * to re-gate (DEC-3), an open card (nothing to do; a duplicate dispatch must
+ * not finish or fail it), or a connect card answered "connected" (ONB-3). The
+ * build pipeline resumes from the files still in the workspace, and only when
+ * the worker's own action log shows the pipeline had started (an owner can
+ * edit a task row, never the actions). A lost workspace fails the attempt so
+ * AGT-3 rebuilds instead of leaving the task parked forever.
+ */
+async function resumeParkedTask(deps: WorkerDeps, task: TaskRecord): Promise<ExecuteTaskResult> {
+  const { db } = deps;
+  const carried = { costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary, attempt: task.attempts };
+  const deferred = await deferredActionsFor(db, task);
+  const openCards = await listPendingCardsForTask(db, task.id);
+  if (openCards.length > 0) return noActions("blocked", task.id, { error: "waiting on an open decision card" });
+  const heads = await headActionsForTask(db, task.id);
+  const pipelineStarted = task.taskType === "build_site" && heads.some((a) => PIPELINE_KINDS.has(a.kind));
+  if (!pipelineStarted) {
+    if (deferred.length > 0) return noActions("ran", task.id, { ...carried, pendingActions: deferred });
+    return noActions("blocked", task.id, { error: "nothing to resume" });
+  }
+  const files = await workspaceFiles(`${deps.env.WORKSPACE_ROOT}/${task.id}`);
+  if (files.length === 0) {
+    const error = "workspace lost: the built files are gone, a new attempt rebuilds them";
+    await markTaskFailed(db, task.id, error);
+    return noActions("failed", task.id, { ...carried, error });
+  }
+  await markTaskRunning(db, task.id);
+  return noActions("ran", task.id, { ...carried, files });
 }
 
 async function recordRun(db: DbClient, task: TaskRecord, result: AgentRunResult): Promise<void> {

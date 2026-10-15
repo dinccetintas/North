@@ -39,3 +39,9 @@ creates a GitHub OAuth app and a Vercel integration, puts the public ids in the
 web env and the secrets plus `CONNECTIONS_ENCRYPTION_KEY` in the worker env
 (`.env.example`), and connects both accounts from Settings → Connections. The
 token is exchanged and encrypted inside the worker; the web app never sees it.
+
+Trust boundary for events: whoever can send events to Inngest can dispatch
+tasks and complete connections for any user id. Locally the Dev Server listens
+on loopback only (keep it that way); in production the event key and signing
+key are secrets on both apps and the Inngest serve endpoints refuse unsigned
+requests.

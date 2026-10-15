@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxEvent } from "@north/integrations";
+import type { FetchLike } from "../src/services/verifier";
 import { directSteps, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState } from "./fake-db";
 
 const state: FakeState = emptyState();
@@ -7,7 +8,7 @@ vi.mock("@north/db", () => fakeDbModule(state));
 
 const { runBuildPipeline } = await import("../src/services/build-pipeline");
 const { attemptDecision, escalateTask, retryInstructions } = await import("../src/services/escalate");
-const { verifyEvidence, verifyUrl } = await import("../src/services/verifier");
+const { isPrivateAddress, verifyEvidence, verifyUrl } = await import("../src/services/verifier");
 const { settleDecision, finishTaskIfIdle } = await import("../src/services/settle");
 const { completeAction, performPending } = await import("../src/services/actions");
 
@@ -98,6 +99,21 @@ describe("runBuildPipeline (M3: repo → push → preview → go-live card)", ()
     expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
   });
 
+  it("ONB-3 under a spent quota: the step is stored quota-deferred, the task parks, and it is not finished on its artifacts (DEC-3)", async () => {
+    const task = seedTask(state, { role: "engineering", taskType: "build_site", result: { artifactIds: ["art-1"], costUsd: 0, summary: "built" } });
+    const deps = fakeDeps(state, events, 200, "live");
+    state.quotaExhausted = true;
+    const outcome = await runBuildPipeline(deps, directSteps, task.id, files);
+    expect(outcome).toMatchObject({ status: "connect_deferred", cardId: null, error: null });
+    expect(state.cards.size).toBe(0);
+    const deferred = state.actions.filter((a) => a.payload.quota_deferred === true);
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]).toMatchObject({ kind: "repo.create", status: "blocked", payload: expect.objectContaining({ connect: "github" }) });
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+    expect(await finishTaskIfIdle(deps, task.id)).toEqual({ status: "waiting_decision" });
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+  });
+
   it("ONB-3: 'connected' resumes the task through settlement; 'skip' fails it with the reason", async () => {
     const deps = fakeDeps(state, events, 200, "live");
     const resumed = seedTask(state, { role: "engineering", taskType: "build_site" });
@@ -139,17 +155,41 @@ describe("AGT-3 attempt policy", () => {
 });
 
 describe("verifier (AGT-2)", () => {
+  it("never follows redirects and refuses private hosts unless the sandbox site origin is listed (SSRF, M3 review)", async () => {
+    const never: FetchLike = async () => {
+      throw new Error("fetch must not be called");
+    };
+    const redirect = await verifyUrl("http://127.0.0.1:3101/x/", { allowPrivate: true, fetchImpl: async () => new Response("", { status: 302, headers: { location: "http://169.254.169.254/" } }) });
+    expect(redirect).toMatchObject({ verified: false, detail: expect.stringContaining("not followed") });
+    expect((await verifyUrl("http://127.0.0.1:3101/x/", { fetchImpl: never })).detail).toMatch(/private/);
+    expect((await verifyUrl("http://10.0.0.5/", { fetchImpl: never })).detail).toMatch(/private/);
+    expect((await verifyUrl("http://[::1]/", { fetchImpl: never })).detail).toMatch(/private/);
+    expect((await verifyUrl("http://localhost:3101/", { fetchImpl: never })).detail).toMatch(/private/);
+    // The sandbox policy lists the site server's origin and nothing else.
+    const sandbox = { allowedOrigins: ["http://127.0.0.1:3101"], allowPrivate: true, fetchImpl: async () => new Response("", { status: 200 }) };
+    expect((await verifyUrl("http://127.0.0.1:3101/sandbox/sites/x/", sandbox)).verified).toBe(true);
+    expect((await verifyUrl("http://127.0.0.1:54321/rest/v1/", sandbox)).detail).toMatch(/not the site server/);
+    for (const [address, isPrivate] of [["127.0.0.1", true], ["10.1.2.3", true], ["172.16.0.1", true], ["172.32.0.1", false], ["192.168.1.1", true], ["169.254.169.254", true], ["100.64.0.1", true], ["8.8.8.8", false], ["::1", true], ["fd00::1", true], ["fe80::1", true], ["::ffff:127.0.0.1", true], ["2606:4700::1", false]] as const) {
+      expect(isPrivateAddress(address), address).toBe(isPrivate);
+    }
+  });
+
   it("accepts 2xx URLs only, rejects bad schemes, and looks artifacts up", async () => {
-    const ok = await verifyUrl("http://127.0.0.1:3101/x/", async () => new Response("", { status: 200 }));
+    const sandbox = { allowPrivate: true };
+    const ok = await verifyUrl("http://127.0.0.1:3101/x/", { ...sandbox, fetchImpl: async () => new Response("", { status: 200 }) });
     expect(ok).toMatchObject({ verified: true, detail: "HTTP 200" });
-    const missing = await verifyUrl("http://127.0.0.1:3101/x/", async () => new Response("", { status: 404 }));
+    const missing = await verifyUrl("http://127.0.0.1:3101/x/", { ...sandbox, fetchImpl: async () => new Response("", { status: 404 }) });
     expect(missing.verified).toBe(false);
-    const down = await verifyUrl("http://127.0.0.1:1/x/", async () => {
-      throw new Error("ECONNREFUSED");
+    const down = await verifyUrl("http://127.0.0.1:1/x/", {
+      ...sandbox,
+      fetchImpl: async () => {
+        throw new Error("ECONNREFUSED");
+      },
     });
     expect(down).toMatchObject({ verified: false, detail: "ECONNREFUSED" });
-    expect((await verifyUrl("sandbox://repos/x", async () => new Response(""))).verified).toBe(false);
-    expect((await verifyUrl("not a url", async () => new Response(""))).verified).toBe(false);
+    expect((await verifyUrl("sandbox://repos/x", { ...sandbox, fetchImpl: async () => new Response("") })).verified).toBe(false);
+    expect((await verifyUrl("not a url", { ...sandbox, fetchImpl: async () => new Response("") })).verified).toBe(false);
+    expect((await verifyUrl("http://user:pw@127.0.0.1:3101/x/", { ...sandbox, fetchImpl: async () => new Response("") })).verified).toBe(false);
     const deps = fakeDeps(state, events);
     expect((await verifyEvidence({ db: deps.db }, "artifact_id", "art-1")).verified).toBe(true);
     expect((await verifyEvidence({ db: deps.db }, "artifact_id", "nope")).verified).toBe(false);

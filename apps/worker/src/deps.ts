@@ -2,12 +2,7 @@ import { createServiceClient, getKillSwitch, searchMemory, type DbClient } from 
 import { loadRoles, minimalSubprocessEnv, selectRuntime, type AgentRuntime, type RoleDefinition } from "@north/agents";
 import { selectIntegrations, type Integrations } from "@north/integrations";
 import { workerEnv, type WorkerEnv } from "./env";
-
-/** How URLs are verified (AGT-2): tests inject a fetch; production uses the global one with a timeout. */
-export interface VerifierConfig {
-  readonly fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
-  readonly timeoutMs?: number;
-}
+import type { VerifierConfig } from "./services/verifier";
 
 /** Everything a worker function needs; built once per process, injectable in tests. */
 export interface WorkerDeps {
@@ -42,12 +37,15 @@ export function buildDeps(env: WorkerEnv = workerEnv()): Promise<WorkerDeps> {
 async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const db = createServiceClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
   const roles = await loadRoles(env.AGENTS_DIR);
+  const siteBaseUrl = process.env.SANDBOX_SITE_BASE_URL ?? `http://127.0.0.1:${env.WORKER_PORT}`;
   const integrations = selectIntegrations({
     ...process.env,
     INTEGRATIONS_MODE: env.INTEGRATIONS_MODE,
     SANDBOX_ROOT: env.SANDBOX_ROOT,
-    SANDBOX_SITE_BASE_URL: process.env.SANDBOX_SITE_BASE_URL ?? `http://127.0.0.1:${env.WORKER_PORT}`,
+    SANDBOX_SITE_BASE_URL: siteBaseUrl,
   });
+  // Sandbox previews live on the worker itself (loopback); live previews must be public hosts (M3 security review M3).
+  const verifier: VerifierConfig = env.INTEGRATIONS_MODE === "sandbox" ? { timeoutMs: 10_000, allowedOrigins: [new URL(siteBaseUrl).origin], allowPrivate: true } : { timeoutMs: 10_000, allowPrivate: false };
   const runtime = selectRuntime(
     {
       roles,
@@ -69,5 +67,5 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
     },
     { AGENT_RUNTIME: env.AGENT_RUNTIME },
   );
-  return Object.freeze({ env, db, roles, runtime, integrations, verifier: { timeoutMs: 10_000 } });
+  return Object.freeze({ env, db, roles, runtime, integrations, verifier });
 }

@@ -1,0 +1,22 @@
+# Build context for apps/worker/Dockerfile (ADR 0007). Nothing with a secret,
+# an agent workspace or a sandbox site may reach the image (M3 security review H1).
+.git
+.github
+docs
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/playwright-report
+**/test-results
+**/.env
+**/.env.*
+!**/.env.example
+**/.workspaces
+**/.sandbox
+**/.stack
+**/test
+**/e2e
+**/*.test.ts
+apps/web
+scripts

@@ -1,4 +1,5 @@
 import type { TaskStatus } from "@north/core/tasks/lifecycle";
+import { isHttpUrl } from "@north/core/url";
 import { formatUsd, roleTitle, TASK_STATUS_CLASS, TASK_STATUS_LABEL } from "@/lib/labels";
 
 export interface TaskRowData {
@@ -13,7 +14,7 @@ export interface TaskRowData {
 }
 
 function EvidenceLink({ evidence, liveUrl }: { evidence: TaskRowData["evidence"]; liveUrl: string | null }) {
-  if (!evidence || evidence.kind !== "url" || !/^https?:\/\//.test(evidence.ref)) return null;
+  if (!evidence || evidence.kind !== "url" || !isHttpUrl(evidence.ref)) return null;
   const label = evidence.ref === liveUrl ? "live" : "preview";
   return (
     <a href={evidence.ref} target="_blank" rel="noreferrer noopener" className="mono-label text-deep hover:underline" data-testid="task-evidence" data-evidence={label}>

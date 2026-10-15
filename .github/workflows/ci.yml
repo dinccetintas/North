@@ -22,8 +22,13 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r lint
       - run: pnpm -r test
+      - name: Worker-only secrets never appear in the web app
+        run: |
+          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY" apps/web/src
       - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
         run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
+      - name: Worker image carries no env files, workspaces or sandbox sites
+        run: docker run --rm north-worker:ci sh -c '! find /app -name ".env" -o -name ".env.*" ! -name ".env.example" | grep . && ! ls -d /app/apps/worker/.workspaces /app/apps/worker/.sandbox 2>/dev/null'
       - name: Start local Supabase
         run: pnpm db:start
       - name: Integration tests (RLS, constraints)

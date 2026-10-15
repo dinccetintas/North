@@ -7,6 +7,15 @@ const PublicEnvSchema = z.object({
 });
 export type PublicEnv = z.infer<typeof PublicEnvSchema>;
 
+const IntegrationsModeSchema = z.enum(["sandbox", "live"]).default("sandbox");
+
+/** The web app's view of the integrations mode: it only decides whether "Connect (sandbox)" is offered; the worker enforces it. */
+export function integrationsMode(env: Readonly<Record<string, string | undefined>> = process.env): "sandbox" | "live" {
+  const parsed = IntegrationsModeSchema.safeParse(env.INTEGRATIONS_MODE || undefined);
+  if (!parsed.success) throw new Error("INTEGRATIONS_MODE must be sandbox or live");
+  return parsed.data;
+}
+
 /**
  * Validated public environment. Values are read explicitly so Next.js can
  * inline them for the browser bundle.

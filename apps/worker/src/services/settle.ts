@@ -19,6 +19,7 @@ import {
   type TaskRecord,
 } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { listDeferredRows } from "./actions";
 import { CONNECT_OPTION, isConnectCard } from "./connect-card";
 
 /**
@@ -129,6 +130,8 @@ export async function finishTaskIfIdle(deps: WorkerDeps, taskId: string): Promis
   const actions = await headActionsForTask(db, taskId);
   if (actions.some((a) => a.status === "pending")) return { status: "waiting_decision" };
   if ((await listPendingCardsForTask(db, taskId)).length > 0) return { status: "waiting_decision" };
+  // A quota-deferred step is still owed (DEC-3): the retry cron re-dispatches the task tomorrow; it is not done today.
+  if ((await listDeferredRows(db, taskId)).length > 0) return { status: "waiting_decision" };
   const sandbox = deps.integrations.mode === "sandbox" || deps.runtime.name === "mock";
   const evidence = evidenceFor(task, actions, sandbox);
   if (task.status === "waiting_decision") await markTaskRunning(db, taskId);

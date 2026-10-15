@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exchangeGithubCode, exchangeVercelCode, oauthClients, type FetchLike } from "../src/services/oauth";
+import { exchangeGithubCode, exchangeVercelCode, oauthClients, revokeProviderToken, type FetchLike } from "../src/services/oauth";
 
 const client = { clientId: "id", clientSecret: "s3cret" };
 
@@ -10,7 +10,8 @@ function fakeFetch(answers: Record<string, { status?: number; body: unknown }>):
     calls.push({ url, init });
     const answer = answers[url];
     if (!answer) return new Response("not found", { status: 404 });
-    return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200, headers: { "content-type": "application/json" } });
+    const status = answer.status ?? 200;
+    return new Response(status === 204 ? null : JSON.stringify(answer.body), { status, headers: { "content-type": "application/json" } });
   };
   return { fetchImpl, calls };
 }
@@ -49,5 +50,17 @@ describe("ONB-3 OAuth code exchange (worker side: client secrets never leave her
     const personal = fakeFetch({ "https://api.vercel.com/v2/oauth/access_token": { body: { access_token: "vc_y", team_id: null } }, "https://api.vercel.com/v2/user": { body: {} } });
     expect(await exchangeVercelCode(client, "c", "http://x/cb", personal.fetchImpl)).toEqual({ token: "vc_y", scopes: ["deployments"], accountLabel: "" });
     await expect(exchangeVercelCode(client, "c", "http://x/cb", fakeFetch({}).fetchImpl)).rejects.toThrow(/Vercel token exchange failed/);
+  });
+
+  it("revokeProviderToken: GitHub tokens are revoked with the app's basic auth; 404 counts as gone; Vercel is left to the dashboard", async () => {
+    const { fetchImpl, calls } = fakeFetch({ "https://api.github.com/applications/id/token": { status: 204, body: {} } });
+    expect(await revokeProviderToken("github", client, "gho_x", fetchImpl)).toBe(true);
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: `Basic ${Buffer.from("id:s3cret").toString("base64")}` });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ access_token: "gho_x" });
+    expect(await revokeProviderToken("github", client, "gho_x", fakeFetch({}).fetchImpl)).toBe(true);
+    expect(await revokeProviderToken("github", client, "gho_x", fakeFetch({ "https://api.github.com/applications/id/token": { status: 500, body: {} } }).fetchImpl)).toBe(false);
+    expect(await revokeProviderToken("github", null, "gho_x", fetchImpl)).toBe(false);
+    expect(await revokeProviderToken("vercel", client, "vc_x", fetchImpl)).toBe(false);
   });
 });

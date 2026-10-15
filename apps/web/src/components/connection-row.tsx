@@ -26,7 +26,7 @@ const STATUS_CLASS: Readonly<Record<ConnectionRowData["status"], string>> = Obje
 const STATUS_LABEL: Readonly<Record<ConnectionRowData["status"], string>> = Object.freeze({
   connected: "connected",
   revoked: "disconnected",
-  error: "error",
+  error: "error · connect again",
   none: "not connected",
 });
 

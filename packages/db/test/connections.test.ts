@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ConnectionSecretError, dropConnectionSecret, getConnection, listConnections, readConnectionSecret, revokeConnection, storeConnectionSecret, upsertConnection } from "../src/connections";
+import { ConnectionSecretError, dropConnectionSecret, dropOrphanSecrets, getConnection, listConnections, readConnectionSecret, revokeConnection, SANDBOX_SCOPE, setConnectionStatus, storeConnectionSecret, upsertConnection } from "../src/connections";
 import { DbError } from "../src/errors";
 import { generateEncryptionKey, openSecret, sealSecret, encryptionKey } from "../src/secrets";
 import { createTestUser, deleteTestUser, service, type TestUser } from "./fixtures";
@@ -37,11 +37,14 @@ describe("connections repository (ONB-3, EXP-1)", () => {
   });
 
   it("upsertConnection creates one row per provider and getConnection/listConnections expose metadata only", async () => {
-    const created = await upsertConnection(alice.client, { userId: alice.id, provider: "github", scopes: ["repo"], accountLabel: "alice-gh" });
-    expect(created).toMatchObject({ userId: alice.id, provider: "github", status: "connected", scopes: ["repo"], accountLabel: "alice-gh" });
+    // The worker (service role) writes real connections: first `error` while the token is exchanged, then `connected`.
+    const created = await upsertConnection(service, { userId: alice.id, provider: "github", scopes: ["repo"], accountLabel: "alice-gh", status: "error" });
+    expect(created).toMatchObject({ userId: alice.id, provider: "github", status: "error", scopes: ["repo"], accountLabel: "alice-gh" });
     expect(Object.isFrozen(created)).toBe(true);
-    const again = await upsertConnection(alice.client, { userId: alice.id, provider: "github", scopes: ["repo", "workflow"], accountLabel: "alice-gh2" });
+    await setConnectionStatus(service, created.id, "connected");
+    const again = await upsertConnection(service, { userId: alice.id, provider: "github", scopes: ["repo", "workflow"], accountLabel: "alice-gh2" });
     expect(again.id).toBe(created.id);
+    expect(again.status).toBe("connected");
     expect(again.scopes).toEqual(["repo", "workflow"]);
     expect(await getConnection(alice.client, alice.id, "github")).toEqual(again);
     expect(await getConnection(alice.client, alice.id, "vercel")).toBeNull();
@@ -64,6 +67,23 @@ describe("connections repository (ONB-3, EXP-1)", () => {
     expect(await bob.client.from("connection_secrets").select("connection_id").then((r) => r.data ?? [])).toEqual([]);
   });
 
+  it("owners write sandbox rows only: a token-backed 'connected' row cannot be forged or edited into one (migration 0007)", async () => {
+    await expect(upsertConnection(alice.client, { userId: alice.id, provider: "vercel", scopes: ["deployments"], accountLabel: "forged" })).rejects.toBeInstanceOf(DbError);
+    const sandbox = await upsertConnection(alice.client, { userId: alice.id, provider: "vercel", scopes: [SANDBOX_SCOPE], accountLabel: "sandbox" });
+    expect(sandbox.status).toBe("connected");
+    // Dropping the sandbox scope while staying connected is refused; revoking is allowed.
+    const edit = await alice.client.from("connections").update({ scopes: ["deployments"] }).eq("id", sandbox.id).select("id");
+    expect(edit.error?.code ?? (edit.data?.length === 0 ? "42501" : "ok")).not.toBe("ok");
+    expect((await getConnection(service, alice.id, "vercel"))?.scopes).toEqual([SANDBOX_SCOPE]);
+    const real = await getConnection(service, alice.id, "github");
+    const promote = await alice.client.from("connections").update({ account_label: "mine" }).eq("id", real!.id).select("id");
+    expect(promote.error?.code ?? (promote.data?.length === 0 ? "42501" : "ok")).not.toBe("ok");
+    const del = await alice.client.from("connections").delete().eq("id", sandbox.id).select("id");
+    expect(del.error?.code ?? (del.data?.length === 0 ? "42501" : "ok")).not.toBe("ok");
+    await revokeConnection(alice.client, alice.id, "vercel");
+    expect((await getConnection(alice.client, alice.id, "vercel"))?.status).toBe("revoked");
+  });
+
   it("a stranger cannot see, create for, or revoke another user's connection", async () => {
     expect(await listConnections(bob.client, alice.id)).toEqual([]);
     expect(await getConnection(bob.client, alice.id, "github")).toBeNull();
@@ -82,6 +102,18 @@ describe("connections repository (ONB-3, EXP-1)", () => {
     await expect(readConnectionSecret(service, before!.id, KEY)).rejects.toBeInstanceOf(DbError);
     await dropConnectionSecret(service, before!.id);
     await expect(revokeConnection(service, alice.id, "stripe")).rejects.toBeInstanceOf(DbError);
+  });
+
+  it("dropOrphanSecrets removes secrets of rows that are not connected and leaves connected ones", async () => {
+    const connected = await upsertConnection(service, { userId: bob.id, provider: "github", scopes: ["repo"], accountLabel: "bob" });
+    await storeConnectionSecret(service, connected.id, "gho_bob", KEY);
+    const revoked = await upsertConnection(service, { userId: bob.id, provider: "vercel", scopes: ["deployments"], accountLabel: "bob" });
+    await storeConnectionSecret(service, revoked.id, "vc_bob", KEY);
+    await revokeConnection(service, bob.id, "vercel");
+    expect(await dropOrphanSecrets(service)).toBeGreaterThanOrEqual(1);
+    expect(await readConnectionSecret(service, connected.id, KEY)).toBe("gho_bob");
+    await expect(readConnectionSecret(service, revoked.id, KEY)).rejects.toBeInstanceOf(DbError);
+    expect(await dropOrphanSecrets(service)).toBe(0);
   });
 
   it("rejects unknown providers in code and in the database", async () => {

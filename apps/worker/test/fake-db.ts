@@ -61,6 +61,13 @@ export interface FakeCard {
   answeredBy: string | null;
 }
 
+export interface FakeConnection {
+  id: string;
+  status: string;
+  scopes: string[];
+  accountLabel: string;
+}
+
 export interface FakeState {
   tasks: Map<string, FakeTask>;
   actions: FakeAction[];
@@ -266,8 +273,10 @@ export function fakeDbModule(state: FakeState) {
     companyOwnerId: vi.fn(async (_db: unknown, companyId: string) => must(state.companies.get(companyId), "company").ownerId),
     getCompanyById: vi.fn(async (_db: unknown, companyId: string) => state.companies.get(companyId) ?? null),
     getProfile: vi.fn(async (_db: unknown, userId: string) => state.profiles.get(userId) ?? null),
-    getConnection: vi.fn(async () => null),
-    readConnectionSecret: vi.fn(async () => "token"),
+    getConnection: vi.fn(async (_db: unknown, _userId: string, _provider: string): Promise<FakeConnection | null> => null),
+    readConnectionSecret: vi.fn(async (_db: unknown, _connectionId: string): Promise<string> => "token"),
+    setConnectionStatus: vi.fn(async () => undefined),
+    SANDBOX_SCOPE: "sandbox",
     listPushSubscriptions: vi.fn(async () => state.pushSubscriptions),
     recordNotification: vi.fn(async (_db: unknown, input: unknown) => {
       state.notifications.push(input);
@@ -296,7 +305,7 @@ export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifySt
     roles: new Map(),
     runtime: { name: "mock", run: async () => ({ status: "failed", error: "not used", sessionId: null, usage: { model: "mock", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 } }) },
     integrations: mode === "sandbox" ? sandbox : { ...sandbox, mode },
-    verifier: { fetchImpl: async () => new Response("ok", { status: verifyStatus }), timeoutMs: 1000 },
+    verifier: { fetchImpl: async () => new Response("ok", { status: verifyStatus }), timeoutMs: 1000, allowedOrigins: ["http://127.0.0.1:3101"], allowPrivate: true },
   };
 }
 

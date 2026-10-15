@@ -1,6 +1,6 @@
 import { cron } from "inngest";
 import { CompanyEventSchema, ConnectionOauthCodeSchema, ConnectionRevokedSchema, DecisionAnsweredSchema, DecisionOpenedSchema, EVENT, TaskDispatchSchema } from "@north/core";
-import { getKillSwitch, getTask, markTaskFailed } from "@north/db";
+import { dropOrphanSecrets, getKillSwitch, getTask, markTaskFailed } from "@north/db";
 import { inngest } from "./client";
 import { buildDeps } from "../deps";
 import { createOnboardingTasks, seedAgents } from "../services/onboard";
@@ -251,9 +251,19 @@ export const revokeProvider = inngest.createFunction(
   },
 );
 
+/** Safety net behind connection/revoked: no secret outlives a connection that is not `connected` (ADR 0008). */
+export const sweepSecrets = inngest.createFunction(
+  { id: "sweep-secrets", triggers: [cron("23 * * * *")], retries: 0 },
+  async ({ step }) => {
+    const deps = await buildDeps();
+    const dropped = await step.run("drop-orphans", () => dropOrphanSecrets(deps.db));
+    return { dropped };
+  },
+);
+
 export const ping = inngest.createFunction(
   { id: "ping", triggers: [{ event: "worker/ping" }] },
   async ({ step }) => step.run("pong", async () => ({ pong: true, at: new Date().toISOString() })),
 );
 
-export const functions = [runTask, settleDecisionFn, decisionDeadlines, notifyDecisionFn, onboardCompany, planWeekFn, killSwitch, resumeCompany, retryDeferred, connectProvider, revokeProvider, ping];
+export const functions = [runTask, settleDecisionFn, decisionDeadlines, notifyDecisionFn, onboardCompany, planWeekFn, killSwitch, resumeCompany, retryDeferred, connectProvider, revokeProvider, sweepSecrets, ping];

@@ -24,7 +24,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const state = newState();
   const redirectUri = `${origin}/api/connections/${provider.data}/callback`;
   const response = NextResponse.redirect(config.authorizeUrl(state, redirectUri));
-  response.cookies.set(STATE_COOKIE, stateCookieValue(provider.data, state), {
+  response.cookies.set(STATE_COOKIE, stateCookieValue(provider.data, user.id, state), {
     httpOnly: true,
     sameSite: "lax",
     secure: origin.startsWith("https://"),

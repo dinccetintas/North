@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AgentOutputSchema, MAX_OUTPUT_FILES, OutputFilesSchema, TASK_OWNER, WorkspacePathSchema } from "../src/tasks/types";
 import { providerForAction, CONNECTION_PROVIDERS, CONNECT_CARD_OPTIONS, isConnectCard, PROVIDER_TITLES } from "../src/connections";
 import { ConnectionOauthCodeSchema, ConnectionRevokedSchema } from "../src/events";
+import { isHttpUrl } from "../src/url";
 import { evidenceKindFor } from "../src/evidence";
 import { TaskEscalatedSchema, EVENT } from "../src/events";
 
@@ -47,6 +48,12 @@ describe("M3 contracts: connections and evidence", () => {
     expect(evidenceKindFor("support.reply.custom")).toBe("message_id");
     expect(evidenceKindFor("artifact.write")).toBe("artifact_id");
     expect(evidenceKindFor("repo.push")).toBeNull();
+  });
+
+  it("isHttpUrl accepts http(s) without credentials and nothing else (links in the UI, verifier input)", () => {
+    expect(isHttpUrl("http://127.0.0.1:3101/sandbox/sites/x/")).toBe(true);
+    expect(isHttpUrl("https://north-site.vercel.app")).toBe(true);
+    for (const bad of ["javascript:alert(1)", "data:text/html,hi", "sandbox://repos/x", "http://user:pw@host/", "not a url", "", null, undefined, "ftp://x/"]) expect(isHttpUrl(bad)).toBe(false);
   });
 
   it("ONB-3: a connect card is recognised by both option ids, never by one alone", () => {
