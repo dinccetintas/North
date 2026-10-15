@@ -52,7 +52,8 @@ describe("schema constraints", () => {
   });
 
   it("K3 cards cannot carry a default option", async () => {
-    const k3 = await raw.from("decision_cards").insert({ company_id: companyId, action_kind: "data.delete", tier: "K3", question: "Delete?", options, recommended_option_id: "decline", default_option_id: "decline", rationale: "r", due_at: due, day: "2099-01-01" });
+    // opened_at in the future puts the card on another quota day (the trigger derives `day` from it; a supplied `day` is ignored).
+    const k3 = await raw.from("decision_cards").insert({ company_id: companyId, action_kind: "data.delete", tier: "K3", question: "Delete?", options, recommended_option_id: "decline", default_option_id: "decline", rationale: "r", due_at: due, opened_at: "2099-01-01T12:00:00Z" });
     expect(k3.error?.message).toMatch(/k3_has_no_default/);
   });
 

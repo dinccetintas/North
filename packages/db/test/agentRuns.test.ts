@@ -1,9 +1,25 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { recordAgentRun } from "../src/agentRuns";
+import { costSummary, listRecentRuns, recordAgentRun, type RecordAgentRunInput } from "../src/agentRuns";
+import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
-describe("agent runs repository", () => {
+const run = (companyId: string, overrides: Partial<RecordAgentRunInput> = {}): RecordAgentRunInput => ({
+  companyId,
+  taskId: null,
+  role: "research",
+  model: "drafter",
+  runtime: "mock",
+  sessionId: null,
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  durationMs: 0,
+  status: "succeeded",
+  ...overrides,
+});
+
+describe("agent runs repository (OBS-1)", () => {
   let owned: OwnedCompany;
   let stranger: TestUser;
 
@@ -17,33 +33,63 @@ describe("agent runs repository", () => {
     await deleteTestUser(stranger);
   });
 
-  it("recordAgentRun stores model, tokens, cost, duration and status", async () => {
+  it("recordAgentRun (worker) stores model, tokens, cost, duration and status", async () => {
     const task = await createTask(owned.owner.client, { companyId: owned.companyId, role: "research", taskType: "market_report", title: "t" });
-    const id = await recordAgentRun(owned.owner.client, {
-      companyId: owned.companyId,
-      taskId: task.id,
-      role: "research",
-      model: "drafter",
-      runtime: "mock",
-      sessionId: null,
-      inputTokens: 1200,
-      outputTokens: 300,
-      costUsd: 0.012,
-      durationMs: 850,
-      status: "succeeded",
-    });
+    const id = await recordAgentRun(service, run(owned.companyId, { taskId: task.id, inputTokens: 1200, outputTokens: 300, costUsd: 0.012, durationMs: 850 }));
     const row = await service.from("agent_runs").select("task_id, role, model, runtime, session_id, input_tokens, output_tokens, cost_usd, duration_ms, status, error").eq("id", id).single();
     expect(row.data).toEqual({ task_id: task.id, role: "research", model: "drafter", runtime: "mock", session_id: null, input_tokens: 1200, output_tokens: 300, cost_usd: 0.012, duration_ms: 850, status: "succeeded", error: null });
   });
 
   it("records a failed run with its error and rejects an unknown runtime", async () => {
-    const id = await recordAgentRun(owned.owner.client, { companyId: owned.companyId, taskId: null, role: "research", model: "drafter", runtime: "claude-agent-sdk", sessionId: "sess-1", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 10, status: "failed", error: "timeout" });
+    const id = await recordAgentRun(service, run(owned.companyId, { runtime: "claude-agent-sdk", sessionId: "sess-1", durationMs: 10, status: "failed", error: "timeout" }));
     const row = await service.from("agent_runs").select("status, error, session_id").eq("id", id).single();
     expect(row.data).toEqual({ status: "failed", error: "timeout", session_id: "sess-1" });
-    await expect(recordAgentRun(owned.owner.client, { companyId: owned.companyId, taskId: null, role: "research", model: "m", runtime: "openai" as never, sessionId: null, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0, status: "succeeded" })).rejects.toThrow();
+    await expect(recordAgentRun(service, run(owned.companyId, { runtime: "openai" as never }))).rejects.toThrow();
   });
 
-  it("another owner cannot record runs for the company", async () => {
-    await expect(recordAgentRun(stranger.client, { companyId: owned.companyId, taskId: null, role: "research", model: "m", runtime: "mock", sessionId: null, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0, status: "succeeded" })).rejects.toThrow();
+  it("OBS-1: owners and strangers read but never record runs", async () => {
+    await expect(recordAgentRun(owned.owner.client, run(owned.companyId))).rejects.toBeInstanceOf(DbError);
+    await expect(recordAgentRun(stranger.client, run(owned.companyId))).rejects.toBeInstanceOf(DbError);
+    expect((await listRecentRuns(owned.owner.client, owned.companyId, 10)).length).toBe(2);
+    expect(await listRecentRuns(stranger.client, owned.companyId, 10)).toEqual([]);
+  });
+
+  it("listRecentRuns is newest first with the full record and honours the limit", async () => {
+    const runs = await listRecentRuns(owned.owner.client, owned.companyId, 10);
+    expect(runs.map((r) => r.status)).toEqual(["failed", "succeeded"]);
+    expect(runs[0]).toMatchObject({ companyId: owned.companyId, taskId: null, role: "research", model: "drafter", runtime: "claude-agent-sdk", sessionId: "sess-1", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 10, status: "failed", error: "timeout" });
+    expect(typeof runs[0]?.id).toBe("string");
+    expect(typeof runs[0]?.createdAt).toBe("string");
+    expect(Object.isFrozen(runs)).toBe(true);
+    expect(Object.isFrozen(runs[0])).toBe(true);
+    expect((await listRecentRuns(owned.owner.client, owned.companyId, 1)).length).toBe(1);
+  });
+
+  it("costSummary aggregates runs, tokens and cost by role and by day inside the window", async () => {
+    const companyId = await createCompanyFor(owned.owner, "agentruns-cost");
+    expect(await costSummary(owned.owner.client, companyId, 30)).toEqual({ runs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, byRole: [], byDay: [] });
+    await recordAgentRun(service, run(companyId, { role: "research", inputTokens: 1000, outputTokens: 200, costUsd: 0.5 }));
+    await recordAgentRun(service, run(companyId, { role: "research", inputTokens: 500, outputTokens: 100, costUsd: 0.25, status: "failed", error: "x" }));
+    await recordAgentRun(service, run(companyId, { role: "engineering", inputTokens: 4000, outputTokens: 1000, costUsd: 2 }));
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    await service.from("agent_runs").insert({ company_id: companyId, role: "design", model: "m", runtime: "mock", status: "succeeded", cost_usd: 100, input_tokens: 9, created_at: old });
+    const summary = await costSummary(owned.owner.client, companyId, 30);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(summary).toEqual({
+      runs: 3,
+      inputTokens: 5500,
+      outputTokens: 1300,
+      costUsd: 2.75,
+      byRole: [
+        { role: "engineering", runs: 1, inputTokens: 4000, outputTokens: 1000, costUsd: 2 },
+        { role: "research", runs: 2, inputTokens: 1500, outputTokens: 300, costUsd: 0.75 },
+      ],
+      byDay: [{ day: today, runs: 3, costUsd: 2.75 }],
+    });
+    expect(Object.isFrozen(summary)).toBe(true);
+    expect(Object.isFrozen(summary.byRole)).toBe(true);
+    expect((await costSummary(service, companyId, 60)).costUsd).toBe(102.75);
+    expect(await costSummary(stranger.client, companyId, 30)).toMatchObject({ runs: 0, costUsd: 0 });
+    await expect(costSummary(service, companyId, 0)).rejects.toThrow();
   });
 });

@@ -173,6 +173,21 @@ export async function listTasks(db: DbClient, companyId: string, opts: ListTasks
   return Object.freeze((data ?? []).map(toTaskRecord));
 }
 
+export interface ListTasksByTypeOptions {
+  readonly status?: readonly TaskStatus[];
+}
+
+/** Tasks of one type, oldest first, optionally only in some statuses (an open `fix_error` for the same issue is reused, PRO-2). */
+export async function listTasksByType(db: DbClient, companyId: string, taskType: TaskType, opts: ListTasksByTypeOptions = {}): Promise<readonly TaskRecord[]> {
+  const id = UuidSchema.parse(companyId);
+  const type = z.enum(TASK_TYPES).parse(taskType);
+  const base = db.from("tasks").select(TASK_COLUMNS).eq("company_id", id).eq("task_type", type);
+  const byStatus = opts.status && opts.status.length > 0 ? base.in("status", z.array(z.enum(TASK_STATUSES)).parse(opts.status)) : base;
+  const { data, error } = await byStatus.order("created_at", { ascending: true });
+  if (error) throw dbError("Could not list tasks by type", error);
+  return Object.freeze((data ?? []).map(toTaskRecord));
+}
+
 type TaskPatch = Pick<TablesUpdate<"tasks">, "cost_usd" | "output_summary" | "last_error">;
 
 /**

@@ -357,6 +357,7 @@ export type Database = {
           content: NonNullable<Json>;
           created_at: string;
           id: string;
+          word_count: number;
         };
         ComputedFields: never;
         Insert: {
@@ -365,6 +366,7 @@ export type Database = {
           content: NonNullable<Json>;
           created_at?: string;
           id?: string;
+          word_count?: number;
         };
         Update: {
           brief_date?: string;
@@ -372,6 +374,7 @@ export type Database = {
           content?: NonNullable<Json>;
           created_at?: string;
           id?: string;
+          word_count?: number;
         };
         Relationships: [
           {
@@ -547,6 +550,7 @@ export type Database = {
           onboarding_step: string;
           owner_id: string;
           public_page_enabled: boolean;
+          sentry_project_slug: string | null;
           slug: string;
           status: string;
           updated_at: string;
@@ -560,6 +564,7 @@ export type Database = {
           onboarding_step?: string;
           owner_id: string;
           public_page_enabled?: boolean;
+          sentry_project_slug?: string | null;
           slug: string;
           status?: string;
           updated_at?: string;
@@ -572,6 +577,7 @@ export type Database = {
           onboarding_step?: string;
           owner_id?: string;
           public_page_enabled?: boolean;
+          sentry_project_slug?: string | null;
           slug?: string;
           status?: string;
           updated_at?: string;
@@ -683,6 +689,7 @@ export type Database = {
           expected_impact: string | null;
           id: string;
           merge_key: string;
+          opened_at: string;
           options: NonNullable<Json>;
           question: string;
           rationale: string;
@@ -707,6 +714,7 @@ export type Database = {
           expected_impact?: string | null;
           id?: string;
           merge_key?: string;
+          opened_at?: string;
           options: NonNullable<Json>;
           question: string;
           rationale: string;
@@ -730,6 +738,7 @@ export type Database = {
           expected_impact?: string | null;
           id?: string;
           merge_key?: string;
+          opened_at?: string;
           options?: NonNullable<Json>;
           question?: string;
           rationale?: string;
@@ -1092,6 +1101,7 @@ export type Database = {
           goal_id: string | null;
           id: string;
           rationale: string;
+          revisions: NonNullable<Json>;
           status: string;
           summary: string;
           week_start: string;
@@ -1103,6 +1113,7 @@ export type Database = {
           goal_id?: string | null;
           id?: string;
           rationale?: string;
+          revisions?: NonNullable<Json>;
           status?: string;
           summary: string;
           week_start: string;
@@ -1113,6 +1124,7 @@ export type Database = {
           goal_id?: string | null;
           id?: string;
           rationale?: string;
+          revisions?: NonNullable<Json>;
           status?: string;
           summary?: string;
           week_start?: string;
@@ -1172,35 +1184,74 @@ export type Database = {
       };
       signals: {
         Row: {
+          card_week: string | null;
           company_id: string;
           converted_card_id: string | null;
+          converted_task_id: string | null;
           created_at: string;
           evidence_urls: NonNullable<Json>;
+          excerpt: string;
           id: string;
+          kind: string;
+          observed_at: string;
+          payload: NonNullable<Json>;
+          rationale: string;
           score: number;
+          scored_at: string | null;
           source: string;
+          source_ref: string;
+          status: string;
           summary: string;
+          title: string;
+          updated_at: string;
+          url: string | null;
         };
         ComputedFields: never;
         Insert: {
+          card_week?: string | null;
           company_id: string;
           converted_card_id?: string | null;
+          converted_task_id?: string | null;
           created_at?: string;
           evidence_urls?: NonNullable<Json>;
+          excerpt?: string;
           id?: string;
+          kind?: string;
+          observed_at?: string;
+          payload?: NonNullable<Json>;
+          rationale?: string;
           score?: number;
+          scored_at?: string | null;
           source: string;
-          summary: string;
+          source_ref: string;
+          status?: string;
+          summary?: string;
+          title?: string;
+          updated_at?: string;
+          url?: string | null;
         };
         Update: {
+          card_week?: string | null;
           company_id?: string;
           converted_card_id?: string | null;
+          converted_task_id?: string | null;
           created_at?: string;
           evidence_urls?: NonNullable<Json>;
+          excerpt?: string;
           id?: string;
+          kind?: string;
+          observed_at?: string;
+          payload?: NonNullable<Json>;
+          rationale?: string;
           score?: number;
+          scored_at?: string | null;
           source?: string;
+          source_ref?: string;
+          status?: string;
           summary?: string;
+          title?: string;
+          updated_at?: string;
+          url?: string | null;
         };
         Relationships: [
           {
@@ -1215,6 +1266,13 @@ export type Database = {
             columns: ["converted_card_id"];
             isOneToOne: false;
             referencedRelation: "decision_cards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "signals_converted_task_id_fkey";
+            columns: ["converted_task_id"];
+            isOneToOne: false;
+            referencedRelation: "tasks";
             referencedColumns: ["id"];
           },
         ];

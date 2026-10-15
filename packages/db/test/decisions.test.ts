@@ -1,9 +1,13 @@
+import { localDay } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { recordAction } from "../src/actions";
-import { AlreadyAnsweredError, answerCard, cardsOpenedToday, getCard, listAnsweredCards, listCards, listPendingCards, openCard, QuotaExceededError } from "../src/decisions";
+import { AlreadyAnsweredError, answerCard, cardsOpenedToday, getCard, listAnsweredCards, listCards, listCardsOpenedOn, listPendingCards, openCard, QuotaExceededError } from "../src/decisions";
 import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
 import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
+
+/** Test owners stay at the default zone, so their quota day is the UTC day. */
+const today = (): string => localDay("UTC", new Date());
 
 describe("decisions repository (DEC-2, DEC-3)", () => {
   let owned: OwnedCompany;
@@ -21,16 +25,34 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
 
   it("DEC-3: openCard assigns seq 1..3 and the fourth card of the day throws QuotaExceededError", async () => {
     const companyId = await createCompanyFor(owned.owner, "quota");
-    expect(await cardsOpenedToday(owned.owner.client, companyId)).toBe(0);
+    expect(await cardsOpenedToday(owned.owner.client, companyId, today())).toBe(0);
     const seqs: number[] = [];
     for (let i = 0; i < 3; i++) {
       seqs.push((await openCard(service, { ...sampleCardDraft(companyId), taskId: null })).seq);
     }
     expect(seqs).toEqual([1, 2, 3]);
-    expect(await cardsOpenedToday(owned.owner.client, companyId)).toBe(3);
+    expect(await cardsOpenedToday(owned.owner.client, companyId, today())).toBe(3);
     await expect(openCard(service, { ...sampleCardDraft(companyId), taskId: null })).rejects.toBeInstanceOf(QuotaExceededError);
-    expect(await cardsOpenedToday(service, companyId)).toBe(3);
+    expect(await cardsOpenedToday(service, companyId, today())).toBe(3);
     expect(await cardsOpenedToday(service, companyId, "2000-01-01")).toBe(0);
+    await expect(cardsOpenedToday(service, companyId, "today")).rejects.toThrow();
+  });
+
+  it("DEC-3: a card opened with openedAt yesterday lands on yesterday and does not count today", async () => {
+    const companyId = await createCompanyFor(owned.owner, "yesterday");
+    const yesterday = new Date(Date.now() - 86_400_000);
+    const card = await openCard(service, { ...sampleCardDraft(companyId), taskId: null, openedAt: yesterday.toISOString() });
+    expect(card.day).toBe(localDay("UTC", yesterday));
+    expect(new Date(card.openedAt).toISOString()).toBe(yesterday.toISOString());
+    expect(await cardsOpenedToday(service, companyId, today())).toBe(0);
+    expect(await cardsOpenedToday(service, companyId, card.day)).toBe(1);
+    expect((await listCardsOpenedOn(owned.owner.client, companyId, card.day)).map((c) => c.id)).toEqual([card.id]);
+    expect(await listCardsOpenedOn(owned.owner.client, companyId, today())).toEqual([]);
+    expect(await listCardsOpenedOn(stranger.client, companyId, card.day)).toEqual([]);
+    const now = await openCard(service, { ...sampleCardDraft(companyId), taskId: null });
+    expect(now.day).toBe(today());
+    expect(typeof now.openedAt).toBe("string");
+    await expect(openCard(service, { ...sampleCardDraft(companyId), taskId: null, openedAt: "yesterday" })).rejects.toThrow();
   });
 
   it("openCard stores the draft with its task and action links; getCard returns the frozen record", async () => {
@@ -69,7 +91,7 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
     await expect(openCard(service, { ...draft, defaultOptionId: "nope", taskId: null })).rejects.toThrow();
     await expect(openCard(service, { ...draft, tier: "K1", taskId: null })).rejects.toThrow();
     await expect(openCard(service, { ...draft, tier: "K3", taskId: null })).rejects.toThrow();
-    expect(await cardsOpenedToday(service, owned.companyId)).toBe(1);
+    expect(await cardsOpenedToday(service, owned.companyId, today())).toBe(1);
   });
 
   it("answerCard rejects unknown options, records the answer once, then throws AlreadyAnsweredError", async () => {

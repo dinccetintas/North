@@ -1,6 +1,6 @@
 import { TaskTransitionError } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTask, getTask, listTasks, markTaskDone, markTaskFailed, markTaskRunning, markTaskWaiting } from "../src/tasks";
+import { createTask, getTask, listTasks, listTasksByType, markTaskDone, markTaskFailed, markTaskRunning, markTaskWaiting } from "../src/tasks";
 import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("tasks repository (AGT-1/2/3)", () => {
@@ -73,6 +73,18 @@ describe("tasks repository (AGT-1/2/3)", () => {
     expect(queued.length).toBeGreaterThan(0);
     const doneOrFailed = await listTasks(owned.owner.client, owned.companyId, { status: ["done", "failed"] });
     expect(doneOrFailed.map((t) => t.status).sort()).toEqual(["done", "failed"]);
+  });
+
+  it("listTasksByType lists one task type, optionally only in some statuses (an open fix_error for the same ref)", async () => {
+    const fix = await createTask(owned.owner.client, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-1", input: "ref: 12345" });
+    const second = await createTask(owned.owner.client, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-2", input: "ref: 67890" });
+    await markTaskRunning(owned.owner.client, second.id);
+    await markTaskFailed(owned.owner.client, second.id, "boom");
+    expect((await listTasksByType(owned.owner.client, owned.companyId, "fix_error")).map((t) => t.id)).toEqual([fix.id, second.id]);
+    expect((await listTasksByType(owned.owner.client, owned.companyId, "fix_error", { status: ["queued", "running", "waiting_decision"] })).map((t) => t.id)).toEqual([fix.id]);
+    expect(await listTasksByType(owned.owner.client, owned.companyId, "signal_research")).toEqual([]);
+    expect(await listTasksByType(stranger.client, owned.companyId, "fix_error")).toEqual([]);
+    await expect(listTasksByType(service, owned.companyId, "hack" as never)).rejects.toThrow();
   });
 
   it("another owner sees nothing and cannot drive the task", async () => {

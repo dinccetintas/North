@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
-import { latestChannelSample, latestMetric, listChannelSamples, recordMetric } from "../src/metrics";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { latestChannelSample, latestMetric, listChannelSamples, metricSeries, recordMetric } from "../src/metrics";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("metrics repository (OUT-2)", () => {
   let owned: OwnedCompany;
@@ -65,5 +65,25 @@ describe("metrics repository (OUT-2)", () => {
     await recordMetric(service, { companyId: owned.companyId, metricKey: "email_replies", value: 2, source: "sandbox_mail", scope: "channel", provenance });
     await expect(recordMetric(service, { companyId: owned.companyId, metricKey: "email_replies", value: 3, source: "sandbox_mail", scope: "channel", provenance })).rejects.toBeInstanceOf(DbError);
     expect((await latestChannelSample(service, owned.companyId, "email_replies", "cold_email:batch-1"))?.value).toBe(2);
+  });
+
+  it("metricSeries: company-scope points of one key, oldest first, inside the window; channel samples never appear", async () => {
+    const companyId = await createCompanyFor(owned.owner, "metrics-series");
+    expect(await metricSeries(owned.owner.client, companyId, "site_visitors", 14)).toEqual([]);
+    const old = new Date(Date.now() - 20 * 86_400_000).toISOString();
+    await service.from("metrics").insert({ company_id: companyId, metric_key: "site_visitors", value: 1, source: "x", measured_at: old });
+    await recordMetric(service, { companyId, metricKey: "site_visitors", value: 100, source: "sandbox_site" });
+    await recordMetric(service, { companyId, metricKey: "site_visitors", value: 60, source: "sandbox_site" });
+    await recordMetric(service, { companyId, metricKey: "signups", value: 3, source: "sandbox_site" });
+    const windowEnd = new Date(Date.now() + 60_000).toISOString();
+    await recordMetric(service, { companyId, metricKey: "site_visitors", value: 999, source: "sandbox_ads", scope: "channel", provenance: { channel: "meta_ads", campaignId: "sandbox:campaign:s", windowEnd, sandbox: true } });
+    const series = await metricSeries(owned.owner.client, companyId, "site_visitors", 14);
+    expect(series.map((p) => p.value)).toEqual([100, 60]);
+    expect(series.every((p) => typeof p.measuredAt === "string")).toBe(true);
+    expect(Object.isFrozen(series)).toBe(true);
+    expect((await metricSeries(service, companyId, "site_visitors", 30)).map((p) => p.value)).toEqual([1, 100, 60]);
+    expect(await metricSeries(stranger.client, companyId, "site_visitors", 14)).toEqual([]);
+    await expect(metricSeries(service, companyId, "likes" as never, 14)).rejects.toThrow();
+    await expect(metricSeries(service, companyId, "site_visitors", 0)).rejects.toThrow();
   });
 });

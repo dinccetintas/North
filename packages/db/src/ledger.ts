@@ -39,6 +39,8 @@ export interface ListLedgerOptions {
   readonly limit?: number;
   /** Only entries created in the last N days. */
   readonly sinceDays?: number;
+  /** Only entries created at or after this instant (the previous brief or plan); combines with `sinceDays`. */
+  readonly sinceIso?: string;
 }
 
 const LEDGER_COLUMNS = "id, task_id, metric_key, before_value, after_value, cost_usd, channel, attribution_note, provenance, campaign_id, action_id, created_at";
@@ -106,8 +108,10 @@ export async function listLedgerEntries(db: DbClient, companyId: string, opts: L
   const id = UuidSchema.parse(companyId);
   const limit = z.number().int().positive().max(5000).default(DEFAULT_LIMIT).parse(opts.limit);
   const sinceDays = z.number().positive().max(3650).optional().parse(opts.sinceDays);
+  const sinceIso = z.iso.datetime({ offset: true }).optional().parse(opts.sinceIso);
   const base = db.from("ledger_entries").select(LEDGER_COLUMNS).eq("company_id", id);
-  const windowed = sinceDays === undefined ? base : base.gte("created_at", new Date(Date.now() - sinceDays * 86_400_000).toISOString());
+  const byDays = sinceDays === undefined ? base : base.gte("created_at", new Date(Date.now() - sinceDays * 86_400_000).toISOString());
+  const windowed = sinceIso === undefined ? byDays : byDays.gte("created_at", sinceIso);
   const { data, error } = await windowed.order("created_at", { ascending: false }).limit(limit);
   if (error) throw dbError("Could not list ledger entries", error);
   return Object.freeze((data ?? []).map(toRecord));

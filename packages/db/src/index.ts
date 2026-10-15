@@ -20,6 +20,8 @@ export * from "./actions";
 export * from "./agentRuns";
 export * from "./metrics";
 export * from "./decisions";
+export * from "./briefs";
+export * from "./signals";
 export * from "./autoRules";
 export * from "./pushSubscriptions";
 export * from "./notifications";

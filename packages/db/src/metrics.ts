@@ -66,6 +66,24 @@ export async function latestMetric(db: DbClient, companyId: string, metricKey: M
   return data ? Object.freeze({ value: data.value, measuredAt: data.measured_at }) : null;
 }
 
+/** The company-scope points of one metric in the last `sinceDays` days, oldest first: what `detectMetricDrops` compares. Channel samples never count. */
+export async function metricSeries(db: DbClient, companyId: string, metricKey: MetricKey, sinceDays: number): Promise<readonly MetricPoint[]> {
+  const id = UuidSchema.parse(companyId);
+  const key = z.enum(METRIC_KEYS).parse(metricKey);
+  const days = z.number().positive().max(3650).parse(sinceDays);
+  const { data, error } = await db
+    .from("metrics")
+    .select("value, measured_at")
+    .eq("company_id", id)
+    .eq("metric_key", key)
+    .eq("scope", "company")
+    .gte("measured_at", new Date(Date.now() - days * 86_400_000).toISOString())
+    .order("measured_at", { ascending: true })
+    .limit(1000);
+  if (error) throw dbError("Could not load metric series", error);
+  return Object.freeze((data ?? []).map((row) => Object.freeze({ value: row.value, measuredAt: row.measured_at })));
+}
+
 /** Appends one measurement (worker only; owners read). A channel sample's window is unique per source and metric. */
 export async function recordMetric(db: DbClient, input: RecordMetricInput): Promise<void> {
   const m = RecordMetricInputSchema.parse(input);

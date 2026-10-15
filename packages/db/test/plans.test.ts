@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGoal } from "../src/goals";
 import { createPlanWithTasks, latestPlan } from "../src/plans";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("plans repository (PLN-1)", () => {
   let owned: OwnedCompany;
@@ -53,6 +53,24 @@ describe("plans repository (PLN-1)", () => {
     const plan = await latestPlan(owned.owner.client, owned.companyId);
     expect(plan?.id).toBe(second.planId);
     expect(plan?.tasks.map((t) => t.id)).toEqual(second.taskIds);
+  });
+
+  it("PLN-2: revisions round-trip through createPlanWithTasks and latestPlan, default to [] and are validated", async () => {
+    const companyId = await createCompanyFor(owned.owner, "plans-revisions");
+    const bare = await createPlanWithTasks(owned.owner.client, { companyId, goalId: null, weekStart: "2026-10-19", summary: "Week 1", rationale: "", tasks: [tasks[0]!] });
+    expect((await latestPlan(owned.owner.client, companyId))).toMatchObject({ id: bare.planId, revisions: [] });
+    const revisions = [
+      { taskType: "outreach_batch" as const, change: "dropped" as const, reason: "cold_email not working: 0 replies from 5 sends" },
+      { taskType: "campaign_spec" as const, change: "added" as const, reason: "the site is live" },
+    ];
+    const revised = await createPlanWithTasks(owned.owner.client, { companyId, goalId: null, weekStart: "2026-10-26", summary: "Week 2", rationale: "", tasks: [tasks[2]!], revisions });
+    const plan = await latestPlan(owned.owner.client, companyId);
+    expect(plan?.id).toBe(revised.planId);
+    expect(plan?.revisions).toEqual(revisions);
+    expect(Object.isFrozen(plan?.revisions)).toBe(true);
+    await expect(createPlanWithTasks(owned.owner.client, { companyId, goalId: null, weekStart: "2026-11-02", summary: "x", rationale: "", tasks, revisions: [{ taskType: "prd", change: "vanished" as never, reason: "r" }] })).rejects.toThrow();
+    await expect(createPlanWithTasks(owned.owner.client, { companyId, goalId: null, weekStart: "2026-11-02", summary: "x", rationale: "", tasks, revisions: [{ taskType: "prd", change: "fewer", reason: "" }] })).rejects.toThrow();
+    expect((await latestPlan(owned.owner.client, companyId))?.id).toBe(revised.planId);
   });
 
   it("rejects a malformed week start and an unknown task type before writing", async () => {

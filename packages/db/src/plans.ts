@@ -1,8 +1,8 @@
-import { PlannedTaskSchema, TASK_OWNER } from "@north/core";
+import { PlannedTaskSchema, PlanRevisionSchema, TASK_OWNER, type PlanRevision } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
 import { dbError } from "./errors";
-import { UuidSchema } from "./json";
+import { toJson, UuidSchema } from "./json";
 import { createTask, listTasks, type TaskRecord } from "./tasks";
 
 export interface PlanRecord {
@@ -12,6 +12,8 @@ export interface PlanRecord {
   readonly summary: string;
   readonly rationale: string;
   readonly status: string;
+  /** PLN-2: why each task type's count changed against the previous plan. */
+  readonly revisions: readonly PlanRevision[];
   readonly createdAt: string;
   readonly tasks: readonly TaskRecord[];
 }
@@ -23,11 +25,20 @@ export const CreatePlanInputSchema = z.object({
   summary: z.string().trim().min(1).max(2000),
   rationale: z.string().trim().max(4000).default(""),
   tasks: z.array(PlannedTaskSchema).max(50),
+  revisions: z.array(PlanRevisionSchema).max(24).default([]),
 });
 export type CreatePlanInput = z.input<typeof CreatePlanInputSchema>;
 type CreatePlan = z.output<typeof CreatePlanInputSchema>;
 
-const PLAN_COLUMNS = "id, goal_id, week_start, summary, rationale, status, created_at";
+const PLAN_COLUMNS = "id, goal_id, week_start, summary, rationale, status, revisions, created_at";
+
+const RevisionsSchema = z.array(PlanRevisionSchema);
+
+/** The stored revisions as frozen core records; a malformed column yields none rather than hiding the plan. */
+const toRevisions = (value: unknown): readonly PlanRevision[] => {
+  const parsed = RevisionsSchema.safeParse(value ?? []);
+  return Object.freeze(parsed.success ? parsed.data.map((r) => Object.freeze(r)) : []);
+};
 
 /** Best-effort cleanup when task creation fails halfway; the plan itself is not transactional. */
 async function rollbackPlan(db: DbClient, planId: string): Promise<void> {
@@ -65,7 +76,7 @@ export async function createPlanWithTasks(
   const plan = CreatePlanInputSchema.parse(input);
   const { data, error } = await db
     .from("plans")
-    .insert({ company_id: plan.companyId, goal_id: plan.goalId, week_start: plan.weekStart, summary: plan.summary, rationale: plan.rationale })
+    .insert({ company_id: plan.companyId, goal_id: plan.goalId, week_start: plan.weekStart, summary: plan.summary, rationale: plan.rationale, revisions: toJson(plan.revisions) })
     .select("id")
     .single();
   if (error || !data) throw dbError("Could not create plan", error);
@@ -98,6 +109,7 @@ export async function latestPlan(db: DbClient, companyId: string): Promise<PlanR
     summary: data.summary,
     rationale: data.rationale,
     status: data.status,
+    revisions: toRevisions(data.revisions),
     createdAt: data.created_at,
     tasks,
   });
