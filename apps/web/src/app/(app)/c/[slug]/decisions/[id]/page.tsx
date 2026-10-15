@@ -7,11 +7,14 @@ import { isHttpUrl } from "@north/core/url";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
+import { incidentForTask, signalForCard } from "@/lib/brief-data";
 import { formatDue, formatUsd, roleTitle, tierLabel } from "@/lib/labels";
 import { capCardCampaign, pendingCardActions } from "@/lib/ledger-data";
 import { DecisionCard } from "@/components/decision-card";
 import { DecisionCampaign } from "@/components/decision-campaign";
+import { DecisionIncident } from "@/components/decision-incident";
 import { DecisionRecipients, type RecipientRowData } from "@/components/decision-recipients";
+import { DecisionSignal } from "@/components/decision-signal";
 import { toCardData } from "@/components/decisions-section";
 import { AutoRuleProposal } from "@/components/auto-rule-proposal";
 import { TaskStatusBadge } from "@/components/task-list";
@@ -22,6 +25,9 @@ const IdSchema = z.string().uuid();
 const EVIDENCE_LIMIT = 3;
 const BATCH_KIND = "email.send.first_contact";
 const CAP_KIND = "budget.cap.raise";
+const SIGNAL_KIND = "signal.pursue";
+const PR_KIND = "repo.pull_request";
+const FIX_TASK_TYPE = "fix_error";
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim().length > 0 ? value.trim() : null);
 
@@ -86,9 +92,14 @@ export default async function DecisionPage({ params }: { params: Params }) {
   const cardData = toCardData(card);
   const isBatch = card.actionKind === BATCH_KIND;
   const isCap = card.actionKind === CAP_KIND;
+  const isFix = task?.taskType === FIX_TASK_TYPE;
   const pending = isBatch || isCap ? await pendingCardActions(db, card.id) : [];
   const recipients = isBatch ? recipientsOf(card.id, pending, actions) : [];
   const campaign = isCap ? await capCardCampaign(db, company.id, campaignIdOf(card.id, pending, actions)) : null;
+  // M5: a signal card shows its source and evidence (PRO-1); a fix card shows the incident and its pull request (PRO-2).
+  const signal = card.actionKind === SIGNAL_KIND ? await signalForCard(db, company.id, card.id) : null;
+  const incident = isFix && task ? await incidentForTask(db, company.id, task.id) : null;
+  const pullRequestUrl = isFix ? (actions.find((a) => a.kind === PR_KIND)?.externalRef ?? null) : null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -127,6 +138,8 @@ export default async function DecisionPage({ params }: { params: Params }) {
 
       {isBatch ? <DecisionRecipients rows={recipients} /> : null}
       {campaign ? <DecisionCampaign slug={slug} campaign={campaign} /> : null}
+      {signal ? <DecisionSignal signal={signal} /> : null}
+      {incident ? <DecisionIncident incident={incident} pullRequestUrl={pullRequestUrl} /> : null}
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Why</h2>

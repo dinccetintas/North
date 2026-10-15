@@ -3,7 +3,10 @@ import { redirect } from "next/navigation";
 import { getProfile, listActiveAutoRules, listCompanies } from "@north/db";
 import { MAX_DAILY_QUOTA, MIN_DAILY_QUOTA } from "@north/core/decisions/types";
 import { createClient, currentUser } from "@/lib/supabase/server";
+import { loadCostRows } from "@/lib/cost-data";
+import { COST_WINDOW_DAYS } from "@/lib/cost-view";
 import { AutoRulesList, type AutoRuleRow } from "@/components/auto-rules-list";
+import { CostDashboard } from "@/components/cost-dashboard";
 import { PushEnable } from "@/components/push-enable";
 import { updateProfileAction } from "./actions";
 
@@ -20,13 +23,14 @@ function timezoneOptions(current: string): readonly string[] {
   return known.includes(current) ? known : [current, ...known];
 }
 
-/** Settings: decision quota, time zone, push notifications and the standing auto rules per company (DEC-2/3). */
+/** Settings: decision quota, time zone, push notifications, the standing auto rules and the usage per company (DEC-2/3, OBS-1). */
 export default async function SettingsPage({ searchParams }: { searchParams: SearchParams }) {
   const [user, { saved, error }] = await Promise.all([currentUser(), searchParams]);
   if (!user) redirect("/login");
   const db = await createClient();
   const [profile, companies] = await Promise.all([getProfile(db, user.id), listCompanies(db)]);
   if (!profile) redirect("/login");
+  const costs = await loadCostRows(db, companies, profile.timezone);
 
   const rules: AutoRuleRow[] = (
     await Promise.all(
@@ -87,7 +91,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
                   </option>
                 ))}
               </select>
-              <p className="mono-label text-faint">The morning brief follows this clock. The daily card quota resets at midnight UTC for now.</p>
+              <p className="mono-label text-faint">The morning brief and the daily card quota follow this clock.</p>
             </div>
           </div>
           <div>
@@ -122,6 +126,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
         <h2 className="mono-label text-faint">Standing rules</h2>
         <div className="mt-3">
           <AutoRulesList rules={rules} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="mono-label text-faint">Usage and cost</h2>
+          <span className="mono-label text-faint">last {COST_WINDOW_DAYS} days</span>
+        </div>
+        <div className="mt-3">
+          <CostDashboard rows={costs} />
         </div>
       </section>
     </main>

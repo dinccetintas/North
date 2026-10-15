@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { cardsOpenedToday, getProfile, listCards, listPendingCards, type CardRecord } from "@north/db";
 import { DEFAULT_DAILY_QUOTA } from "@north/core/decisions/types";
+import { localDay } from "@north/core/time";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import { splitRationale } from "@/lib/card-facts";
 import { formatAnsweredAt } from "@/lib/labels";
@@ -28,28 +29,31 @@ export function toCardData(card: CardRecord): DecisionCardData {
   };
 }
 
-const todayIso = (): string => new Date().toISOString().slice(0, 10);
+/** An unknown profile counts on UTC, exactly as the database trigger falls back (ADR 0011). */
+const FALLBACK_TIMEZONE = "UTC";
 
 /**
  * The morning screen's centre: pending cards (never more than the quota), the
- * "n of q" counter, and today's answered cards folded below (DEC-2/3).
+ * "n of q" counter, and today's answered cards folded below (DEC-2/3). "Today"
+ * is the owner's local day, the same day the database stamps on the card.
  */
 export async function DecisionsSection({ slug, companyId, stopped = false }: { slug: string; companyId: string; stopped?: boolean }) {
   const db = await createClient();
   const user = await currentUser();
-  const [pending, recent, openedToday, profile] = await Promise.all([
+  const profile = user ? await getProfile(db, user.id) : null;
+  const today = localDay(profile?.timezone ?? FALLBACK_TIMEZONE, new Date());
+  const [pending, recent, openedToday] = await Promise.all([
     listPendingCards(db, companyId),
     listCards(db, companyId, { limit: ANSWERED_LIMIT }),
-    cardsOpenedToday(db, companyId),
-    user ? getProfile(db, user.id) : Promise.resolve(null),
+    cardsOpenedToday(db, companyId, today),
   ]);
   const quota = profile?.dailyDecisionQuota ?? DEFAULT_DAILY_QUOTA;
-  const answeredToday = recent.filter((c) => c.answeredAt && c.day === todayIso());
+  const answeredToday = recent.filter((c) => c.answeredAt && c.day === today);
 
   return (
     <section className="mt-10" data-testid="decisions">
       <div className="flex items-baseline justify-between gap-4">
-        <h2 className="mono-label text-faint" data-testid="decisions-counter">
+        <h2 className="mono-label text-faint" data-testid="decisions-counter" data-day={today}>
           Decisions today · {openedToday} of {quota}
         </h2>
         {pending.length > 0 ? <span className="mono-label text-deep">{pending.length} waiting</span> : null}

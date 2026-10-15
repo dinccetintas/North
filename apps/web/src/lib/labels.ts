@@ -1,7 +1,9 @@
 import type { BudgetCategory } from "@north/core/authority/action";
-import type { MetricKey } from "@north/core/tasks/types";
+import { SIGNAL_STATUS_WORDS } from "@north/core/brief/compose";
+import type { ArtifactKind, MetricKey, TaskType } from "@north/core/tasks/types";
 import type { TaskStatus } from "@north/core/tasks/lifecycle";
 import type { CampaignStatus, Channel } from "@north/core/metrics";
+import type { SignalSource, SignalStatus } from "@north/core/signals/types";
 
 /** Human labels for everything the UI shows as a key. Extend here, never inline strings in pages. */
 
@@ -109,6 +111,77 @@ export const TASK_STATUS_LABEL: Readonly<Record<TaskStatus, string>> = Object.fr
   done: "done",
   failed: "failed",
 });
+
+/** M5: where a signal came from (PRO-1). */
+export const SIGNAL_SOURCE_LABELS: Readonly<Record<SignalSource, string>> = Object.freeze({
+  reddit: "Reddit",
+  producthunt: "Product Hunt",
+  google_trends: "Google Trends",
+  competitor_sites: "Competitor sites",
+  metrics: "Metrics",
+  sentry: "Sentry",
+});
+
+export function signalSourceLabel(source: string): string {
+  return source in SIGNAL_SOURCE_LABELS ? SIGNAL_SOURCE_LABELS[source as SignalSource] : source.replace(/_/g, " ");
+}
+
+/** The same words the brief uses for a signal's status: "card open", "held for next week", "fix opened", … */
+export const SIGNAL_STATUS_LABELS: Readonly<Record<SignalStatus, string>> = SIGNAL_STATUS_WORDS;
+
+export function signalStatusLabel(status: string): string {
+  return status in SIGNAL_STATUS_LABELS ? SIGNAL_STATUS_LABELS[status as SignalStatus] : status.replace(/_/g, " ");
+}
+
+export const SIGNAL_STATUS_CLASS: Readonly<Record<SignalStatus, string>> = Object.freeze({
+  new: "text-faint",
+  scored: "text-faint",
+  below_threshold: "text-faint",
+  card_opened: "text-deep",
+  deferred: "text-warning",
+  capped: "text-warning",
+  approved: "text-success",
+  declined: "text-faint",
+  converted: "text-success",
+});
+
+export function signalStatusClass(status: string): string {
+  return status in SIGNAL_STATUS_CLASS ? SIGNAL_STATUS_CLASS[status as SignalStatus] : "text-faint";
+}
+
+export const TASK_TYPE_LABELS: Readonly<Record<TaskType, string>> = Object.freeze({
+  market_report: "Market report",
+  personas: "Personas",
+  competitor_map: "Competitor map",
+  prd: "PRD",
+  business_plan: "Business plan",
+  investor_deck: "Investor deck",
+  brand_kit: "Brand kit",
+  screen_designs: "Screen designs",
+  build_site: "Website build",
+  campaign_spec: "Campaign",
+  lead_research: "Lead research",
+  outreach_batch: "Outreach batch",
+  plan_week: "Weekly plan",
+  brief: "Morning brief",
+  signal_research: "Signal research",
+  fix_error: "Error fix",
+});
+
+export function taskTypeLabel(taskType: string): string {
+  return taskType in TASK_TYPE_LABELS ? TASK_TYPE_LABELS[taskType as TaskType] : taskType.replace(/_/g, " ");
+}
+
+export const ARTIFACT_KIND_LABELS: Readonly<Partial<Record<ArtifactKind, string>>> = Object.freeze({
+  build_report: "Build report",
+  signal_report: "Signal report",
+  incident_report: "Incident report",
+  lead_list: "Lead list",
+});
+
+export function artifactKindLabel(kind: string): string {
+  return ARTIFACT_KIND_LABELS[kind as ArtifactKind] ?? kind.replace(/_/g, " ");
+}
 
 /** One line per authority tier, shown on decision cards and action rows. */
 export const TIER_LABELS: Readonly<Record<string, string>> = Object.freeze({

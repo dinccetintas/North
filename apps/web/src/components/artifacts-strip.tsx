@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { artifactKindLabel } from "@/lib/labels";
 
 export interface ArtifactStripItem {
   readonly id: string;
@@ -19,10 +20,10 @@ export function ArtifactsStrip({ slug, artifacts }: { slug: string; artifacts: r
       ) : (
         <ul className="grid gap-3 sm:grid-cols-3">
           {latest.map((a) => (
-            <li key={a.id} className="border border-surface-border bg-bg" data-testid="artifact-item">
+            <li key={a.id} className="border border-surface-border bg-bg" data-testid="artifact-item" data-kind={a.kind}>
               <Link href={`/c/${slug}/artifacts/${a.id}`} className="flex h-full flex-col gap-1 p-4 hover:bg-surface">
                 <span className="mono-label text-faint">
-                  {a.kind.replace(/_/g, " ")} · v{a.version}
+                  {artifactKindLabel(a.kind)} · v{a.version}
                 </span>
                 <span className="font-display text-xl leading-tight">{a.title}</span>
               </Link>

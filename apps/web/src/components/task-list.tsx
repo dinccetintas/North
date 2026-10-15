@@ -6,6 +6,8 @@ export interface TaskRowData {
   readonly id: string;
   readonly status: string;
   readonly role: string;
+  /** The task's type (`build_site`, `fix_error`, `signal_research`, …), exposed as `data-task-type`. */
+  readonly taskType: string;
   readonly title: string;
   readonly costUsd: number;
   readonly lastError?: string | null;
@@ -58,6 +60,8 @@ export function TaskList({ tasks, testId, emptyText, liveUrl = null }: TaskListP
         <li
           key={task.id}
           data-testid="task-row"
+          data-task-id={task.id}
+          data-task-type={task.taskType}
           data-status={task.status}
           className="grid grid-cols-[5rem_1fr_auto] items-baseline gap-x-3 gap-y-1 px-4 py-3 sm:grid-cols-[5rem_11rem_1fr_auto]"
         >
