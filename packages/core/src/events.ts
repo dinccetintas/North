@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { DAY_SCHEMA } from "./brief/types";
 import { CONNECTION_PROVIDERS } from "./connections";
+import { SIGNAL_KINDS } from "./signals/types";
 import { TASK_TYPES } from "./tasks/types";
 
 /**
@@ -19,7 +21,9 @@ export const EVENT = {
   decisionExpired: "decision/expired",
   decisionDeferred: "decision/deferred",
   signalDetected: "signal/detected",
+  signalScan: "signal/scan",
   metricCollect: "metric/collect",
+  briefTick: "brief/tick",
   briefGenerate: "brief/generate",
   companyKillSwitch: "company/killswitch",
   companyResume: "company/resume",
@@ -81,6 +85,18 @@ export type ProviderToken = z.infer<typeof ProviderTokenSchema>;
 /** OUT-2: collect a company's metrics now; `cron` is the hourly fan-out, `manual` a smoke or e2e trigger. */
 export const MetricCollectSchema = z.object({ companyId: z.string().uuid(), reason: z.enum(["cron", "manual"]) });
 export type MetricCollectEvent = z.infer<typeof MetricCollectSchema>;
+
+/** BRF-1: generate the brief of one company for one owner-local day (`brief/tick` picks the companies at 07:00). */
+export const BriefGenerateSchema = z.object({ companyId: z.string().uuid(), day: DAY_SCHEMA });
+export type BriefGenerateEvent = z.infer<typeof BriefGenerateSchema>;
+
+/** PRO-1: scan a company's signal sources now; `cron` is the six-hourly fan-out, `manual` a smoke or e2e trigger. */
+export const SignalScanSchema = z.object({ companyId: z.string().uuid(), reason: z.enum(["cron", "manual"]) });
+export type SignalScanEvent = z.infer<typeof SignalScanSchema>;
+
+/** PRO-2: a signal row exists; `watch-errors` listens for `kind: error`. */
+export const SignalDetectedSchema = z.object({ companyId: z.string().uuid(), signalId: z.string().uuid(), kind: z.enum(SIGNAL_KINDS) });
+export type SignalDetectedEvent = z.infer<typeof SignalDetectedSchema>;
 
 export const DecisionAnsweredSchema = z.object({
   companyId: z.string().uuid(),

@@ -3,6 +3,7 @@ import { classify, type ClassifyReason } from "./classify";
 import type { Tier } from "../tiers";
 import { wouldExceedBudget, type BudgetState } from "../budget/guard";
 import type { CardDraft } from "../decisions/types";
+import { signalPayload } from "../signals/types";
 
 export interface AutoRule {
   readonly id: string;
@@ -101,6 +102,15 @@ function capFacts(p: Record<string, unknown>): readonly string[] {
   return present([spent && cap ? `spent ${spent} of ${cap} ${scope}` : null, text(p.campaignName) ? `campaign: ${text(p.campaignName)}` : null]);
 }
 
+const EVIDENCE_MAX = 300;
+
+/** "source: reddit", "score 0.85", "evidence: <url>" (PRO-1): the card carries the evidence link before PRO-3 ships. */
+function signalFacts(spec: ActionSpec): readonly string[] {
+  const signal = signalPayload(spec.payload);
+  if (!signal) return [];
+  return present([`source: ${signal.source}`, `score ${signal.score}`, signal.url ? `evidence: ${signal.url.slice(0, EVIDENCE_MAX)}` : null]);
+}
+
 /**
  * The load-bearing facts of the payload, so the CEO approves what will run and
  * not only the agent's sentence: recipient and subject for mail, daily budget
@@ -109,6 +119,8 @@ function capFacts(p: Record<string, unknown>): readonly string[] {
 export function cardFacts(spec: ActionSpec): readonly string[] {
   const p = spec.payload ?? {};
   switch (spec.kind) {
+    case "signal.pursue":
+      return signalFacts(spec);
     case "ads.start":
     case "ads.budget.change": {
       const daily = money(p.dailyBudgetUsd);
@@ -145,26 +157,43 @@ export function cardRationale(spec: ActionSpec, tier: Tier, reasons: readonly Ga
 
 const QUESTION_MAX = 200;
 
+const bounded = (question: string): string => (question.length <= QUESTION_MAX ? question : `${question.slice(0, QUESTION_MAX - 1)}…`);
+
+/** `Look into "<title>"? (reddit, score 0.85)`: the title gives way, the source and score always show. */
+function signalQuestion(spec: ActionSpec): string {
+  const signal = signalPayload(spec.payload);
+  if (!signal) return bounded(`Approve: ${spec.description}?`);
+  const open = 'Look into "';
+  const close = `"? (${signal.source}, score ${signal.score})`;
+  const room = QUESTION_MAX - open.length - close.length;
+  const title = signal.title.length <= room ? signal.title : `${signal.title.slice(0, room - 1)}…`;
+  return `${open}${title}${close}`;
+}
+
 /**
  * One question per card. A batch asks for the whole batch by count (the agent
  * cannot misstate it); a cap card asks the plan's question (its description
- * already is the question); everything else asks to approve the description.
+ * already is the question); a signal asks to look into its title; everything
+ * else asks to approve the description.
  */
 export function cardQuestion(spec: ActionSpec): string {
   const batch = batchPayload(spec.payload);
+  if (spec.kind === "signal.pursue") return signalQuestion(spec);
   const question =
     spec.kind === "email.send.first_contact" && batch?.recipients
       ? `Send ${batch.recipients.length} first-contact emails?`
       : spec.kind === "budget.cap.raise"
         ? spec.description
         : `Approve: ${spec.description}?`;
-  return question.length <= QUESTION_MAX ? question : `${question.slice(0, QUESTION_MAX - 1)}…`;
+  return bounded(question);
 }
 
-/** Cards sharing a mergeKey are one decision: every send of a batch, or every card of a kind and category. */
+/** Cards sharing a mergeKey are one decision: every send of a batch, every card of one signal, or every card of a kind and category. */
 function mergeKeyFor(spec: ActionSpec): string {
   const batch = batchPayload(spec.payload);
-  return batch ? `batch:${batch.batchId}` : `${spec.kind}:${spec.category ?? "none"}`;
+  if (batch) return `batch:${batch.batchId}`;
+  const signal = spec.kind === "signal.pursue" ? signalPayload(spec.payload) : null;
+  return signal ? `signal:${signal.signalId}` : `${spec.kind}:${spec.category ?? "none"}`;
 }
 
 function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], dueAt: string): CardDraft {

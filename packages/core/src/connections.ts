@@ -34,6 +34,7 @@ export function providerForAction(kind: ActionKind): ConnectionProvider | null {
   switch (kind) {
     case "repo.create":
     case "repo.push":
+    case "repo.pull_request":
       return "github";
     case "deploy.preview":
     case "deploy.production":

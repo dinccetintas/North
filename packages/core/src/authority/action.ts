@@ -12,8 +12,10 @@ export const ACTION_KINDS = [
   "draft",
   "artifact.write",
   "memory.write",
+  "signal.pursue",
   "repo.create",
   "repo.push",
+  "repo.pull_request",
   "deploy.preview",
   "deploy.production",
   "email.send.first_contact",
@@ -69,8 +71,12 @@ export const ACTION_PROFILES: Readonly<Record<ActionKind, RiskFlags>> = Object.f
   draft: flags({}),
   "artifact.write": flags({}),
   "memory.write": flags({}),
+  /** PRO-1: converting a signal creates a research task and nothing outside; the worker asks for K2 so a card opens. */
+  "signal.pursue": flags({}),
   "repo.create": flags({ externalEffect: true }),
   "repo.push": flags({ externalEffect: true }),
+  /** PRO-2: a pull request in the user's repository; reversible, spends nothing, so K1 (notify). */
+  "repo.pull_request": flags({ externalEffect: true }),
   "deploy.preview": flags({ externalEffect: true }),
   "deploy.production": flags({ externalEffect: true, goesLive: true }),
   "email.send.first_contact": flags({ externalEffect: true, reversible: false, newContact: true }),

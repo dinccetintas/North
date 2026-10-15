@@ -24,6 +24,7 @@ export function evidenceKindFor(kind: ActionKind): EvidenceKind | null {
       return "artifact_id";
     case "ads.start":
       return "campaign_id";
+    // `repo.pull_request` and `signal.pursue` fall through: a PR is not evidence a task is done, and a signal card creates a task.
     default:
       return null;
   }

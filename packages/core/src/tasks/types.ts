@@ -20,6 +20,8 @@ export const TASK_TYPES = [
   "outreach_batch",
   "plan_week",
   "brief",
+  "signal_research",
+  "fix_error",
 ] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
@@ -51,6 +53,8 @@ export const TASK_OWNER: Readonly<Record<TaskType, AgentRole>> = Object.freeze({
   outreach_batch: "sales",
   plan_week: "chief_of_staff",
   brief: "chief_of_staff",
+  signal_research: "research",
+  fix_error: "engineering",
 });
 
 /** Outcome metrics: the only keys a goal may point at (ONB-2). Extend here, never inline strings. */
@@ -91,6 +95,8 @@ export const ARTIFACT_KINDS = [
   "plan",
   "brief",
   "doc",
+  "signal_report",
+  "incident_report",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
@@ -174,11 +180,23 @@ export const PlannedTaskSchema = z.object({
 });
 export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
 
-/** Chief of Staff output for `plan_week` (PLN-1). */
+export const PLAN_REVISION_CHANGES = ["fewer", "dropped", "more", "added"] as const;
+export type PlanRevisionChange = (typeof PLAN_REVISION_CHANGES)[number];
+
+/** PLN-2: why a task type's count changed against the previous plan; required for every type that fell. */
+export const PlanRevisionSchema = z.object({
+  taskType: z.enum(TASK_TYPES),
+  change: z.enum(PLAN_REVISION_CHANGES),
+  reason: z.string().min(1).max(500),
+});
+export type PlanRevision = z.infer<typeof PlanRevisionSchema>;
+
+/** Chief of Staff output for `plan_week` (PLN-1, PLN-2). */
 export const PlanOutputSchema = z.object({
   summary: z.string().min(1).max(2000),
   rationale: z.string().min(1).max(4000),
   tasks: z.array(PlannedTaskSchema).min(1).max(12),
+  revisions: z.array(PlanRevisionSchema).max(24).default([]),
 });
 export type PlanOutput = z.infer<typeof PlanOutputSchema>;
 
