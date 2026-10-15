@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { BUDGET_CATEGORIES } from "./authority/action";
-import { METRIC_KEYS } from "./tasks/types";
+import { OUTCOME_METRIC_KEYS } from "./tasks/types";
 
 /** ONB-1: at most five clarifying questions after the idea text. */
 export const MAX_CLARIFYING_QUESTIONS = 5;
@@ -22,9 +22,9 @@ export const ClarificationAnswersSchema = z.array(
 );
 export type ClarificationAnswers = z.infer<typeof ClarificationAnswersSchema>;
 
-/** ONB-2: one measurable goal. */
+/** ONB-2: one measurable goal. Goals point at outcomes only, never at channel metrics such as clicks. */
 export const GoalInputSchema = z.object({
-  metricKey: z.enum(METRIC_KEYS),
+  metricKey: z.enum(OUTCOME_METRIC_KEYS),
   targetValue: z.number().positive(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });

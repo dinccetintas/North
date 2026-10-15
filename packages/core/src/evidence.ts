@@ -22,6 +22,8 @@ export function evidenceKindFor(kind: ActionKind): EvidenceKind | null {
       return "message_id";
     case "artifact.write":
       return "artifact_id";
+    case "ads.start":
+      return "campaign_id";
     default:
       return null;
   }

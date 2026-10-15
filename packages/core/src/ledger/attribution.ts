@@ -20,6 +20,32 @@ export function attribute(entry: Pick<LedgerEntry, "before" | "after" | "costUsd
   return Object.freeze({ delta, costPerUnit: delta === 0 ? null : entry.costUsd / Math.abs(delta) });
 }
 
+/** A cumulative channel sample: the attributed metric and the spend so far for one campaign or batch. */
+export interface CumulativeSample {
+  readonly value: number;
+  readonly spendUsd: number;
+}
+
+export interface WindowDelta {
+  readonly before: number;
+  readonly after: number;
+  readonly costUsd: number;
+}
+
+/**
+ * The ledger entry for one collection window from two cumulative samples:
+ * `before`/`after` are the previous and current attributed values (0 before the
+ * first window), `costUsd` the spend of the window (never negative: a provider
+ * revising spend downwards costs nothing more).
+ */
+export function windowDelta(previous: CumulativeSample | null, current: CumulativeSample): WindowDelta {
+  return Object.freeze({
+    before: previous?.value ?? 0,
+    after: current.value,
+    costUsd: Math.max(0, current.spendUsd - (previous?.spendUsd ?? 0)),
+  });
+}
+
 export interface ChannelReportRow {
   readonly channel: string;
   readonly metricKey: string;

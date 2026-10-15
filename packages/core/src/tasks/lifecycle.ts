@@ -6,7 +6,7 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 /** AGT-3: a failed attempt is retried once with a different approach, then escalated. */
 export const MAX_ATTEMPTS = 2;
 
-export const EVIDENCE_KINDS = ["url", "deploy_id", "message_id", "test_report", "artifact_id"] as const;
+export const EVIDENCE_KINDS = ["url", "deploy_id", "message_id", "test_report", "artifact_id", "campaign_id"] as const;
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
 export const EvidenceSchema = z.object({

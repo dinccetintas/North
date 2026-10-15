@@ -41,6 +41,7 @@ export function providerForAction(kind: ActionKind): ConnectionProvider | null {
     case "ads.start":
     case "ads.budget.change":
     case "ads.pause":
+    case "ads.resume":
       return "meta_ads";
     case "email.send.first_contact":
     case "email.send.reply":

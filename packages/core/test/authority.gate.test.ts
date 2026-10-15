@@ -5,7 +5,7 @@ import type { BudgetState } from "../src/budget/guard";
 const spec = (over: Partial<ActionSpec>): ActionSpec =>
   ActionSpecSchema.parse({ kind: "research", companyId: "c1", agentRole: "growth", description: "Start a $10/day test campaign", ...over });
 
-const ads: BudgetState = { category: "ads", totalLimitUsd: 300, dailyLimitUsd: 20, spentTotalUsd: 0, spentTodayUsd: 0 };
+const ads: BudgetState = { category: "ads", totalLimitUsd: 300, dailyLimitUsd: 20, dailyExtraUsd: 0, spentTotalUsd: 0, spentTodayUsd: 0 };
 
 const ctx = (over: Partial<PolicyContext> = {}): PolicyContext => ({
   killSwitchActive: false,
@@ -36,10 +36,14 @@ describe("DEC-1 gate(): the single chokepoint", () => {
   });
 
   it("writes the card rationale in plain words, naming the role and the tier (DEC-2 readability)", () => {
-    const decision = gate(spec({ kind: "ads.start", amountUsd: 50, category: "ads" }), ctx());
+    // BUD-1: a $50 five-day campaign is $10 against the $20 daily cap, so no "budget cap" here (M4 profile fix).
+    const decision = gate(spec({ kind: "ads.start", amountUsd: 50, category: "ads", payload: { dailyBudgetUsd: 10 } }), ctx());
     if (decision.kind !== "card") throw new Error("expected card");
-    expect(decision.card.rationale).toBe(
-      "This action spends money, says something new in public and would exceed the budget cap. Growth asks for it; tier K2.",
+    expect(decision.card.rationale).toBe("This action spends money and says something new in public. Growth asks for it; tier K2. Details: $10/day.");
+    const capped = gate(spec({ kind: "ads.start", amountUsd: 50, category: "ads", payload: { dailyBudgetUsd: 25 } }), ctx());
+    if (capped.kind !== "card") throw new Error("expected card");
+    expect(capped.card.rationale).toBe(
+      "This action spends money, says something new in public and would exceed the budget cap. Growth asks for it; tier K2. Details: $25/day.",
     );
     const k3 = gate(spec({ kind: "contract.sign", agentRole: "ops_finance" }), ctx());
     if (k3.kind !== "card") throw new Error("expected card");

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CONNECTION_PROVIDERS } from "./connections";
 import { TASK_TYPES } from "./tasks/types";
 
 /**
@@ -49,16 +50,37 @@ export type TaskEscalatedEvent = z.infer<typeof TaskEscalatedSchema>;
  * holds the client secret, exchanges it and stores the token (ADR 0008). The
  * code is single-use and short-lived; the web never sees the token.
  */
+export const OAUTH_CODE_PROVIDERS = ["github", "vercel", "meta_ads", "gmail"] as const;
+
 export const ConnectionOauthCodeSchema = z.object({
   userId: z.string().uuid(),
-  provider: z.enum(["github", "vercel"]),
+  provider: z.enum(OAUTH_CODE_PROVIDERS),
   code: z.string().min(1).max(2048),
   redirectUri: z.string().url(),
 });
 export type ConnectionOauthCodeEvent = z.infer<typeof ConnectionOauthCodeSchema>;
 
-export const ConnectionRevokedSchema = z.object({ userId: z.string().uuid(), provider: z.enum(["github", "vercel", "gmail", "stripe", "meta_ads"]) });
+export const ConnectionRevokedSchema = z.object({ userId: z.string().uuid(), provider: z.enum(CONNECTION_PROVIDERS) });
 export type ConnectionRevokedEvent = z.infer<typeof ConnectionRevokedSchema>;
+
+/**
+ * The secret a connection stores (ADR 0008): a plain token for GitHub and
+ * Vercel, or an access/refresh pair with an expiry for Google and Meta. Only
+ * the worker reads or writes it.
+ */
+export const ProviderTokenSchema = z.union([
+  z.string().min(1),
+  z.object({
+    accessToken: z.string().min(1),
+    refreshToken: z.string().min(1).optional(),
+    expiresAt: z.iso.datetime({ offset: true }).optional(),
+  }),
+]);
+export type ProviderToken = z.infer<typeof ProviderTokenSchema>;
+
+/** OUT-2: collect a company's metrics now; `cron` is the hourly fan-out, `manual` a smoke or e2e trigger. */
+export const MetricCollectSchema = z.object({ companyId: z.string().uuid(), reason: z.enum(["cron", "manual"]) });
+export type MetricCollectEvent = z.infer<typeof MetricCollectSchema>;
 
 export const DecisionAnsweredSchema = z.object({
   companyId: z.string().uuid(),

@@ -20,12 +20,13 @@ describe("OUT-1 ledger attribution", () => {
 });
 
 describe("budget guard", () => {
-  const ads: BudgetState = { category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 95, spentTodayUsd: 4 };
-  it("knows the headroom and whether a spend would exceed either cap", () => {
+  const ads: BudgetState = { category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, dailyExtraUsd: 0, spentTotalUsd: 95, spentTodayUsd: 4 };
+  const oneoff = (usd: number) => ({ perDayUsd: usd, totalUsd: usd });
+  it("knows the headroom and whether a spend profile would exceed either cap (BUD-1)", () => {
     expect(headroom(ads)).toEqual({ totalRemainingUsd: 5, dailyRemainingUsd: 6 });
-    expect(wouldExceedBudget(ads, 5)).toBe(false);
-    expect(wouldExceedBudget(ads, 5.01)).toBe(true);
-    expect(wouldExceedBudget({ ...ads, spentTotalUsd: 0 }, 7)).toBe(true);
+    expect(wouldExceedBudget(ads, oneoff(5))).toBe(false);
+    expect(wouldExceedBudget(ads, oneoff(5.01))).toBe(true);
+    expect(wouldExceedBudget({ ...ads, spentTotalUsd: 0 }, oneoff(7))).toBe(true);
   });
   it("applies spend immutably", () => {
     const next = applySpend(ads, 3);

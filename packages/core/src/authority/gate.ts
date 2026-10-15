@@ -1,4 +1,4 @@
-import type { ActionSpec } from "./action";
+import { batchPayload, spendProfile, type ActionSpec } from "./action";
 import { classify, type ClassifyReason } from "./classify";
 import type { Tier } from "../tiers";
 import { wouldExceedBudget, type BudgetState } from "../budget/guard";
@@ -82,6 +82,24 @@ const FACT_MAX = 120;
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim().slice(0, FACT_MAX) : null);
 const money = (value: unknown): string | null => (typeof value === "number" && Number.isFinite(value) ? `$${value}` : null);
+const present = (facts: readonly (string | null)[]): readonly string[] => facts.filter((f): f is string => f !== null);
+
+/** "5 emails: a@…, b@…, +3" from the batch recipient list; null when the payload has no list. */
+function batchFacts(spec: ActionSpec): string | null {
+  const batch = batchPayload(spec.payload);
+  if (!batch?.recipients) return null;
+  const shown = batch.recipients.slice(0, 2).map((r) => r.slice(0, FACT_MAX));
+  const rest = batch.recipients.length - shown.length;
+  return `${batch.recipients.length} emails: ${shown.join(", ")}${rest > 0 ? `, +${rest}` : ""}`;
+}
+
+/** "spent $11 of $10 today" / "spent $60 of $50 in total", then the campaign name (BUD-3). */
+function capFacts(p: Record<string, unknown>): readonly string[] {
+  const spent = money(p.spentUsd);
+  const cap = money(p.capUsd);
+  const scope = p.cap === "total" ? "in total" : "today";
+  return present([spent && cap ? `spent ${spent} of ${cap} ${scope}` : null, text(p.campaignName) ? `campaign: ${text(p.campaignName)}` : null]);
+}
 
 /**
  * The load-bearing facts of the payload, so the CEO approves what will run and
@@ -94,18 +112,22 @@ export function cardFacts(spec: ActionSpec): readonly string[] {
     case "ads.start":
     case "ads.budget.change": {
       const daily = money(p.dailyBudgetUsd);
-      return [daily ? `${daily}/day` : null, text(p.audience) ? `audience: ${text(p.audience)}` : null, text(p.name) ? `campaign: ${text(p.name)}` : null].filter((f): f is string => f !== null);
+      return present([daily ? `${daily}/day` : null, text(p.audience) ? `audience: ${text(p.audience)}` : null, text(p.name) ? `campaign: ${text(p.name)}` : null]);
     }
     case "email.send.first_contact":
     case "email.send.reply":
     case "support.reply.template":
-    case "support.reply.custom":
-      return [text(p.to) ? `to ${text(p.to)}` : null, text(p.subject) ? `subject: ${text(p.subject)}` : null].filter((f): f is string => f !== null);
+    case "support.reply.custom": {
+      const batch = batchFacts(spec);
+      return batch ? [batch] : present([text(p.to) ? `to ${text(p.to)}` : null, text(p.subject) ? `subject: ${text(p.subject)}` : null]);
+    }
     case "deploy.preview":
     case "deploy.production":
-      return [text(p.name) ? `site: ${text(p.name)}` : null, text(p.url) ? `preview: ${text(p.url)}` : null].filter((f): f is string => f !== null);
+      return present([text(p.name) ? `site: ${text(p.name)}` : null, text(p.url) ? `preview: ${text(p.url)}` : null]);
     case "spend.oneoff":
-      return [money(p.amountUsd) ? `${money(p.amountUsd)} once` : null, text(p.vendor) ? `to ${text(p.vendor)}` : null].filter((f): f is string => f !== null);
+      return present([money(p.amountUsd) ? `${money(p.amountUsd)} once` : null, text(p.vendor) ? `to ${text(p.vendor)}` : null]);
+    case "budget.cap.raise":
+      return capFacts(p);
     default:
       return [];
   }
@@ -121,16 +143,41 @@ export function cardRationale(spec: ActionSpec, tier: Tier, reasons: readonly Ga
   return full.length <= RATIONALE_MAX ? full : `${full.slice(0, RATIONALE_MAX - 1)}…`;
 }
 
+const QUESTION_MAX = 200;
+
+/**
+ * One question per card. A batch asks for the whole batch by count (the agent
+ * cannot misstate it); a cap card asks the plan's question (its description
+ * already is the question); everything else asks to approve the description.
+ */
+export function cardQuestion(spec: ActionSpec): string {
+  const batch = batchPayload(spec.payload);
+  const question =
+    spec.kind === "email.send.first_contact" && batch?.recipients
+      ? `Send ${batch.recipients.length} first-contact emails?`
+      : spec.kind === "budget.cap.raise"
+        ? spec.description
+        : `Approve: ${spec.description}?`;
+  return question.length <= QUESTION_MAX ? question : `${question.slice(0, QUESTION_MAX - 1)}…`;
+}
+
+/** Cards sharing a mergeKey are one decision: every send of a batch, or every card of a kind and category. */
+function mergeKeyFor(spec: ActionSpec): string {
+  const batch = batchPayload(spec.payload);
+  return batch ? `batch:${batch.batchId}` : `${spec.kind}:${spec.category ?? "none"}`;
+}
+
 function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], dueAt: string): CardDraft {
   const isK3 = tier === "K3";
   return Object.freeze({
     companyId: spec.companyId,
-    question: `Approve: ${spec.description}?`,
+    question: cardQuestion(spec),
     options: [
       { id: "approve", label: "Approve" },
       { id: "decline", label: "Decline" },
     ],
-    recommendedOptionId: "approve",
+    // BUD-3: a cap raise is recommended against; the campaign stays paused unless the CEO says otherwise.
+    recommendedOptionId: spec.kind === "budget.cap.raise" ? "decline" : "approve",
     rationale: cardRationale(spec, tier, reasons),
     expectedImpact: null,
     costUsd: spec.amountUsd ?? 0,
@@ -139,7 +186,7 @@ function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], d
     defaultOptionId: isK3 ? null : "decline",
     tier,
     actionKind: spec.kind,
-    mergeKey: `${spec.kind}:${spec.category ?? "none"}`,
+    mergeKey: mergeKeyFor(spec),
   });
 }
 
@@ -160,9 +207,10 @@ export function gate(spec: ActionSpec, ctx: PolicyContext): GateDecision {
   let tier = baseTier;
   const reasons: GateReason[] = [...baseReasons];
 
-  if (spec.amountUsd !== undefined && spec.amountUsd > 0) {
+  const profile = spendProfile(spec);
+  if (profile.totalUsd > 0) {
     const budget = budgetFor(spec, ctx.budgets);
-    if (!budget || wouldExceedBudget(budget, spec.amountUsd)) {
+    if (!budget || wouldExceedBudget(budget, profile)) {
       tier = tier === "K3" ? "K3" : "K2";
       reasons.push("budget_cap");
     }

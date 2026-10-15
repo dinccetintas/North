@@ -23,6 +23,8 @@ export const ACTION_KINDS = [
   "ads.start",
   "ads.budget.change",
   "ads.pause",
+  "ads.resume",
+  "budget.cap.raise",
   "social.publish",
   "content.publish.approved",
   "price.change",
@@ -78,6 +80,9 @@ export const ACTION_PROFILES: Readonly<Record<ActionKind, RiskFlags>> = Object.f
   "ads.start": flags({ externalEffect: true, spendsMoney: true, publicStatement: true }),
   "ads.budget.change": flags({ externalEffect: true, spendsMoney: true }),
   "ads.pause": flags({ externalEffect: true }),
+  "ads.resume": flags({ externalEffect: true }),
+  /** BUD-3: raising a cap lets a paused campaign spend again; the raise is the amount gated. */
+  "budget.cap.raise": flags({ externalEffect: true, spendsMoney: true }),
   "social.publish": flags({ externalEffect: true, reversible: false, publicStatement: true }),
   "content.publish.approved": flags({ externalEffect: true }),
   "price.change": flags({ externalEffect: true, publicStatement: true }),
@@ -89,33 +94,98 @@ export const ACTION_PROFILES: Readonly<Record<ActionKind, RiskFlags>> = Object.f
 });
 
 /** Action kinds whose payload carries a spend figure the adapter would act on. */
-const SPENDING_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.budget.change", "spend.oneoff"]);
+const SPENDING_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.budget.change", "spend.oneoff", "budget.cap.raise"]);
+
+/** Kinds whose spend runs per day (`payload.dailyBudgetUsd`) for as long as `amountUsd` lasts. */
+const DAILY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.budget.change"]);
+
+/** Kinds that cannot be gated without a budget category. */
+const CATEGORY_REQUIRED: ReadonlySet<ActionKind> = new Set(["budget.cap.raise"]);
+
+type Payload = Record<string, unknown> | undefined;
 
 /** The spend an adapter would execute, read from the payload (`dailyBudgetUsd` or `amountUsd`), or null. */
-export function payloadSpendUsd(kind: ActionKind, payload: Record<string, unknown> | undefined): number | null {
+export function payloadSpendUsd(kind: ActionKind, payload: Payload): number | null {
   if (!SPENDING_KINDS.has(kind) || !payload) return null;
   const candidates = [payload.dailyBudgetUsd, payload.amountUsd, payload.budgetUsd].filter((v): v is number => typeof v === "number");
   return candidates.length === 0 ? null : Math.max(...candidates);
 }
 
-export const ActionSpecSchema = z
+/** BUD-1: what an action spends per day and in total, each checked against its own cap. */
+export interface SpendProfile {
+  readonly perDayUsd: number;
+  readonly totalUsd: number;
+}
+
+/**
+ * Per-day from `payload.dailyBudgetUsd` and total from `amountUsd` for ads;
+ * both equal `amountUsd` for one-off spends, cap raises and anything else that
+ * declares an amount. Without a daily figure the whole amount counts against
+ * today: the gate never assumes a slower pace than the agent stated.
+ */
+export function spendProfile(spec: { readonly kind: ActionKind; readonly amountUsd?: number | undefined; readonly payload?: Payload }): SpendProfile {
+  const totalUsd = spec.amountUsd ?? 0;
+  const daily = spec.payload?.dailyBudgetUsd;
+  const perDayUsd = DAILY_KINDS.has(spec.kind) && typeof daily === "number" ? Math.min(daily, totalUsd) : totalUsd;
+  return Object.freeze({ perDayUsd, totalUsd });
+}
+
+export const MAX_BATCH_SIZE = 50;
+
+/**
+ * SLS-K2 batch payload for `email.send.first_contact`: every send of one
+ * outreach batch carries the same `batchId` (so the gate opens one card and
+ * the worker reuses it) and, optionally, the full recipient list, so the first
+ * action can show "5 emails: a@…, b@…, +3" on the card. Other keys (`to`,
+ * `subject`, `text`, `leadId`) pass through untouched.
+ */
+export const BatchPayloadSchema = z
   .object({
-    kind: z.enum(ACTION_KINDS),
-    companyId: z.string().min(1),
-    agentRole: z.string().min(1),
-    description: z.string().min(1).max(500),
-    amountUsd: z.number().nonnegative().optional(),
-    category: z.enum(BUDGET_CATEGORIES).optional(),
-    /** Agents may only raise the tier; a lower value is ignored. */
-    requestedTier: z.enum(TIERS).optional(),
-    /** Free-form payload the adapter needs; the engine only checks it never spends more than `amountUsd`. */
-    payload: z.record(z.string(), z.unknown()).optional(),
+    batchId: z.string().min(1).max(64),
+    recipients: z.array(z.email().max(254)).min(1).max(MAX_BATCH_SIZE).optional(),
   })
-  .refine(
-    (spec) => {
-      const spend = payloadSpendUsd(spec.kind, spec.payload);
-      return spend === null || (spec.amountUsd !== undefined && spend <= spec.amountUsd);
-    },
-    { message: "payload spend must not exceed the gated amountUsd", path: ["amountUsd"] },
-  );
+  .loose();
+export type BatchPayload = z.infer<typeof BatchPayloadSchema>;
+
+/** The batch facts the gate reads: the id, and the recipient list when the payload carries one. */
+export interface BatchFacts {
+  readonly batchId: string;
+  readonly recipients?: readonly string[];
+}
+
+/** The batch facts of a payload, or null when it carries no `batchId` (or an invalid one). */
+export function batchPayload(payload: Payload): BatchFacts | null {
+  if (!payload || payload.batchId === undefined) return null;
+  const parsed = BatchPayloadSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  const { batchId, recipients } = parsed.data;
+  return Object.freeze(recipients ? { batchId, recipients: Object.freeze([...recipients]) } : { batchId });
+}
+
+const BaseActionSpecSchema = z.object({
+  kind: z.enum(ACTION_KINDS),
+  companyId: z.string().min(1),
+  agentRole: z.string().min(1),
+  description: z.string().min(1).max(500),
+  amountUsd: z.number().nonnegative().optional(),
+  category: z.enum(BUDGET_CATEGORIES).optional(),
+  /** Agents may only raise the tier; a lower value is ignored. */
+  requestedTier: z.enum(TIERS).optional(),
+  /** Free-form payload the adapter needs; the engine only checks it never spends more than `amountUsd`. */
+  payload: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ActionSpecSchema = BaseActionSpecSchema.superRefine((spec, ctx) => {
+  const spend = payloadSpendUsd(spec.kind, spec.payload);
+  if (spend !== null && (spec.amountUsd === undefined || spend > spec.amountUsd)) {
+    ctx.addIssue({ code: "custom", message: "payload spend must not exceed the gated amountUsd", path: ["amountUsd"] });
+  }
+  if (CATEGORY_REQUIRED.has(spec.kind) && spec.category === undefined) {
+    ctx.addIssue({ code: "custom", message: `${spec.kind} requires a budget category`, path: ["category"] });
+  }
+  if (spec.kind === "email.send.first_contact" && spec.payload?.batchId !== undefined) {
+    const batch = BatchPayloadSchema.safeParse(spec.payload);
+    if (!batch.success) ctx.addIssue({ code: "custom", message: "invalid batch payload: batchId is 1-64 chars, recipients are emails", path: ["payload"] });
+  }
+});
 export type ActionSpec = z.infer<typeof ActionSpecSchema>;

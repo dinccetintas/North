@@ -1,5 +1,11 @@
 import type { AnsweredCard } from "./types";
-import type { ActionKind, BudgetCategory } from "../authority/action";
+import { BUDGET_CATEGORIES, type ActionKind, type BudgetCategory } from "../authority/action";
+
+/** The category in a `<kind>:<category>` mergeKey; batch keys (`batch:<id>`) carry none. */
+const categoryOf = (mergeKey: string): BudgetCategory | undefined => {
+  const part = mergeKey.split(":")[1];
+  return (BUDGET_CATEGORIES as readonly string[]).includes(part ?? "") ? (part as BudgetCategory) : undefined;
+};
 
 export const AUTO_RULE_REPEATS = 3;
 
@@ -28,12 +34,12 @@ export function suggestAutoRule(history: readonly AnsweredCard[]): AutoRuleSugge
   );
   if (!consistent || first.answeredOptionId === "decline") return null;
 
-  const category = first.mergeKey.split(":")[1];
+  const category = categoryOf(first.mergeKey);
   return Object.freeze({
     kind: first.actionKind,
     optionId: first.answeredOptionId,
     maxAmountUsd: Math.max(...recent.map((c) => c.costUsd)),
-    ...(category && category !== "none" ? { category: category as BudgetCategory } : {}),
+    ...(category ? { category } : {}),
     basedOn: Object.freeze(recent),
   });
 }

@@ -16,6 +16,7 @@ export const TASK_TYPES = [
   "screen_designs",
   "build_site",
   "campaign_spec",
+  "lead_research",
   "outreach_batch",
   "plan_week",
   "brief",
@@ -46,13 +47,14 @@ export const TASK_OWNER: Readonly<Record<TaskType, AgentRole>> = Object.freeze({
   screen_designs: "design",
   build_site: "engineering",
   campaign_spec: "growth",
+  lead_research: "sales",
   outreach_batch: "sales",
   plan_week: "chief_of_staff",
   brief: "chief_of_staff",
 });
 
-/** Metric keys a goal or task can point at. Extend here, never inline strings. */
-export const METRIC_KEYS = [
+/** Outcome metrics: the only keys a goal may point at (ONB-2). Extend here, never inline strings. */
+export const OUTCOME_METRIC_KEYS = [
   "paying_customers",
   "signups",
   "waitlist",
@@ -63,6 +65,14 @@ export const METRIC_KEYS = [
   "email_replies",
   "artifacts",
 ] as const;
+export type OutcomeMetricKey = (typeof OUTCOME_METRIC_KEYS)[number];
+
+/** Channel metrics (OUT-2): what a campaign or batch did, sampled per source; never a goal. */
+export const CHANNEL_METRIC_KEYS = ["ad_spend_usd", "ad_impressions", "ad_clicks", "emails_sent"] as const;
+export type ChannelMetricKey = (typeof CHANNEL_METRIC_KEYS)[number];
+
+/** Every metric key a sample, task or ledger entry can carry. */
+export const METRIC_KEYS = [...OUTCOME_METRIC_KEYS, ...CHANNEL_METRIC_KEYS] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
 export const ARTIFACT_KINDS = [
@@ -76,6 +86,7 @@ export const ARTIFACT_KINDS = [
   "screen_designs",
   "build_report",
   "campaign_spec",
+  "lead_list",
   "outreach_batch",
   "plan",
   "brief",
@@ -126,6 +137,18 @@ export const MemoryDraftSchema = z.object({
 });
 export type MemoryDraft = z.infer<typeof MemoryDraftSchema>;
 
+/** The most leads one `lead_research` run may hand over. */
+export const MAX_LEADS = 50;
+
+/** One prospect from `lead_research`; the worker persists it to `leads` (source `research`, unique on email per company). */
+export const LeadDraftSchema = z.object({
+  name: z.string().min(1).max(120),
+  email: z.email().max(254),
+  company: z.string().max(120).default(""),
+  why: z.string().min(1).max(500),
+});
+export type LeadDraft = z.infer<typeof LeadDraftSchema>;
+
 /** What every non-planning agent run returns. Artifacts and memory are persisted by the worker; actions are gated. */
 export const AgentOutputSchema = z.object({
   summary: z.string().min(1).max(2000),
@@ -134,6 +157,8 @@ export const AgentOutputSchema = z.object({
   actions: z.array(ActionSpecSchema).max(20).default([]),
   /** Files for the task workspace (engineering); the mock runtime returns them, the SDK runtime writes them itself. */
   files: OutputFilesSchema.optional(),
+  /** Prospects from `lead_research` (sales); the worker persists them, nothing is contacted here. */
+  leads: z.array(LeadDraftSchema).max(MAX_LEADS).optional(),
   /** Honest self-assessment the Chief of Staff reads when planning the next week. */
   confidence: z.enum(["low", "medium", "high"]).default("medium"),
 });
