@@ -11,7 +11,7 @@
  */
 import { Inngest } from "inngest";
 import { createClient } from "@supabase/supabase-js";
-import { EVENT, ledgerCsv } from "@north/core";
+import { EVENT, ledgerCsv, localDay } from "@north/core";
 import {
   answerCard,
   cardsOpenedToday,
@@ -44,6 +44,8 @@ const INNGEST_BASE_URL = process.env.INNGEST_BASE_URL ?? "http://localhost:8288"
 const WORKER_URL = process.env.WORKER_URL ?? "http://localhost:3101";
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** DEC-3 (M5): the quota day is the owner's local day; this owner keeps the profile default (UTC), so "today" is the UTC date. */
+const today = (): string => localDay("UTC", new Date());
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`smoke M4: ${message}`);
@@ -173,7 +175,7 @@ async function step3({ companyId, campaign }: Ctx): Promise<void> {
   const capCard = (await listPendingCards(db, companyId)).find((c) => c.actionKind === "budget.cap.raise");
   assert(capCard && capCard.tier === "K2" && capCard.defaultOptionId === "decline" && capCard.rationale.includes("spent $11 of $10"), `unexpected cap card ${JSON.stringify(capCard)}`);
   await collect(companyId);
-  assert((await cardsOpenedToday(db, companyId)) === 2 && (await listPendingCards(db, companyId)).length === 1, "a second collection opens no second cap card");
+  assert((await cardsOpenedToday(db, companyId, today())) === 2 && (await listPendingCards(db, companyId)).length === 1, "a second collection opens no second cap card");
   await approve(companyId, capCard.id);
   await until("cap raised and campaign resumed", async () => (await getBudget(db, companyId, "ads"))?.dailyExtraUsd === 10 && (await listCampaigns(db, companyId))[0]?.status === "active");
   assert((await listRecentActions(db, companyId, 1)).some((a) => a.kind === "ads.resume" && a.status === "notified"), "ads.resume notified after the raise");
@@ -185,7 +187,7 @@ async function step3({ companyId, campaign }: Ctx): Promise<void> {
   await approve(companyId, capCard2.id, "decline");
   await until("cap raise declined", async () => (await listRecentActions(db, companyId, 1)).some((a) => a.kind === "budget.cap.raise" && a.status === "declined"));
   await collect(companyId);
-  assert((await listCampaigns(db, companyId))[0]?.status === "paused_cap" && (await listPendingCards(db, companyId)).length === 0 && (await cardsOpenedToday(db, companyId)) === 3, "declined: stays paused, no new card for the same cap and day");
+  assert((await listCampaigns(db, companyId))[0]?.status === "paused_cap" && (await listPendingCards(db, companyId)).length === 0 && (await cardsOpenedToday(db, companyId, today())) === 3, "declined: stays paused, no new card for the same cap and day");
 }
 
 /** 4) Sales: five leads → one card with five pending sends → approve → five executed sends, message id evidence, leads contacted; two replies → one cold_email entry 0 → 2. */
@@ -248,7 +250,7 @@ async function step5({ companyId, campaign }: Ctx): Promise<number> {
   await setKillSwitch(db, companyId, false);
   await inngest.send({ name: EVENT.companyResume, data: { companyId } });
   const resumeCard = await until("resume card", async () => (await listPendingCards(db, companyId)).find((c) => c.actionKind === "ads.resume"));
-  assert(resumeCard.tier === "K2" && resumeCard.defaultOptionId === "decline" && (await cardsOpenedToday(db, companyId)) === 5, "one K2 ads.resume card, the fifth of the day");
+  assert(resumeCard.tier === "K2" && resumeCard.defaultOptionId === "decline" && (await cardsOpenedToday(db, companyId, today())) === 5, "one K2 ads.resume card, the fifth of the day");
   await approve(companyId, resumeCard.id);
   const killedIds = active.map((c) => c.id);
   await until("both campaigns active again", async () => {
@@ -280,7 +282,7 @@ async function main() {
   const csv = await step6(ctx);
   const final = ctx.tally[ctx.tally.length - 1]!;
   console.log(
-    `smoke M4 OK: campaign ${ctx.campaign.providerCampaignId} active→paused_cap→active→paused_cap→paused_kill→active, ${csv.entries} ledger entries (meta_ads + cold_email), cap cards 2 (approve, decline), batch of 5 sent with 2 replies, kill switch ${killLatency} ms, cards today ${await cardsOpenedToday(db, ctx.companyId)}, actions ${final.actions}, csv ${csv.rows} rows`,
+    `smoke M4 OK: campaign ${ctx.campaign.providerCampaignId} active→paused_cap→active→paused_cap→paused_kill→active, ${csv.entries} ledger entries (meta_ads + cold_email), cap cards 2 (approve, decline), batch of 5 sent with 2 replies, kill switch ${killLatency} ms, cards today ${await cardsOpenedToday(db, ctx.companyId, today())}, actions ${final.actions}, csv ${csv.rows} rows`,
   );
   await db.auth.admin.deleteUser(ctx.ownerId);
 }

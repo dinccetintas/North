@@ -24,7 +24,7 @@ jobs:
       - run: pnpm -r test
       - name: Worker-only secrets never appear in the web app
         run: |
-          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY" apps/web/src
+          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|SENTRY_DSN" apps/web/src
       - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
         run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
       - name: Worker image carries no env files, workspaces or sandbox sites
