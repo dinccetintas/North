@@ -8,6 +8,18 @@ export interface TaskRowData {
   readonly title: string;
   readonly costUsd: number;
   readonly lastError?: string | null;
+  /** What a done task can show (AGT-2); a URL becomes a "preview" / "live" link on the row. */
+  readonly evidence?: { readonly kind: string; readonly ref: string } | null;
+}
+
+function EvidenceLink({ evidence, liveUrl }: { evidence: TaskRowData["evidence"]; liveUrl: string | null }) {
+  if (!evidence || evidence.kind !== "url" || !/^https?:\/\//.test(evidence.ref)) return null;
+  const label = evidence.ref === liveUrl ? "live" : "preview";
+  return (
+    <a href={evidence.ref} target="_blank" rel="noreferrer noopener" className="mono-label text-deep hover:underline" data-testid="task-evidence" data-evidence={label}>
+      {label} ↗
+    </a>
+  );
 }
 
 const isKnownStatus = (status: string): status is TaskStatus => status in TASK_STATUS_CLASS;
@@ -23,7 +35,15 @@ export function TaskStatusBadge({ status }: { status: string }) {
   );
 }
 
-export function TaskList({ tasks, testId, emptyText }: { tasks: readonly TaskRowData[]; testId: string; emptyText: string }) {
+export interface TaskListProps {
+  readonly tasks: readonly TaskRowData[];
+  readonly testId: string;
+  readonly emptyText: string;
+  /** The company's live site URL; a done task whose evidence is this URL links as "live", any other URL as "preview". */
+  readonly liveUrl?: string | null;
+}
+
+export function TaskList({ tasks, testId, emptyText, liveUrl = null }: TaskListProps) {
   if (tasks.length === 0) {
     return (
       <p className="border border-surface-border bg-surface p-5 text-muted" data-testid={testId}>
@@ -42,7 +62,15 @@ export function TaskList({ tasks, testId, emptyText }: { tasks: readonly TaskRow
         >
           <TaskStatusBadge status={task.status} />
           <span className="mono-label truncate text-muted">{roleTitle(task.role)}</span>
-          <span className="col-span-3 sm:col-span-1">{task.title}</span>
+          <span className="col-span-3 sm:col-span-1">
+            {task.title}
+            {task.status === "done" && task.evidence ? (
+              <>
+                {" "}
+                <EvidenceLink evidence={task.evidence} liveUrl={liveUrl} />
+              </>
+            ) : null}
+          </span>
           <span className="col-start-3 row-start-1 mono-label text-faint sm:col-start-4">{formatUsd(task.costUsd)}</span>
           {task.status === "failed" && task.lastError ? (
             <span className="col-span-3 mono-label text-error sm:col-span-4">{task.lastError}</span>

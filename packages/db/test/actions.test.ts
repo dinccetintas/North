@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listRecentActions, recordAction } from "../src/actions";
+import { listRecentActions, recordAction, recordActionTransition, siteUrls } from "../src/actions";
+import { openCard } from "../src/decisions";
 import { DbError } from "../src/errors";
 import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
@@ -48,6 +49,18 @@ describe("actions repository (DEC-1, audit log)", () => {
     expect(lastDay[0]?.id).toBe(newest!.id);
     const threeDays = await listRecentActions(service, owned.companyId, 72);
     expect(threeDays.some((a) => a.description === "old")).toBe(true);
+  });
+
+  it("siteUrls returns the newest live and preview URLs from chain heads only (M3 Website line)", async () => {
+    expect(await siteUrls(owned.owner.client, owned.companyId)).toEqual({ live: null, preview: null });
+    const preview = await recordAction(service, { companyId: owned.companyId, taskId: null, agentRole: "engineering", kind: "deploy.preview", tier: "K1", description: "preview", status: "pending" });
+    await recordActionTransition(service, { actionId: preview, status: "notified", externalRef: "http://127.0.0.1:3101/sandbox/sites/abc/" });
+    expect(await siteUrls(owned.owner.client, owned.companyId)).toEqual({ live: null, preview: "http://127.0.0.1:3101/sandbox/sites/abc/" });
+    const card = await openCard(service, { companyId: owned.companyId, taskId: null, question: "Go live?", options: [{ id: "approve", label: "Approve" }, { id: "decline", label: "Decline" }], recommendedOptionId: "approve", rationale: "verified", expectedImpact: null, costUsd: 0, dueAt: new Date(Date.now() + 3_600_000).toISOString(), defaultOptionId: "decline", tier: "K2", actionKind: "deploy.production", mergeKey: "golive:test" });
+    const live = await recordAction(service, { companyId: owned.companyId, taskId: null, agentRole: "engineering", kind: "deploy.production", tier: "K2", description: "go live", status: "pending", decisionCardId: card.id });
+    expect((await siteUrls(service, owned.companyId)).live).toBeNull();
+    await recordActionTransition(service, { actionId: live, status: "executed", externalRef: "http://127.0.0.1:3101/sandbox/sites/live-x/" });
+    expect(await siteUrls(owned.owner.client, owned.companyId)).toEqual({ live: "http://127.0.0.1:3101/sandbox/sites/live-x/", preview: "http://127.0.0.1:3101/sandbox/sites/abc/" });
   });
 
   it("another owner cannot read the company's actions", async () => {

@@ -6,6 +6,7 @@ import {
   headActionsForTask,
   latestMetric,
   listOverdueCards,
+  listPendingCardsForTask,
   markTaskDone,
   markTaskFailed,
   markTaskRunning,
@@ -18,6 +19,7 @@ import {
   type TaskRecord,
 } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { CONNECT_OPTION, isConnectCard } from "./connect-card";
 
 /**
  * Settlement of decision cards, outside the agent run (M2 security review
@@ -27,15 +29,28 @@ import type { WorkerDeps } from "../deps";
 export type Settlement =
   | { readonly kind: "unanswered"; readonly cardId: string }
   | { readonly kind: "nothing"; readonly cardId: string }
+  | { readonly kind: "resume"; readonly cardId: string; readonly taskId: string }
+  | { readonly kind: "abandon"; readonly cardId: string; readonly taskId: string }
   | { readonly kind: "declined"; readonly cardId: string; readonly actionId: string; readonly taskId: string | null }
   | { readonly kind: "perform"; readonly cardId: string; readonly actionId: string; readonly taskId: string | null; readonly tier: ActionRecord["tier"] };
 
-/** Reads the card's answer and moves its pending action: declined now, or handed back to be performed and completed as separate steps. */
+/**
+ * Reads the card's answer and moves its pending action: declined now, or
+ * handed back to be performed and completed as separate steps. A connect card
+ * (ONB-3) has no action: "connected" resumes the task, "skip" abandons it.
+ */
 export async function settleDecision(deps: WorkerDeps, cardId: string): Promise<Settlement> {
   const { db } = deps;
   const card = await getCard(db, cardId);
   if (!card) throw new Error(`card ${cardId} not found`);
   if (!card.answeredAt || !card.answeredOptionId) return { kind: "unanswered", cardId };
+  if (isConnectCard(card) && card.taskId) {
+    const task = await getTask(db, card.taskId);
+    if (!task || task.status !== "waiting_decision") return { kind: "nothing", cardId };
+    if (card.answeredOptionId === CONNECT_OPTION) return { kind: "resume", cardId, taskId: card.taskId };
+    await markTaskFailed(db, card.taskId, `${card.question} Skipped: the account was not connected.`);
+    return { kind: "abandon", cardId, taskId: card.taskId };
+  }
   const action = await pendingActionForCard(db, cardId);
   if (!action) return { kind: "nothing", cardId };
   if (card.answeredOptionId !== "approve") {
@@ -113,6 +128,7 @@ export async function finishTaskIfIdle(deps: WorkerDeps, taskId: string): Promis
   if (task.status === "done" || task.status === "failed" || task.status === "queued") return { status: "already" };
   const actions = await headActionsForTask(db, taskId);
   if (actions.some((a) => a.status === "pending")) return { status: "waiting_decision" };
+  if ((await listPendingCardsForTask(db, taskId)).length > 0) return { status: "waiting_decision" };
   const sandbox = deps.integrations.mode === "sandbox" || deps.runtime.name === "mock";
   const evidence = evidenceFor(task, actions, sandbox);
   if (task.status === "waiting_decision") await markTaskRunning(db, taskId);

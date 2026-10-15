@@ -1,5 +1,5 @@
 import { cron } from "inngest";
-import { CompanyEventSchema, DecisionAnsweredSchema, DecisionOpenedSchema, EVENT, TaskDispatchSchema } from "@north/core";
+import { CompanyEventSchema, ConnectionOauthCodeSchema, ConnectionRevokedSchema, DecisionAnsweredSchema, DecisionOpenedSchema, EVENT, TaskDispatchSchema } from "@north/core";
 import { getKillSwitch, getTask, markTaskFailed } from "@north/db";
 import { inngest } from "./client";
 import { buildDeps } from "../deps";
@@ -12,6 +12,7 @@ import { deferredTaskIds, pauseEverything, queuedTaskIds, unsettledAnsweredCards
 import { applyOverdueDefaults, finishTaskIfIdle, settleDecision } from "../services/settle";
 import { runBuildPipeline, type PipelineOutcome, type StepRunner } from "../services/build-pipeline";
 import { attemptDecision, escalateTask } from "../services/escalate";
+import { completeConnection, dropRevokedSecret } from "../services/oauth";
 
 const cancelOnKillSwitch = [{ event: EVENT.companyKillSwitch, match: "data.companyId" }];
 const APP_URL = () => process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3100";
@@ -108,6 +109,14 @@ export const settleDecisionFn = inngest.createFunction(
     if (settlement.kind === "perform") {
       const outcome = await step.run("perform", () => performPending(deps, settlement.actionId));
       await step.run("record", () => completeAction(deps, { actionId: settlement.actionId, tier: settlement.tier, outcome }));
+    }
+    if (settlement.kind === "resume") {
+      await step.sendEvent("resume-task", { name: EVENT.taskDispatch, data: { companyId, taskId: settlement.taskId } });
+      return { cardId, settlement: settlement.kind };
+    }
+    if (settlement.kind === "abandon") {
+      await step.sendEvent("abandoned", { name: EVENT.taskFinished, data: { companyId, taskId: settlement.taskId, taskType: (await getTask(deps.db, settlement.taskId))?.taskType ?? "build_site", status: "failed" } });
+      return { cardId, settlement: settlement.kind };
     }
     if (settlement.kind !== "perform" && settlement.kind !== "declined") return { cardId, settlement: settlement.kind };
     if (!settlement.taskId) return { cardId, settlement: settlement.kind };
@@ -222,9 +231,29 @@ export const retryDeferred = inngest.createFunction(
   },
 );
 
+/** connection/oauth_code → the worker (which holds the client secret) exchanges the code and stores the token (ONB-3, ADR 0008). */
+export const connectProvider = inngest.createFunction(
+  { id: "connect-provider", triggers: [{ event: EVENT.connectionOauthCode }], retries: 0 },
+  async ({ event, step }) => {
+    const payload = ConnectionOauthCodeSchema.parse(event.data);
+    const deps = await buildDeps();
+    return step.run("exchange-and-store", () => completeConnection(deps, payload));
+  },
+);
+
+/** connection/revoked → drop the token the owner can no longer see. */
+export const revokeProvider = inngest.createFunction(
+  { id: "revoke-provider", triggers: [{ event: EVENT.connectionRevoked }], retries: 2 },
+  async ({ event, step }) => {
+    const { userId, provider } = ConnectionRevokedSchema.parse(event.data);
+    const deps = await buildDeps();
+    return step.run("drop-secret", () => dropRevokedSecret(deps, userId, provider));
+  },
+);
+
 export const ping = inngest.createFunction(
   { id: "ping", triggers: [{ event: "worker/ping" }] },
   async ({ step }) => step.run("pong", async () => ({ pong: true, at: new Date().toISOString() })),
 );
 
-export const functions = [runTask, settleDecisionFn, decisionDeadlines, notifyDecisionFn, onboardCompany, planWeekFn, killSwitch, resumeCompany, retryDeferred, ping];
+export const functions = [runTask, settleDecisionFn, decisionDeadlines, notifyDecisionFn, onboardCompany, planWeekFn, killSwitch, resumeCompany, retryDeferred, connectProvider, revokeProvider, ping];

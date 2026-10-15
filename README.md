@@ -26,6 +26,16 @@ pnpm e2e             # Playwright
 Without Docker (cloud sessions): `scripts/stack/up.sh --reset` runs the same
 stack on a plain PostgreSQL 16 (GoTrue, PostgREST, storage API, Mailpit behind
 a gateway on :54321), writes the keys to `.stack/env`, and `source .stack/env`
-makes `pnpm test:integration`, `pnpm smoke:m1`, `pnpm smoke:m2` and `pnpm e2e`
-work unchanged. Binaries live under `$NORTH_STACK_TOOLS` (see the script header);
-`scripts/stack/down.sh` stops it.
+makes `pnpm test:integration`, `pnpm smoke:m1`, `pnpm smoke:m2`, `pnpm smoke:m3`
+and `pnpm e2e` work unchanged. Binaries live under `$NORTH_STACK_TOOLS` (see the
+script header); `scripts/stack/down.sh` stops it.
+
+Connections (M3): the engineering agent builds the landing page, pushes it to a
+repository and deploys a preview; going live is a decision card. In sandbox mode
+(the default) the repository and the sites live under the worker's
+`SANDBOX_ROOT`, served at `http://127.0.0.1:3101/sandbox/sites/…`, and
+Settings → Connections offers "Connect (sandbox)". For live mode the founder
+creates a GitHub OAuth app and a Vercel integration, puts the public ids in the
+web env and the secrets plus `CONNECTIONS_ENCRYPTION_KEY` in the worker env
+(`.env.example`), and connects both accounts from Settings → Connections. The
+token is exchanged and encrypted inside the worker; the web app never sees it.

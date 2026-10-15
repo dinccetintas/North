@@ -10,10 +10,13 @@ step "typecheck"; pnpm -r typecheck
 step "lint";      pnpm -r lint
 step "unit";      pnpm -r test
 
-if docker info >/dev/null 2>&1 && (cd packages/db && npx supabase status >/dev/null 2>&1); then
+stack_reachable() {
+  [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] && curl -fsS -o /dev/null "${SUPABASE_URL:-http://127.0.0.1:54321}/rest/v1/" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY"
+}
+if stack_reachable || (docker info >/dev/null 2>&1 && (cd packages/db && npx supabase status >/dev/null 2>&1)); then
   step "integration (local Supabase)"; pnpm --filter @north/db test:integration
 else
-  echo "skip: integration tests need Docker + 'pnpm db:start'" >&2
+  echo "skip: integration tests need Docker + 'pnpm db:start' (or 'source .stack/env' after scripts/stack/up.sh)" >&2
   if [ "${REQUIRE_INTEGRATION:-0}" = "1" ]; then exit 1; fi
 fi
 

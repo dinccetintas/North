@@ -22,6 +22,8 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r lint
       - run: pnpm -r test
+      - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
+        run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
       - name: Start local Supabase
         run: pnpm db:start
       - name: Integration tests (RLS, constraints)

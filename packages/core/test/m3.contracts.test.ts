@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentOutputSchema, MAX_OUTPUT_FILES, OutputFilesSchema, TASK_OWNER, WorkspacePathSchema } from "../src/tasks/types";
-import { providerForAction, CONNECTION_PROVIDERS, PROVIDER_TITLES } from "../src/connections";
+import { providerForAction, CONNECTION_PROVIDERS, CONNECT_CARD_OPTIONS, isConnectCard, PROVIDER_TITLES } from "../src/connections";
+import { ConnectionOauthCodeSchema, ConnectionRevokedSchema } from "../src/events";
 import { evidenceKindFor } from "../src/evidence";
 import { TaskEscalatedSchema, EVENT } from "../src/events";
 
@@ -41,8 +42,33 @@ describe("M3 contracts: connections and evidence", () => {
 
   it("names the evidence kind an action produces", () => {
     expect(evidenceKindFor("deploy.preview")).toBe("url");
+    expect(evidenceKindFor("deploy.production")).toBe("url");
     expect(evidenceKindFor("email.send.reply")).toBe("message_id");
+    expect(evidenceKindFor("support.reply.custom")).toBe("message_id");
+    expect(evidenceKindFor("artifact.write")).toBe("artifact_id");
     expect(evidenceKindFor("repo.push")).toBeNull();
+  });
+
+  it("ONB-3: a connect card is recognised by both option ids, never by one alone", () => {
+    expect(CONNECT_CARD_OPTIONS).toEqual({ connected: "connected", skip: "skip" });
+    expect(isConnectCard({ options: [{ id: "connected" }, { id: "skip" }] })).toBe(true);
+    expect(isConnectCard({ options: [{ id: "skip" }, { id: "connected" }, { id: "other" }] })).toBe(true);
+    expect(isConnectCard({ options: [{ id: "approve" }, { id: "decline" }] })).toBe(false);
+    expect(isConnectCard({ options: [{ id: "connected" }] })).toBe(false);
+    expect(isConnectCard({ options: [] })).toBe(false);
+  });
+
+  it("connection events: the OAuth code event names a supported provider and a valid redirect; revoked covers every provider", () => {
+    expect(EVENT.connectionOauthCode).toBe("connection/oauth_code");
+    expect(EVENT.connectionRevoked).toBe("connection/revoked");
+    const userId = "11111111-1111-4111-8111-111111111111";
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "abc", redirectUri: "http://localhost:3100/api/connections/github/callback" }).success).toBe(true);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "gmail", code: "abc", redirectUri: "http://x/cb" }).success).toBe(false);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "", redirectUri: "http://x/cb" }).success).toBe(false);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "a".repeat(2049), redirectUri: "http://x/cb" }).success).toBe(false);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "vercel", code: "abc", redirectUri: "not a url" }).success).toBe(false);
+    for (const provider of CONNECTION_PROVIDERS) expect(ConnectionRevokedSchema.safeParse({ userId, provider }).success).toBe(true);
+    expect(ConnectionRevokedSchema.safeParse({ userId: "nope", provider: "github" }).success).toBe(false);
   });
 
   it("task/escalated carries the reason", () => {

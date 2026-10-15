@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
-import { getCard, getTask, listActiveAutoRules, listAnsweredCards, listArtifacts, type ArtifactRecord, type TaskRecord } from "@north/db";
+import { getCard, getTask, headActionsForTask, listActiveAutoRules, listAnsweredCards, listArtifacts, type ArtifactRecord, type TaskRecord } from "@north/db";
+import { isConnectCard } from "@north/core/connections";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
@@ -41,14 +42,17 @@ export default async function DecisionPage({ params }: { params: Params }) {
   const card = await getCard(db, id);
   if (!card || card.companyId !== company.id) notFound();
 
-  const [task, artifacts, history, rules] = await Promise.all([
+  const [task, artifacts, history, rules, actions] = await Promise.all([
     card.taskId ? getTask(db, card.taskId) : Promise.resolve(null),
     listArtifacts(db, company.id),
     card.answeredAt ? listAnsweredCards(db, company.id, card.actionKind) : Promise.resolve([]),
     card.answeredAt ? listActiveAutoRules(db, company.id) : Promise.resolve([]),
+    card.taskId ? headActionsForTask(db, card.taskId) : Promise.resolve([]),
   ]);
   const evidence = evidenceFor(task, artifacts);
   const suggestion = card.answeredAt && !rules.some((r) => r.kind === card.actionKind) ? suggestAutoRule(history) : null;
+  const previewUrl = card.actionKind === "deploy.production" ? (actions.find((a) => a.kind === "deploy.preview" && a.externalRef?.startsWith("http"))?.externalRef ?? null) : null;
+  const connect = isConnectCard(card);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -65,6 +69,25 @@ export default async function DecisionPage({ params }: { params: Params }) {
       <div className="mt-8">
         <DecisionCard slug={slug} card={toCardData(card)} compact={false} />
       </div>
+
+      {previewUrl ? (
+        <p className="mt-3 flex flex-wrap items-baseline gap-x-3 border border-surface-border bg-surface p-5" data-testid="decision-preview">
+          <span className="mono-label text-faint">Preview</span>
+          <a href={previewUrl} target="_blank" rel="noreferrer noopener" className="truncate hover:underline">
+            {previewUrl} ↗
+          </a>
+          <span className="text-muted">Open it before you answer: this is exactly what goes live.</span>
+        </p>
+      ) : null}
+      {connect ? (
+        <p className="mt-3 flex flex-wrap items-baseline gap-x-3 border border-surface-border bg-surface p-5" data-testid="decision-connect">
+          <span className="mono-label text-faint">Connections</span>
+          <Link href="/settings/connections" className="hover:underline">
+            Settings → Connections
+          </Link>
+          <span className="text-muted">Connect the account there, then answer this card.</span>
+        </p>
+      ) : null}
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Why</h2>

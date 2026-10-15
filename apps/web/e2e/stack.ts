@@ -86,6 +86,17 @@ export async function insertCampaignSpecTask(companyId: string, title = "Test ca
   return { id };
 }
 
+/** Inserts a queued engineering task the mock runtime answers with the landing page files (fixture `engineering:build_site`, M3). */
+export async function insertBuildSiteTask(companyId: string, title = "Landing page v0"): Promise<SeededTask> {
+  const rows = await rest<{ id: string }[]>("tasks", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId, role: "engineering", task_type: "build_site", title, metric_key: "signups", expected_delta: 10 }),
+  });
+  const id = rows[0]?.id;
+  if (!id) throw new Error("Task insert returned no id");
+  return { id };
+}
+
 /** Sends one event to the Inngest dev server. */
 export async function sendInngestEvent(name: string, data: Record<string, unknown>): Promise<void> {
   const response = await fetch(`${INNGEST_DEV_URL}/e/dev`, {

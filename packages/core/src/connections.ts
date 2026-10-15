@@ -18,6 +18,17 @@ export const PROVIDER_TITLES: Readonly<Record<ConnectionProvider, string>> = Obj
   meta_ads: "Meta Ads",
 });
 
+/**
+ * ONB-3 connect card: opened when a task needs an account the user has not
+ * connected. It carries no action; "connected" resumes the task, "skip" (the
+ * safe default) marks it not done. The web and the worker recognise it by its
+ * option ids.
+ */
+export const CONNECT_CARD_OPTIONS = Object.freeze({ connected: "connected", skip: "skip" });
+
+export const isConnectCard = (card: { readonly options: readonly { readonly id: string }[] }): boolean =>
+  card.options.some((o) => o.id === CONNECT_CARD_OPTIONS.connected) && card.options.some((o) => o.id === CONNECT_CARD_OPTIONS.skip);
+
 /** Which connection an external action needs; null for actions the platform performs with its own accounts. */
 export function providerForAction(kind: ActionKind): ConnectionProvider | null {
   switch (kind) {

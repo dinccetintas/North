@@ -260,6 +260,14 @@ export async function answerCard(db: DbClient, cardId: string, input: AnswerCard
   return toCardRecord(data);
 }
 
+/** Unanswered cards of one task (a task parks until all of them are answered). */
+export async function listPendingCardsForTask(db: DbClient, taskId: string): Promise<readonly CardRecord[]> {
+  const id = UuidSchema.parse(taskId);
+  const { data, error } = await db.from("decision_cards").select(CARD_COLUMNS).eq("task_id", id).is("answered_at", null).order("seq", { ascending: true });
+  if (error) throw dbError("Could not list the task's cards", error);
+  return Object.freeze((data ?? []).map(toCardRecord));
+}
+
 /** Unanswered cards past their deadline, oldest first (the deadline cron applies K2 defaults; K3 waits). */
 export async function listOverdueCards(db: DbClient, now: Date = new Date(), limit = 100): Promise<readonly CardRecord[]> {
   const max = z.number().int().positive().max(1000).parse(limit);

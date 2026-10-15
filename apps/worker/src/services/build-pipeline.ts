@@ -1,7 +1,8 @@
-import type { ActionSpec, OutputFile } from "@north/core";
+import type { ActionSpec, ConnectionProvider, OutputFile } from "@north/core";
 import { getTask } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { completeAction, gateAction, performPending, type GatedAction } from "./actions";
+import { openConnectCard } from "./connect-card";
 import { verifyUrl } from "./verifier";
 
 /** The subset of Inngest's `step` the pipeline needs; each call is a durable, memoised step. */
@@ -50,15 +51,24 @@ export async function runBuildPipeline(deps: WorkerDeps, step: StepRunner, taskI
   const base = { companyId: task.companyId, agentRole: task.role };
   const fail = (error: string, repoUrl: string | null = null, previewUrl: string | null = null): PipelineOutcome => ({ status: "failed", repoUrl, previewUrl, cardId: null, error });
 
+  /** ONB-3: a missing connection becomes a card; the task resumes here once the CEO connects the account. */
+  const connect = async (id: string, provider: string, kind: "repo.create" | "repo.push" | "deploy.preview"): Promise<PipelineOutcome> => {
+    const opened = await step.run(`${id}-connect-card`, () => openConnectCard(deps, taskId, provider as ConnectionProvider, kind));
+    if ("deferred" in opened) return fail(`${provider} is not connected and today's decision quota is spent; the connect card opens tomorrow`);
+    return { status: "connect_card_opened", repoUrl: null, previewUrl: null, cardId: opened.cardId, error: null };
+  };
+
   const repo = await externalStep(deps, step, "repo", taskId, { ...base, kind: "repo.create", description: `Create the repository ${name} in the CEO's GitHub`, payload: { name } });
-  if (repo.gated.kind === "card") return { status: "connect_card_opened", repoUrl: null, previewUrl: null, cardId: repo.gated.cardId, error: null };
+  if (repo.connectionRequired) return connect("repo", repo.connectionRequired, "repo.create");
   if (!repo.externalRef) return fail(repo.error ?? "repository step did not complete");
   const fullName = repo.externalRef.replace(/^.*repos\//, "").replace(/\/commit\/.*$/, "");
 
   const push = await externalStep(deps, step, "push", taskId, { ...base, kind: "repo.push", description: `Push ${files.length} file(s) to ${fullName}`, payload: { fullName, message: `Landing page v${task.attempts}`, files: [...files] } });
+  if (push.connectionRequired) return connect("push", push.connectionRequired, "repo.push");
   if (!push.externalRef) return fail(push.error ?? "push did not complete", repo.externalRef);
 
   const preview = await externalStep(deps, step, "preview", taskId, { ...base, kind: "deploy.preview", description: `Deploy a preview of ${name}`, payload: { name, files: [...files] } });
+  if (preview.connectionRequired) return connect("preview", preview.connectionRequired, "deploy.preview");
   if (!preview.externalRef) return fail(preview.error ?? "preview deploy did not complete", repo.externalRef);
   const check = await step.run("verify-preview", () => verifyUrl(preview.externalRef as string, deps.verifier.fetchImpl, deps.verifier.timeoutMs));
   if (!check.verified) return fail(`preview ${preview.externalRef} is not reachable (${check.detail})`, repo.externalRef, preview.externalRef);

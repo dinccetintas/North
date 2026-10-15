@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getProfile, listActiveAutoRules, listCompanies } from "@north/db";
 import { MAX_DAILY_QUOTA, MIN_DAILY_QUOTA } from "@north/core/decisions/types";
@@ -104,6 +105,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
           <div className="mt-4">
             <PushEnable publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} />
           </div>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">Connections</h2>
+        <div className="mt-3 flex flex-wrap items-baseline justify-between gap-4 border border-surface-border bg-surface p-5">
+          <p className="text-muted">GitHub and Vercel accounts the engineering agent builds and deploys with. Yours, connected by you.</p>
+          <Link href="/settings/connections" className="retro-button inline-block" data-testid="settings-connections">
+            Manage connections
+          </Link>
         </div>
       </section>
 

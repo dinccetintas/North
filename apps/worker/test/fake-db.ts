@@ -233,6 +233,7 @@ export function fakeDbModule(state: FakeState) {
       return { ...card, seq: state.cards.size };
     }),
     getCard: vi.fn(async (_db: unknown, id: string) => (state.cards.get(id) ? { ...state.cards.get(id) } : null)),
+    listPendingCardsForTask: vi.fn(async (_db: unknown, taskId: string) => [...state.cards.values()].filter((c) => c.taskId === taskId && !c.answeredAt).map((c) => ({ ...c }))),
     listCards: vi.fn(async (_db: unknown, companyId: string) => [...state.cards.values()].filter((c) => c.companyId === companyId).map((c) => ({ ...c }))),
     listOverdueCards: vi.fn(async (_db: unknown, now: Date = new Date()) => [...state.cards.values()].filter((c) => !c.answeredAt && Date.parse(c.dueAt) < now.getTime()).map((c) => ({ ...c }))),
     answerCard: vi.fn(async (_db: unknown, id: string, answer: { optionId: string; answeredBy: string }) => {
@@ -280,15 +281,21 @@ export function fakeDbModule(state: FakeState) {
   };
 }
 
-/** Worker deps around the fake db and real sandbox integrations; sandbox events are collected; URL checks answer 200 unless told otherwise. */
-export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200): WorkerDeps {
+/**
+ * Worker deps around the fake db and real sandbox integrations; sandbox events
+ * are collected; URL checks answer 200 unless told otherwise. `mode: "live"`
+ * keeps the sandbox adapters but makes the services look up the owner's
+ * connections (ONB-3 connect cards).
+ */
+export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200, mode: "sandbox" | "live" = "sandbox"): WorkerDeps {
   const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
+  const sandbox = createSandboxIntegrations((e) => void events.push(e), { root: "/tmp/north-test-sandbox", siteBaseUrl: "http://127.0.0.1:3101" });
   return {
-    env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: "sandbox" } as WorkerDeps["env"],
+    env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: mode } as WorkerDeps["env"],
     db,
     roles: new Map(),
     runtime: { name: "mock", run: async () => ({ status: "failed", error: "not used", sessionId: null, usage: { model: "mock", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 } }) },
-    integrations: createSandboxIntegrations((e) => void events.push(e), { root: "/tmp/north-test-sandbox", siteBaseUrl: "http://127.0.0.1:3101" }),
+    integrations: mode === "sandbox" ? sandbox : { ...sandbox, mode },
     verifier: { fetchImpl: async () => new Response("ok", { status: verifyStatus }), timeoutMs: 1000 },
   };
 }

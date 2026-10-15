@@ -78,6 +78,42 @@ describe("runBuildPipeline (M3: repo → push → preview → go-live card)", ()
     expect(state.actions.some((a) => a.kind === "deploy.production")).toBe(false);
   });
 
+  it("ONB-3: in live mode without a GitHub connection the first step opens a connect card and parks the task; opening twice reuses it", async () => {
+    const task = seedTask(state, { role: "engineering", taskType: "build_site", result: { artifactIds: ["art-1"], costUsd: 0, summary: "built" } });
+    const deps = fakeDeps(state, events, 200, "live");
+    const outcome = await runBuildPipeline(deps, directSteps, task.id, files);
+    expect(outcome).toMatchObject({ status: "connect_card_opened", repoUrl: null, previewUrl: null });
+    expect(events).toEqual([]);
+    const card = state.cards.get(outcome.cardId!)!;
+    expect(card).toMatchObject({ tier: "K2", actionKind: "repo.create", defaultOptionId: "skip", question: expect.stringContaining("Connect GitHub") });
+    expect(card.options.map((o) => o.id)).toEqual(["connected", "skip"]);
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+    const heads = state.actions.filter((a) => !state.actions.some((b) => b.supersedes === a.id));
+    expect(heads.map((a) => [a.kind, a.status])).toEqual([["repo.create", "failed"]]);
+    const again = await runBuildPipeline(deps, directSteps, task.id, files);
+    expect(again.cardId).toBe(outcome.cardId);
+    expect(state.cards.size).toBe(1);
+    // AGT-2: a task parked on a connect card is not "done with an artifact"; it waits.
+    expect(await finishTaskIfIdle(deps, task.id)).toEqual({ status: "waiting_decision" });
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+  });
+
+  it("ONB-3: 'connected' resumes the task through settlement; 'skip' fails it with the reason", async () => {
+    const deps = fakeDeps(state, events, 200, "live");
+    const resumed = seedTask(state, { role: "engineering", taskType: "build_site" });
+    const first = await runBuildPipeline(deps, directSteps, resumed.id, files);
+    Object.assign(state.cards.get(first.cardId!)!, { answeredOptionId: "connected", answeredAt: new Date().toISOString(), answeredBy: "user" });
+    expect(await settleDecision(deps, first.cardId!)).toEqual({ kind: "resume", cardId: first.cardId, taskId: resumed.id });
+    expect(state.tasks.get(resumed.id)?.status).toBe("waiting_decision");
+
+    const skipped = seedTask(state, { role: "engineering", taskType: "build_site" });
+    const second = await runBuildPipeline(deps, directSteps, skipped.id, files);
+    Object.assign(state.cards.get(second.cardId!)!, { answeredOptionId: "skip", answeredAt: new Date().toISOString(), answeredBy: "default" });
+    expect(await settleDecision(deps, second.cardId!)).toEqual({ kind: "abandon", cardId: second.cardId, taskId: skipped.id });
+    expect(state.tasks.get(skipped.id)).toMatchObject({ status: "failed" });
+    expect(await settleDecision(deps, second.cardId!)).toEqual({ kind: "nothing", cardId: second.cardId });
+  });
+
   it("the kill switch blocks the first step and nothing reaches an adapter", async () => {
     const task = seedTask(state, { role: "engineering", taskType: "build_site" });
     state.killSwitch.set("company-1", true);

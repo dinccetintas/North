@@ -81,15 +81,25 @@ export async function upsertConnection(db: DbClient, input: UpsertConnectionInpu
   return toRecord(data);
 }
 
-/** Marks the connection revoked and drops its secret. The row stays so the settings page can offer "Connect again". */
-export async function revokeConnection(db: DbClient, userId: string, provider: ConnectionProvider): Promise<void> {
+/**
+ * Marks the connection revoked. The row stays so the settings page can offer
+ * "Connect again". The secret is dropped by `dropConnectionSecret` (service
+ * role); an owner's revoke emits `connection/revoked` and the worker drops it.
+ */
+export async function revokeConnection(db: DbClient, userId: string, provider: ConnectionProvider): Promise<string> {
   const id = UuidSchema.parse(userId);
   const p = z.enum(CONNECTION_PROVIDERS).parse(provider);
   const { data, error } = await db.from("connections").update({ status: "revoked" }).eq("user_id", id).eq("provider", p).select("id").maybeSingle();
   if (error) throw dbError("Could not revoke connection", error);
   if (!data) throw new DbError(`No ${p} connection for user ${id}`);
-  const dropped = await db.from("connection_secrets").delete().eq("connection_id", data.id);
-  if (dropped.error && dropped.error.code !== "42501") throw dbError("Could not drop connection secret", dropped.error);
+  return data.id;
+}
+
+/** Deletes the stored token (service role). Missing rows are fine; a permission error is not. */
+export async function dropConnectionSecret(db: DbClient, connectionId: string): Promise<void> {
+  const id = UuidSchema.parse(connectionId);
+  const { error } = await db.from("connection_secrets").delete().eq("connection_id", id);
+  if (error) throw dbError("Could not drop connection secret", error);
 }
 
 /**

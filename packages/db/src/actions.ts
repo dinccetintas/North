@@ -181,6 +181,33 @@ export async function pendingActionForCard(db: DbClient, cardId: string): Promis
   return head ?? null;
 }
 
+export interface SiteUrls {
+  /** The latest production deploy that executed (M3 go-live). */
+  readonly live: string | null;
+  /** The latest preview deploy that ran (K1, notified). */
+  readonly preview: string | null;
+}
+
+const DEPLOY_KINDS = ["deploy.production", "deploy.preview"] as const;
+const DEPLOY_SCAN_LIMIT = 50;
+
+/** The company's website as the action log knows it: the newest live URL and the newest preview URL (home "Website" line). */
+export async function siteUrls(db: DbClient, companyId: string): Promise<SiteUrls> {
+  const id = UuidSchema.parse(companyId);
+  const { data, error } = await db
+    .from("actions")
+    .select(ACTION_COLUMNS)
+    .eq("company_id", id)
+    .in("kind", [...DEPLOY_KINDS])
+    .order("created_at", { ascending: false })
+    .limit(DEPLOY_SCAN_LIMIT);
+  if (error) throw dbError("Could not load deploy actions", error);
+  const done = heads((data ?? []).map(toRecord)).filter((a) => (a.status === "executed" || a.status === "notified") && a.externalRef?.startsWith("http"));
+  const live = done.find((a) => a.kind === "deploy.production")?.externalRef ?? null;
+  const preview = done.find((a) => a.kind === "deploy.preview")?.externalRef ?? null;
+  return Object.freeze({ live, preview });
+}
+
 /** Actions of the last `sinceHours` hours, newest first; a superseded row is replaced by the head of its chain. */
 export async function listRecentActions(db: DbClient, companyId: string, sinceHours: number = DEFAULT_RECENT_HOURS): Promise<readonly ActionRecord[]> {
   const id = UuidSchema.parse(companyId);

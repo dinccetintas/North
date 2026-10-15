@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getOnboardingStep, latestMetric, latestPlan, listArtifacts, listGoals, listTasks } from "@north/db";
+import { getOnboardingStep, latestMetric, latestPlan, listArtifacts, listGoals, listTasks, siteUrls } from "@north/db";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { ArtifactsStrip } from "@/components/artifacts-strip";
@@ -30,6 +30,30 @@ function MorningHeader({ name }: { name: string }) {
         {name}
       </h1>
     </div>
+  );
+}
+
+/** M3: the company's website as the action log knows it; hidden until a preview exists. */
+function WebsiteLine({ live, preview }: { live: string | null; preview: string | null }) {
+  if (!live && !preview) return null;
+  const url = live ?? preview;
+  return (
+    <section className="mt-10" data-testid="website">
+      <h2 className="mono-label text-faint">Website</h2>
+      <p className="mt-3 flex flex-wrap items-baseline gap-x-3 border border-surface-border bg-surface p-5">
+        <span className={`mono-label ${live ? "text-success" : "text-warning"}`} data-testid="website-status">
+          {live ? "live" : "preview"}
+        </span>
+        <a href={url ?? "#"} target="_blank" rel="noreferrer noopener" className="truncate hover:underline" data-testid="website-link">
+          {url}
+        </a>
+        {live && preview && preview !== live ? (
+          <a href={preview} target="_blank" rel="noreferrer noopener" className="mono-label text-faint hover:underline" data-testid="website-preview">
+            latest preview ↗
+          </a>
+        ) : null}
+      </p>
+    </section>
   );
 }
 
@@ -68,11 +92,12 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
     );
   }
 
-  const [goals, plan, tasks, artifacts] = await Promise.all([
+  const [goals, plan, tasks, artifacts, site] = await Promise.all([
     listGoals(db, company.id),
     latestPlan(db, company.id),
     listTasks(db, company.id, {}),
     listArtifacts(db, company.id),
+    siteUrls(db, company.id),
   ]);
   const goal = goals.find((g) => g.status === "active") ?? goals[0] ?? null;
   const metric = goal ? await latestMetric(db, company.id, goal.metricKey) : null;
@@ -108,6 +133,8 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
 
       <DecisionsSection slug={slug} companyId={company.id} />
 
+      <WebsiteLine live={site.live} preview={site.preview} />
+
       <section className="mt-10">
         <div className="flex items-baseline justify-between gap-4">
           <h2 className="mono-label text-faint">This week</h2>
@@ -117,7 +144,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
           <div className="mt-3" data-testid="week-plan">
             <p className="border border-surface-border bg-surface p-5">{plan.summary}</p>
             <div className="mt-3">
-              <TaskList tasks={weekTasks} testId="week-tasks" emptyText="The plan has no tasks yet." />
+              <TaskList tasks={weekTasks} testId="week-tasks" emptyText="The plan has no tasks yet." liveUrl={site.live} />
             </div>
           </div>
         ) : (
@@ -136,7 +163,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
       <section className="mt-10">
         <h2 className="mono-label text-faint">First 24 hours</h2>
         <div className="mt-3">
-          <TaskList tasks={onboardingTasks} testId="onboarding-tasks" emptyText="Queueing the research tasks…" />
+          <TaskList tasks={onboardingTasks} testId="onboarding-tasks" emptyText="Queueing the research tasks…" liveUrl={site.live} />
         </div>
       </section>
 

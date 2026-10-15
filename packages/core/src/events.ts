@@ -22,6 +22,8 @@ export const EVENT = {
   briefGenerate: "brief/generate",
   companyKillSwitch: "company/killswitch",
   companyResume: "company/resume",
+  connectionOauthCode: "connection/oauth_code",
+  connectionRevoked: "connection/revoked",
 } as const;
 export type EventName = (typeof EVENT)[keyof typeof EVENT];
 
@@ -41,6 +43,22 @@ export const TaskEscalatedSchema = z.object({
   reason: z.string().min(1).max(4000),
 });
 export type TaskEscalatedEvent = z.infer<typeof TaskEscalatedSchema>;
+
+/**
+ * ONB-3: the web callback hands the one-time OAuth code to the worker, which
+ * holds the client secret, exchanges it and stores the token (ADR 0008). The
+ * code is single-use and short-lived; the web never sees the token.
+ */
+export const ConnectionOauthCodeSchema = z.object({
+  userId: z.string().uuid(),
+  provider: z.enum(["github", "vercel"]),
+  code: z.string().min(1).max(2048),
+  redirectUri: z.string().url(),
+});
+export type ConnectionOauthCodeEvent = z.infer<typeof ConnectionOauthCodeSchema>;
+
+export const ConnectionRevokedSchema = z.object({ userId: z.string().uuid(), provider: z.enum(["github", "vercel", "gmail", "stripe", "meta_ads"]) });
+export type ConnectionRevokedEvent = z.infer<typeof ConnectionRevokedSchema>;
 
 export const DecisionAnsweredSchema = z.object({
   companyId: z.string().uuid(),

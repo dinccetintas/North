@@ -26,7 +26,8 @@ English `Code name`. Turkish names are the spec's wording.
 | Artifact (Artefakt) | `Artifact` | A persistent output produced by an agent (PRD, business plan, deck, website, creative). Versioned and downloadable. |
 | Brief (Brifing) | `Brief` | Morning summary per company: yesterday, metrics, pending cards, today's plan. Readable in 60 seconds. |
 | Kill Switch | `KillSwitch` | "Stop all agents": freezes the queue and pauses active campaigns within 5 seconds. Present on every screen. |
-| Connection (Bağlantı) | `Connection` | A user's OAuth link to an external tool (GitHub, Vercel, Stripe, Gmail, Meta Ads). Tokens encrypted at rest. |
+| Connection (Bağlantı) | `Connection` | A user's OAuth link to an external tool (GitHub, Vercel, Stripe, Gmail, Meta Ads). Tokens encrypted at rest and read by the worker only (ADR 0008); in sandbox mode "Connect (sandbox)" records one without a token. |
+| Connect Card (Bağlantı kartı) | `ConnectCard` | A K2 card with options `connected` / `skip` opened when a task needs an account the user has not connected (ONB-3). It carries no action: "connected" re-dispatches the task, "skip" (the default) marks it failed. |
 | Credit | `Credit` | The unit of work included in a subscription plan; consumed by tasks. |
 | Agent Run | `AgentRun` | One execution of an agent for one task: model, tokens, cost, duration, trace. |
 

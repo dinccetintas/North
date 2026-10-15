@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ConnectionSecretError, getConnection, listConnections, readConnectionSecret, revokeConnection, storeConnectionSecret, upsertConnection } from "../src/connections";
+import { ConnectionSecretError, dropConnectionSecret, getConnection, listConnections, readConnectionSecret, revokeConnection, storeConnectionSecret, upsertConnection } from "../src/connections";
 import { DbError } from "../src/errors";
 import { generateEncryptionKey, openSecret, sealSecret, encryptionKey } from "../src/secrets";
 import { createTestUser, deleteTestUser, service, type TestUser } from "./fixtures";
@@ -72,11 +72,15 @@ describe("connections repository (ONB-3, EXP-1)", () => {
     expect((await getConnection(service, alice.id, "github"))?.status).toBe("connected");
   });
 
-  it("revokeConnection keeps the row as revoked and drops the secret", async () => {
+  it("revokeConnection keeps the row as revoked; dropConnectionSecret (service) removes the token", async () => {
     const before = await getConnection(service, alice.id, "github");
-    await revokeConnection(service, alice.id, "github");
+    const revokedId = await revokeConnection(alice.client, alice.id, "github");
+    expect(revokedId).toBe(before!.id);
     expect((await getConnection(service, alice.id, "github"))?.status).toBe("revoked");
+    expect(await readConnectionSecret(service, before!.id, KEY)).toBe("gho_rotated");
+    await dropConnectionSecret(service, before!.id);
     await expect(readConnectionSecret(service, before!.id, KEY)).rejects.toBeInstanceOf(DbError);
+    await dropConnectionSecret(service, before!.id);
     await expect(revokeConnection(service, alice.id, "stripe")).rejects.toBeInstanceOf(DbError);
   });
 

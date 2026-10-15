@@ -6,6 +6,7 @@ import {
   createArtifact,
   getKillSwitch,
   getTask,
+  listPendingCardsForTask,
   markTaskFailed,
   markTaskRunning,
   recordAgentRun,
@@ -63,8 +64,14 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   if (task.status === "waiting_decision") {
     // Only quota-deferred actions are re-gated; a task waiting on an open card has nothing to do (a duplicate dispatch must not finish or fail it).
     const deferred = await deferredActionsFor(db, task);
-    if (deferred.length === 0) return noActions("blocked", taskId, { error: "waiting on an open decision card" });
-    return noActions("ran", taskId, { pendingActions: deferred, costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary });
+    if (deferred.length > 0) return noActions("ran", taskId, { pendingActions: deferred, costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary, attempt: task.attempts });
+    const openCards = await listPendingCardsForTask(db, taskId);
+    if (openCards.length > 0) return noActions("blocked", taskId, { error: "waiting on an open decision card" });
+    // A connect card was answered "connected": resume the build pipeline from the files still in the workspace (ONB-3).
+    const files = task.taskType === "build_site" ? await workspaceFiles(`${deps.env.WORKSPACE_ROOT}/${task.id}`) : [];
+    if (files.length === 0) return noActions("blocked", taskId, { error: "nothing to resume" });
+    await markTaskRunning(db, taskId);
+    return noActions("ran", taskId, { files, costUsd: task.result.costUsd, artifactIds: task.result.artifactIds, summary: task.result.summary, attempt: task.attempts });
   }
   if (task.status === "running") return noActions("blocked", taskId, { error: "already running" });
 
