@@ -14,6 +14,7 @@ const K0_KEYS = [
   "strategy_product:business_plan",
   "strategy_product:investor_deck",
   "design:brand_kit",
+  "sales:lead_research",
   "chief_of_staff:plan_week",
 ];
 

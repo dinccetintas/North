@@ -7,6 +7,7 @@ max_turns: 40
 max_budget_usd: 2.00
 tools:
   - leads.upload_read
+  - leads.write         # K0: researched leads are stored, nobody is contacted
   - web.search
   - web.fetch
   - memory.search

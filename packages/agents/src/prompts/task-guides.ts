@@ -12,6 +12,7 @@ export const ARTIFACT_KIND_FOR_TASK: Readonly<Record<TaskType, ArtifactKind>> = 
   screen_designs: "screen_designs",
   build_site: "build_report",
   campaign_spec: "campaign_spec",
+  lead_research: "lead_list",
   outreach_batch: "outreach_batch",
   plan_week: "plan",
   brief: "brief",
@@ -80,18 +81,24 @@ export const TASK_GUIDES: Readonly<Record<TaskType, string>> = Object.freeze({
 - No external actions of its own: the platform pushes the files, deploys the preview and opens the go-live card.`,
   campaign_spec: `A great campaign spec contains:
 - One objective tied to the goal metric, with the expected delta and the budget that buys it.
-- Audience definition precise enough to configure, with exclusions.
-- Creative: headline, body, CTA and format, with no stock imagery and no claims the product cannot keep.
-- Budget and schedule inside the ads cap, plus an automatic pause rule.
+- Audience definition precise enough to configure, with exclusions, and explicit targeting: ISO country codes and an age band (18-65).
+- Creative: headline, body, CTA and format, with no stock imagery and no claims the product cannot keep. The landing page is the company's live site, or its latest preview until it is live; the platform fills the URL in, never invent one.
+- Budget and schedule inside the ads cap (per day and in total); the platform pauses and asks before a cap is exceeded.
 - A stop rule and what a pass or fail teaches.
-- Exactly one \`ads.start\` action request with amountUsd and category "ads"; the platform opens the decision card.`,
+- Exactly one \`ads.start\` action request with amountUsd (the total), category "ads" and payload { name, dailyBudgetUsd, audience, targeting { countries, ageMin, ageMax }, creativeMarkdown, stopRule }; the platform opens the decision card.`,
+  lead_research: `A great lead research run contains:
+- Who we looked for: the persona and the signal that marks a fit now, matching the thesis.
+- Up to fifty leads from public research only (company sites, job posts, newsletters, public posts); never scraped personal data or purchased lists.
+- Each lead in "leads": name, email, company and a specific "why" (the reason they fit now, usable in the first email).
+- A lead_list artifact with the same leads as a table and the source of each.
+- No external action requests: nothing is contacted here. The platform stores the leads; the next outreach batch asks the CEO before any email goes out.`,
   outreach_batch: `A great outreach batch contains:
-- Who and why: a handful of prospects from public research or the CEO's uploads, never scraped personal data.
-- One short email per prospect: what we noticed, what we do, one ask, no follow-up pressure, no fake personalisation.
+- Who and why: the leads in the instructions (the company's lead list: public research and the CEO's uploads), never scraped personal data or invented addresses.
+- One short email per lead: what we noticed (the lead's why), what we do, one ask, no follow-up pressure, no fake personalisation.
 - A prospects table with the reason each is a fit now.
-- Sending rules: first contact waits for the CEO's approval (K2); replies in-thread are K1.
+- Sending rules: the whole batch is one decision card; first contact waits for the CEO's approval (K2); replies in-thread are K1.
 - The metric (replies) and the thresholds that mean the message works or fails.
-- One \`email.send.first_contact\` action request per email with payload.to, payload.subject and payload.text.`,
+- One \`email.send.first_contact\` action request per email. Batch rules: every action carries the same payload.batchId (one id for this task), the full payload.recipients list (every address in the batch), payload.to, payload.subject, payload.text and payload.leadId when the lead has an id. At most five emails per batch.`,
   plan_week: `A great weekly plan contains:
 - Three to five tasks, each owned by exactly one role and tied to one metric with an expected delta and a cost estimate.
 - Work ordered so research precedes building, and building precedes publishing.

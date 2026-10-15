@@ -1,4 +1,39 @@
 import type { ActionSpec } from "@north/core";
+import { z } from "zod";
+
+/** `vars` key carrying the leads an `outreach_batch` run should contact (JSON array string, see `parseLeadsVar`). */
+export const LEADS_VAR = "leads";
+
+/** The most leads one outreach run receives (the worker passes the next unsent five). */
+export const MAX_LEADS_VAR = 50;
+
+/** One lead as the worker hands it over: the `leads` row id (so a send can mark it), the person and the reason. */
+export const LeadVarSchema = z.object({
+  id: z.string().min(1).max(64).optional(),
+  name: z.string().trim().min(1).max(120),
+  email: z.email().max(254),
+  company: z.string().max(120).default(""),
+  why: z.string().max(500).default(""),
+});
+export type LeadVar = z.infer<typeof LeadVarSchema>;
+
+const LeadsVarSchema = z.array(LeadVarSchema).max(MAX_LEADS_VAR);
+
+/**
+ * Reads `vars.leads`: a JSON array of `LeadVar`. Anything else (missing,
+ * malformed, invalid rows, too many) yields an empty list so a fixture or
+ * guide falls back rather than contacting a half-parsed address.
+ */
+export function parseLeadsVar(vars: Readonly<Record<string, string>> | undefined): readonly LeadVar[] {
+  const raw = vars?.[LEADS_VAR];
+  if (!raw) return Object.freeze([]);
+  try {
+    const parsed = LeadsVarSchema.safeParse(JSON.parse(raw));
+    return Object.freeze(parsed.success ? parsed.data.map((l) => Object.freeze(l)) : []);
+  } catch {
+    return Object.freeze([]);
+  }
+}
 
 /** One task for one role. The runtime never sees credentials. */
 export interface AgentRunInput {
@@ -13,7 +48,12 @@ export interface AgentRunInput {
   readonly outputSchema: Record<string, unknown>;
   /** Answer to a decision card when resuming a waiting task. */
   readonly resume?: { readonly sessionId: string; readonly cardId: string; readonly optionId: string };
-  /** Values for the role prompt placeholders ({{company.name}}, {{thesis}}, {{goals}}, {{budgets}}, {{quota}}). */
+  /**
+   * Values for the role prompt placeholders ({{company.name}}, {{thesis}},
+   * {{goals}}, {{budgets}}, {{quota}}) plus structured hand-overs encoded as
+   * strings: `leads` (JSON `LeadVar[]`, the next unsent leads for
+   * `outreach_batch`; read with `parseLeadsVar`).
+   */
   readonly vars?: Readonly<Record<string, string>>;
 }
 

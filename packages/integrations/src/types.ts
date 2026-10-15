@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AdsProvider, AnalyticsProvider, OutreachMailProvider, PaymentsProvider } from "./growth-types";
 import type { IntegrationMode } from "./mode";
 
 /**
@@ -7,35 +8,11 @@ import type { IntegrationMode } from "./mode";
  * live code ever sees a malformed request.
  */
 
-export const PROVIDERS = ["ads", "mail", "push", "code", "deploy", "images"] as const;
+export const PROVIDERS = ["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
-/** What an agent asks the ads provider to run; the authority gate has already approved it. */
-export const CampaignSpecSchema = z.object({
-  companyId: z.string().min(1),
-  name: z.string().trim().min(1).max(200),
-  dailyBudgetUsd: z.number().nonnegative(),
-  audience: z.string().max(2000).default(""),
-  creativeMarkdown: z.string().max(20_000).default(""),
-});
-export type CampaignSpec = z.input<typeof CampaignSpecSchema>;
-
-export interface StartCampaignResult {
-  /** Provider reference; sandbox refs start with `sandbox:`. */
-  readonly campaignId: string;
-  readonly sandbox: boolean;
-}
-
-export interface PauseAllResult {
-  readonly paused: readonly string[];
-}
-
-export interface AdsProvider {
-  startCampaign(spec: CampaignSpec): Promise<StartCampaignResult>;
-  pauseCampaign(companyId: string, campaignId: string): Promise<void>;
-  /** Kill switch: every active campaign of the company stops; returns what was paused. */
-  pauseAll(companyId: string): Promise<PauseAllResult>;
-}
+/** Ads, outreach, analytics and payments contracts (M4) live in growth-types.ts and are part of this module's surface. */
+export * from "./growth-types";
 
 export const MAIL_KINDS = ["first_contact", "reply", "notification"] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
@@ -160,11 +137,24 @@ export interface DeployProvider {
   status(companyId: string, deployId: string): Promise<DeploymentState>;
 }
 
-/** Per-user credentials for a live provider; null means "not connected" and the live adapter refuses. */
+/**
+ * Per-user credentials for a live provider; null means "not connected" and the
+ * live adapter refuses. Scopes travel in two shapes: `scope` is the single
+ * value the M3 adapters read (Vercel team id, GitHub organisation); `scopes`
+ * is the connection's full list (`connections.scopes`) for providers that
+ * need more than one, read with `scopeValue(auth, prefix)`:
+ * - Meta Ads: `act:<ad account id>` (required) and `page:<page id>` (creatives).
+ * - Gmail: none; `account` is the connected mailbox address (reply counting),
+ *   fetched from the profile when absent.
+ */
 export interface ProviderAuth {
   readonly token: string;
   /** Vercel team id or GitHub organisation; optional. */
   readonly scope?: string;
+  /** Prefixed entries (`act:123`, `page:456`), as stored on the connection. */
+  readonly scopes?: readonly string[];
+  /** The connected account's address or label when an adapter needs it. */
+  readonly account?: string;
 }
 
 export const ImageRequestSchema = z.object({
@@ -186,12 +176,18 @@ export interface ImageProvider {
 
 /**
  * Everything the worker depends on, plus the mode they were selected for.
- * `code` and `deploy` are factories because their credentials belong to the
- * user (connections), not to the platform; sandbox ignores the auth argument.
+ * `ads`, `outreach`, `analytics`, `payments`, `code` and `deploy` are
+ * factories because their credentials belong to the user (connections, ADR
+ * 0010), not to the platform; sandbox ignores the auth argument. `mail`
+ * (platform Resend) and `push` stay platform-configured: they only carry
+ * decision notifications to the CEO.
  */
 export interface Integrations {
   readonly mode: IntegrationMode;
-  readonly ads: AdsProvider;
+  readonly ads: (auth: ProviderAuth | null) => AdsProvider;
+  readonly outreach: (auth: ProviderAuth | null) => OutreachMailProvider;
+  readonly analytics: (auth: ProviderAuth | null) => AnalyticsProvider;
+  readonly payments: (auth: ProviderAuth | null) => PaymentsProvider;
   readonly mail: MailProvider;
   readonly push: PushProvider;
   readonly images: ImageProvider;

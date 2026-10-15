@@ -12,6 +12,7 @@ tools:
   - ads.plan            # K0 draft
   - ads.start           # K2
   - ads.pause           # K1
+  - ads.resume          # K1 (a campaign paused by a cap or the kill switch; the platform asks first when money is at stake)
   - ads.metrics         # read
   - social.draft        # K0
   - social.publish      # K2 (new public statement)

@@ -1,18 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { NotConfiguredError, ProviderError } from "../src/errors";
-import { MetaAds } from "../src/live/meta-ads";
+import { ProviderError } from "../src/errors";
 import { ResendMail, resendConfig, type ResendClient } from "../src/live/resend";
 import { WebPush, webPushConfig, type PushSender } from "../src/live/web-push";
-
-describe("MetaAds (M4 stub)", () => {
-  it("throws NotConfiguredError from every method", async () => {
-    const ads = new MetaAds();
-    const spec = { companyId: "c1", name: "n", dailyBudgetUsd: 10, audience: "a", creativeMarkdown: "# c" };
-    await expect(ads.startCampaign(spec)).rejects.toBeInstanceOf(NotConfiguredError);
-    await expect(ads.pauseCampaign("c1", "x")).rejects.toThrow(/M4/);
-    await expect(ads.pauseAll("c1")).rejects.toThrow(/Meta Ads live adapter lands in M4/);
-  });
-});
 
 describe("ResendMail", () => {
   const input = { companyId: "c1", to: "mara@example.test", subject: "Hello", text: "Hi", kind: "first_contact" as const };
