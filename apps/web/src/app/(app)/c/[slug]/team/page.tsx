@@ -2,7 +2,9 @@ import { notFound } from "next/navigation";
 import { listAgents, listRecentActions } from "@north/db";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
-import { roleTitle } from "@/lib/labels";
+import { formatNumber, roleTitle } from "@/lib/labels";
+import { leadsCount } from "@/lib/ledger-data";
+import { LeadsUpload } from "@/components/leads-upload";
 
 export const metadata = { title: "Team" };
 
@@ -12,13 +14,36 @@ const ACTION_WINDOW_HOURS = 24;
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
+/** M4: the Sales role's prospect list; fed by CSV upload here and by `lead_research` tasks. */
+function LeadsSection({ companyId, count }: { companyId: string; count: number }) {
+  return (
+    <section className="mt-10" data-testid="leads-section">
+      <div className="flex items-baseline justify-between gap-4">
+        <h2 className="mono-label text-faint">{roleTitle("sales")} · Leads</h2>
+        <span className="mono-label text-faint">
+          <span data-testid="leads-count">{formatNumber(count)}</span> known
+        </span>
+      </div>
+      <div className="mt-3 border border-surface-border bg-surface p-5">
+        <p className="text-muted">
+          {count === 0 ? "No leads yet. Upload a CSV or let Sales research a list; " : `${formatNumber(count)} prospects. `}
+          First contact always goes through one card per batch, from your own mailbox.
+        </p>
+        <div className="mt-4">
+          <LeadsUpload companyId={companyId} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default async function TeamPage({ params }: { params: Params }) {
   const { slug } = await params;
   const company = await companyBySlug(slug);
   if (!company) notFound();
 
   const db = await createClient();
-  const [agents, actions] = await Promise.all([listAgents(db, company.id), listRecentActions(db, company.id, ACTION_WINDOW_HOURS)]);
+  const [agents, actions, leads] = await Promise.all([listAgents(db, company.id), listRecentActions(db, company.id, ACTION_WINDOW_HOURS), leadsCount(db, company.id)]);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -43,6 +68,8 @@ export default async function TeamPage({ params }: { params: Params }) {
           ))}
         </ul>
       )}
+
+      <LeadsSection companyId={company.id} count={leads} />
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Last {ACTION_WINDOW_HOURS} hours</h2>

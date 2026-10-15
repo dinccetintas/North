@@ -1,6 +1,7 @@
 import type { BudgetCategory } from "@north/core/authority/action";
 import type { MetricKey } from "@north/core/tasks/types";
 import type { TaskStatus } from "@north/core/tasks/lifecycle";
+import type { CampaignStatus, Channel } from "@north/core/metrics";
 
 /** Human labels for everything the UI shows as a key. Extend here, never inline strings in pages. */
 
@@ -14,7 +15,52 @@ export const METRIC_LABELS: Readonly<Record<MetricKey, string>> = Object.freeze(
   site_visitors: "Site visitors",
   email_replies: "Email replies",
   artifacts: "Artifacts produced",
+  ad_spend_usd: "Ad spend (USD)",
+  ad_impressions: "Ad impressions",
+  ad_clicks: "Ad clicks",
+  emails_sent: "Emails sent",
 });
+
+export function metricLabel(key: string): string {
+  return key in METRIC_LABELS ? METRIC_LABELS[key as MetricKey] : key.replace(/_/g, " ");
+}
+
+/** OUT-1 channels as the ledger names them. */
+export const CHANNEL_LABELS: Readonly<Record<Channel, string>> = Object.freeze({
+  meta_ads: "Meta Ads",
+  google_ads: "Google Ads",
+  cold_email: "Cold email",
+  organic: "Organic",
+});
+
+export function channelLabel(channel: string): string {
+  return channel in CHANNEL_LABELS ? CHANNEL_LABELS[channel as Channel] : channel.replace(/_/g, " ");
+}
+
+/** One phrase per campaign status (BUD-3/BUD-4); the raw status stays in `data-status`. */
+export const CAMPAIGN_STATUS_LABELS: Readonly<Record<CampaignStatus, string>> = Object.freeze({
+  active: "active",
+  paused_cap: "paused · cap reached",
+  paused_kill: "paused · kill switch",
+  paused_user: "paused by you",
+  ended: "ended",
+});
+
+export const CAMPAIGN_STATUS_CLASS: Readonly<Record<CampaignStatus, string>> = Object.freeze({
+  active: "text-success",
+  paused_cap: "text-warning",
+  paused_kill: "text-error",
+  paused_user: "text-faint",
+  ended: "text-faint",
+});
+
+export function campaignStatusLabel(status: string): string {
+  return status in CAMPAIGN_STATUS_LABELS ? CAMPAIGN_STATUS_LABELS[status as CampaignStatus] : status.replace(/_/g, " ");
+}
+
+export function campaignStatusClass(status: string): string {
+  return status in CAMPAIGN_STATUS_CLASS ? CAMPAIGN_STATUS_CLASS[status as CampaignStatus] : "text-faint";
+}
 
 export const BUDGET_LABELS: Readonly<Record<BudgetCategory, string>> = Object.freeze({
   ads: "Ads",

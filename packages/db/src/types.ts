@@ -388,6 +388,8 @@ export type Database = {
           category: string;
           company_id: string;
           currency: string;
+          daily_extra_date: string;
+          daily_extra_usd: number;
           daily_limit_usd: number;
           id: string;
           spent_today_date: string;
@@ -400,6 +402,8 @@ export type Database = {
           category: string;
           company_id: string;
           currency?: string;
+          daily_extra_date?: string;
+          daily_extra_usd?: number;
           daily_limit_usd: number;
           id?: string;
           spent_today_date?: string;
@@ -411,6 +415,8 @@ export type Database = {
           category?: string;
           company_id?: string;
           currency?: string;
+          daily_extra_date?: string;
+          daily_extra_usd?: number;
           daily_limit_usd?: number;
           id?: string;
           spent_today_date?: string;
@@ -424,6 +430,110 @@ export type Database = {
             columns: ["company_id"];
             isOneToOne: false;
             referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      campaigns: {
+        Row: {
+          action_id: string;
+          channel: string;
+          clicks: number;
+          company_id: string;
+          conversions: number;
+          created_at: string;
+          daily_budget_usd: number;
+          id: string;
+          impressions: number;
+          landing_url: string;
+          last_collected_at: string | null;
+          last_error: string | null;
+          metric_key: string;
+          name: string;
+          paused_day: string | null;
+          provider: string;
+          provider_campaign_id: string;
+          sandbox: boolean;
+          spent_today_usd: number;
+          spent_total_usd: number;
+          status: string;
+          task_id: string | null;
+          total_budget_usd: number;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          action_id: string;
+          channel: string;
+          clicks?: number;
+          company_id: string;
+          conversions?: number;
+          created_at?: string;
+          daily_budget_usd: number;
+          id?: string;
+          impressions?: number;
+          landing_url?: string;
+          last_collected_at?: string | null;
+          last_error?: string | null;
+          metric_key: string;
+          name: string;
+          paused_day?: string | null;
+          provider: string;
+          provider_campaign_id: string;
+          sandbox?: boolean;
+          spent_today_usd?: number;
+          spent_total_usd?: number;
+          status?: string;
+          task_id?: string | null;
+          total_budget_usd: number;
+          updated_at?: string;
+        };
+        Update: {
+          action_id?: string;
+          channel?: string;
+          clicks?: number;
+          company_id?: string;
+          conversions?: number;
+          created_at?: string;
+          daily_budget_usd?: number;
+          id?: string;
+          impressions?: number;
+          landing_url?: string;
+          last_collected_at?: string | null;
+          last_error?: string | null;
+          metric_key?: string;
+          name?: string;
+          paused_day?: string | null;
+          provider?: string;
+          provider_campaign_id?: string;
+          sandbox?: boolean;
+          spent_today_usd?: number;
+          spent_total_usd?: number;
+          status?: string;
+          task_id?: string | null;
+          total_budget_usd?: number;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "campaigns_action_id_fkey";
+            columns: ["action_id"];
+            isOneToOne: true;
+            referencedRelation: "actions";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "campaigns_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "campaigns_task_id_fkey";
+            columns: ["task_id"];
+            isOneToOne: false;
+            referencedRelation: "tasks";
             referencedColumns: ["id"];
           },
         ];
@@ -691,45 +801,122 @@ export type Database = {
           },
         ];
       };
+      leads: {
+        Row: {
+          batch_id: string | null;
+          company_id: string;
+          company_name: string;
+          created_at: string;
+          email: string;
+          id: string;
+          message_id: string | null;
+          name: string;
+          source: string;
+          status: string;
+          updated_at: string;
+          why: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          batch_id?: string | null;
+          company_id: string;
+          company_name?: string;
+          created_at?: string;
+          email: string;
+          id?: string;
+          message_id?: string | null;
+          name: string;
+          source: string;
+          status?: string;
+          updated_at?: string;
+          why?: string;
+        };
+        Update: {
+          batch_id?: string | null;
+          company_id?: string;
+          company_name?: string;
+          created_at?: string;
+          email?: string;
+          id?: string;
+          message_id?: string | null;
+          name?: string;
+          source?: string;
+          status?: string;
+          updated_at?: string;
+          why?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "leads_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       ledger_entries: {
         Row: {
+          action_id: string | null;
           after_value: number;
           attribution_note: string;
           before_value: number;
+          campaign_id: string | null;
           channel: string;
           company_id: string;
           cost_usd: number;
           created_at: string;
           id: string;
           metric_key: string;
+          provenance: Json | null;
           task_id: string | null;
         };
         ComputedFields: never;
         Insert: {
+          action_id?: string | null;
           after_value: number;
           attribution_note?: string;
           before_value: number;
+          campaign_id?: string | null;
           channel: string;
           company_id: string;
           cost_usd?: number;
           created_at?: string;
           id?: string;
           metric_key: string;
+          provenance?: Json | null;
           task_id?: string | null;
         };
         Update: {
+          action_id?: string | null;
           after_value?: number;
           attribution_note?: string;
           before_value?: number;
+          campaign_id?: string | null;
           channel?: string;
           company_id?: string;
           cost_usd?: number;
           created_at?: string;
           id?: string;
           metric_key?: string;
+          provenance?: Json | null;
           task_id?: string | null;
         };
         Relationships: [
+          {
+            foreignKeyName: "ledger_entries_action_id_fkey";
+            columns: ["action_id"];
+            isOneToOne: false;
+            referencedRelation: "actions";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ledger_entries_campaign_id_fkey";
+            columns: ["campaign_id"];
+            isOneToOne: false;
+            referencedRelation: "campaigns";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "ledger_entries_company_id_fkey";
             columns: ["company_id"];
@@ -797,8 +984,12 @@ export type Database = {
           id: string;
           measured_at: string;
           metric_key: string;
+          provenance: Json | null;
+          provenance_key: string | null;
+          scope: string;
           source: string;
           value: number;
+          window_end: string | null;
         };
         ComputedFields: never;
         Insert: {
@@ -806,16 +997,24 @@ export type Database = {
           id?: string;
           measured_at?: string;
           metric_key: string;
+          provenance?: Json | null;
+          provenance_key?: string | null;
+          scope?: string;
           source: string;
           value: number;
+          window_end?: string | null;
         };
         Update: {
           company_id?: string;
           id?: string;
           measured_at?: string;
           metric_key?: string;
+          provenance?: Json | null;
+          provenance_key?: string | null;
+          scope?: string;
           source?: string;
           value?: number;
+          window_end?: string | null;
         };
         Relationships: [
           {
@@ -1223,10 +1422,44 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      apply_budget_spend: {
+        Args: {
+          p_amount: number;
+          p_category: string;
+          p_company_id: string;
+          p_day?: string;
+        };
+        Returns: Json;
+      };
+      budget_apply: {
+        Args: {
+          p_category: string;
+          p_company_id: string;
+          p_day: string;
+          p_extra: number;
+          p_spend: number;
+          p_total: number;
+        };
+        Returns: Json;
+      };
       is_company_owner: {
         Args: { target_company_id: string };
         Returns: boolean;
       };
+      raise_daily_cap: {
+        Args: {
+          p_amount: number;
+          p_category: string;
+          p_company_id: string;
+          p_day?: string;
+        };
+        Returns: Json;
+      };
+      raise_total_cap: {
+        Args: { p_amount: number; p_category: string; p_company_id: string };
+        Returns: Json;
+      };
+      record_attribution: { Args: { payload: Json }; Returns: Json };
       search_memory: {
         Args: { p_company_id: string; p_limit?: number; p_query: string };
         Returns: {

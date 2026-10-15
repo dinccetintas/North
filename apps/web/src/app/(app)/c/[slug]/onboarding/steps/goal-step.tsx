@@ -1,4 +1,4 @@
-import { METRIC_KEYS } from "@north/core/tasks/types";
+import { OUTCOME_METRIC_KEYS } from "@north/core/tasks/types";
 import { isoDateInDays, METRIC_LABELS } from "@/lib/labels";
 import { saveGoalAction } from "../actions";
 import { inputClass, WizardHeader } from "./wizard-header";
@@ -21,7 +21,7 @@ export function GoalStep({ slug }: { slug: string }) {
             Metric
           </label>
           <select id="metricKey" name="metricKey" data-testid="goal-metric" defaultValue={DEFAULT_METRIC} required className={inputClass}>
-            {METRIC_KEYS.map((key) => (
+            {OUTCOME_METRIC_KEYS.map((key) => (
               <option key={key} value={key}>
                 {METRIC_LABELS[key]}
               </option>

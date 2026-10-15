@@ -1,4 +1,4 @@
-import { ACTION_KINDS, TIERS, isHttpUrl, type Tier } from "@north/core";
+import { ACTION_KINDS, TIERS, isHttpUrl, type ActionKind, type Tier } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
 import { DbError, dbError } from "./errors";
@@ -172,13 +172,28 @@ export async function headActionsForTask(db: DbClient, taskId: string): Promise<
   return heads((data ?? []).map(toRecord));
 }
 
-/** The action a card decides on, in its current state, or null when the card has no action (or it was already settled away). */
-export async function pendingActionForCard(db: DbClient, cardId: string): Promise<ActionRecord | null> {
+/** Every action still pending on a card, oldest first: one for most cards, one per email for an outreach batch card (DEC-1). */
+export async function pendingActionsForCard(db: DbClient, cardId: string): Promise<readonly ActionRecord[]> {
   const id = UuidSchema.parse(cardId);
   const { data, error } = await db.from("actions").select(ACTION_COLUMNS).eq("decision_card_id", id).order("created_at", { ascending: true });
-  if (error) throw dbError("Could not load card action", error);
-  const head = heads((data ?? []).map(toRecord)).find((a) => a.status === "pending");
-  return head ?? null;
+  if (error) throw dbError("Could not load card actions", error);
+  return Object.freeze(heads((data ?? []).map(toRecord)).filter((a) => a.status === "pending"));
+}
+
+/** The first action a card decides on, in its current state, or null when the card has no pending action (or it was already settled away). */
+export async function pendingActionForCard(db: DbClient, cardId: string): Promise<ActionRecord | null> {
+  return (await pendingActionsForCard(db, cardId))[0] ?? null;
+}
+
+/** Chain heads of one action kind from the last `sinceDays` days, newest first (outreach batches, cap cards). */
+export async function listActionsByKind(db: DbClient, companyId: string, kind: ActionKind, sinceDays = 30): Promise<readonly ActionRecord[]> {
+  const id = UuidSchema.parse(companyId);
+  const k = z.enum(ACTION_KINDS).parse(kind);
+  const days = z.number().positive().max(365).parse(sinceDays);
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const { data, error } = await db.from("actions").select(ACTION_COLUMNS).eq("company_id", id).eq("kind", k).gte("created_at", since).order("created_at", { ascending: false });
+  if (error) throw dbError("Could not list actions by kind", error);
+  return heads((data ?? []).map(toRecord));
 }
 
 export interface SiteUrls {

@@ -4,6 +4,9 @@ import type { Json } from "./types";
 /** Company and row identifiers are always UUIDs; validated at every repository boundary. */
 export const UuidSchema = z.uuid();
 
+/** A calendar day as the database stores it: `YYYY-MM-DD` (UTC). */
+export const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
 /**
  * Converts a serialisable object or array into the `Json` type the generated
  * database types expect. Round-trips through JSON so undefined fields are

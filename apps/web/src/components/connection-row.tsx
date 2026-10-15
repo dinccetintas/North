@@ -2,9 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { connectSandboxAction, disconnectAction } from "@/app/(app)/settings/connections/actions";
+import type { OauthProvider } from "@/lib/oauth";
 
 export interface ConnectionRowData {
-  readonly provider: "github" | "vercel";
+  readonly provider: OauthProvider;
   readonly title: string;
   readonly purpose: string;
   readonly status: "connected" | "revoked" | "error" | "none";

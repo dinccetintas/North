@@ -2,24 +2,29 @@ import Link from "next/link";
 import { cardsOpenedToday, getProfile, listCards, listPendingCards, type CardRecord } from "@north/db";
 import { DEFAULT_DAILY_QUOTA } from "@north/core/decisions/types";
 import { createClient, currentUser } from "@/lib/supabase/server";
+import { splitRationale } from "@/lib/card-facts";
 import { formatAnsweredAt } from "@/lib/labels";
 import { DecisionCard, type DecisionCardData } from "@/components/decision-card";
 
 const ANSWERED_LIMIT = 20;
 
+/** The card's facts line is the gate's "Details:" tail; the card shows the sentence and the facts apart. */
 export function toCardData(card: CardRecord): DecisionCardData {
+  const { summary, facts } = splitRationale(card.rationale);
   return {
     id: card.id,
     question: card.question,
     options: card.options,
     recommendedOptionId: card.recommendedOptionId,
     defaultOptionId: card.defaultOptionId,
-    rationale: card.rationale,
+    rationale: summary,
     expectedImpact: card.expectedImpact,
     costUsd: card.costUsd,
     dueAt: card.dueAt,
     tier: card.tier,
     answeredOptionId: card.answeredOptionId,
+    actionKind: card.actionKind,
+    facts,
   };
 }
 

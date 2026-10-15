@@ -1,14 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
-import { getCard, getTask, headActionsForTask, listActiveAutoRules, listAnsweredCards, listArtifacts, type ArtifactRecord, type TaskRecord } from "@north/db";
+import { getCard, getTask, headActionsForTask, listActiveAutoRules, listAnsweredCards, listArtifacts, type ActionRecord, type ArtifactRecord, type TaskRecord } from "@north/db";
 import { isConnectCard } from "@north/core/connections";
 import { isHttpUrl } from "@north/core/url";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
+import { campaignNameOf } from "@/lib/card-facts";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { formatDue, formatUsd, roleTitle, tierLabel } from "@/lib/labels";
+import { capCardCampaign, pendingCardActions } from "@/lib/ledger-data";
 import { DecisionCard } from "@/components/decision-card";
+import { DecisionCampaign } from "@/components/decision-campaign";
+import { DecisionRecipients, type RecipientRowData } from "@/components/decision-recipients";
 import { toCardData } from "@/components/decisions-section";
 import { AutoRuleProposal } from "@/components/auto-rule-proposal";
 import { TaskStatusBadge } from "@/components/task-list";
@@ -17,6 +21,32 @@ type Params = Promise<{ slug: string; id: string }>;
 
 const IdSchema = z.string().uuid();
 const EVIDENCE_LIMIT = 3;
+const BATCH_KIND = "email.send.first_contact";
+const CAP_KIND = "budget.cap.raise";
+
+const text = (value: unknown): string | null => (typeof value === "string" && value.trim().length > 0 ? value.trim() : null);
+
+/**
+ * SLS-K2: the emails of a batch card, one per action. Pending rows carry the
+ * recipient; once settled, the chain heads of the task (which no longer carry
+ * the payload) still show status and message id.
+ */
+function recipientsOf(cardId: string, pending: readonly ActionRecord[], heads: readonly ActionRecord[]): readonly RecipientRowData[] {
+  const rows = pending.length > 0 ? pending : heads.filter((a) => a.decisionCardId === cardId && a.kind === BATCH_KIND);
+  return rows.map((a) => ({
+    id: a.id,
+    to: text(a.payload.to) ?? "—",
+    subject: text(a.payload.subject),
+    status: a.status,
+    ref: a.externalRef,
+  }));
+}
+
+/** The campaign id a cap card's action names (`payload.campaignId`), from the pending row or any head of the card. */
+function campaignIdOf(cardId: string, pending: readonly ActionRecord[], heads: readonly ActionRecord[]): string | null {
+  const rows = [...pending, ...heads.filter((a) => a.decisionCardId === cardId)];
+  return rows.map((a) => text(a.payload.campaignId)).find((id): id is string => id !== null) ?? null;
+}
 
 export async function generateMetadata({ params }: { params: Params }) {
   const { id } = await params;
@@ -54,6 +84,12 @@ export default async function DecisionPage({ params }: { params: Params }) {
   const suggestion = card.answeredAt && !rules.some((r) => r.kind === card.actionKind) ? suggestAutoRule(history) : null;
   const previewUrl = card.actionKind === "deploy.production" ? (actions.find((a) => a.kind === "deploy.preview" && isHttpUrl(a.externalRef))?.externalRef ?? null) : null;
   const connect = isConnectCard(card);
+  const cardData = toCardData(card);
+  const isBatch = card.actionKind === BATCH_KIND;
+  const isCap = card.actionKind === CAP_KIND;
+  const pending = isBatch || isCap ? await pendingCardActions(db, card.id) : [];
+  const recipients = isBatch ? recipientsOf(card.id, pending, actions) : [];
+  const campaign = isCap ? await capCardCampaign(db, company.id, { campaignId: campaignIdOf(card.id, pending, actions), campaignName: campaignNameOf(cardData.facts) }) : null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -68,7 +104,7 @@ export default async function DecisionPage({ params }: { params: Params }) {
       </h1>
 
       <div className="mt-8">
-        <DecisionCard slug={slug} card={toCardData(card)} compact={false} />
+        <DecisionCard slug={slug} card={cardData} compact={false} />
       </div>
 
       {previewUrl ? (
@@ -89,6 +125,9 @@ export default async function DecisionPage({ params }: { params: Params }) {
           <span className="text-muted">Connect the account there, then answer this card.</span>
         </p>
       ) : null}
+
+      {isBatch ? <DecisionRecipients rows={recipients} /> : null}
+      {campaign ? <DecisionCampaign slug={slug} campaign={campaign} /> : null}
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Why</h2>

@@ -13,18 +13,28 @@ type SearchParams = Promise<{ pending?: string; error?: string }>;
 const PURPOSES: Readonly<Record<OauthProvider, string>> = Object.freeze({
   github: "Engineering pushes the website's code to a repository in your account.",
   vercel: "Previews and the live site deploy to your Vercel account; nothing goes live without your card.",
+  meta_ads: "Growth runs test campaigns on your own ad account; every campaign is a card and your caps pause it.",
+  gmail: "Sales sends first-contact emails from your mailbox, one card per batch, and reads the replies.",
 });
 
 /** Fixed error texts keyed by the callback's error code; anything else shows the generic line. */
 const ERRORS: Readonly<Record<string, string>> = Object.freeze({
   "github-state": "The GitHub sign-in did not come back from this browser. Try again.",
   "vercel-state": "The Vercel install did not come back from this browser. Try again.",
+  "meta_ads-state": "The Meta sign-in did not come back from this browser. Try again.",
+  "gmail-state": "The Google sign-in did not come back from this browser. Try again.",
   "github-denied": "GitHub did not return a code; the authorisation was cancelled.",
   "vercel-denied": "Vercel did not return a code; the install was cancelled.",
+  "meta_ads-denied": "Meta did not return a code; the authorisation was cancelled.",
+  "gmail-denied": "Google did not return a code; the authorisation was cancelled.",
   "github-worker": "GitHub answered, but the agents could not be reached to store the token. Try again in a minute.",
   "vercel-worker": "Vercel answered, but the agents could not be reached to store the token. Try again in a minute.",
+  "meta_ads-worker": "Meta answered, but the agents could not be reached to store the token. Try again in a minute.",
+  "gmail-worker": "Google answered, but the agents could not be reached to store the token. Try again in a minute.",
   "github-not-configured": "GitHub OAuth is not configured on this deployment.",
   "vercel-not-configured": "The Vercel integration is not configured on this deployment.",
+  "meta_ads-not-configured": "The Meta app is not configured on this deployment.",
+  "gmail-not-configured": "Google OAuth is not configured on this deployment.",
 });
 
 /**

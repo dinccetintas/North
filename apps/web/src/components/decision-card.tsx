@@ -18,6 +18,10 @@ export interface DecisionCardData {
   readonly dueAt: string;
   readonly tier: string;
   readonly answeredOptionId: string | null;
+  /** The gated action's kind (`ads.start`, `budget.cap.raise`, `email.send.first_contact`, …). */
+  readonly actionKind: string;
+  /** The load-bearing facts of the action ("$10/day, audience: …", "spent $11 of $10 today", "5 emails: …"); null when the gate gave none. */
+  readonly facts: string | null;
 }
 
 export interface DecisionCardProps {
@@ -55,6 +59,7 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
       className={`border bg-surface p-5 ${answered ? "border-surface-border" : "border-fg"}`}
       data-testid="decision-card"
       data-card-id={card.id}
+      data-action-kind={card.actionKind}
       data-answered={answered ?? ""}
       aria-busy={pending}
     >
@@ -74,6 +79,11 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
           </h3>
           <p className="mt-2 text-muted">{card.rationale}</p>
         </>
+      ) : null}
+      {card.facts ? (
+        <p className="mono-label mt-3 text-fg" data-testid="card-facts">
+          {card.facts}
+        </p>
       ) : null}
       {card.expectedImpact ? <p className="mono-label mt-2 text-faint">expected: {card.expectedImpact}</p> : null}
 

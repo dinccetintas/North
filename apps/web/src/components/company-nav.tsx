@@ -6,10 +6,11 @@ import { usePathname } from "next/navigation";
 const LINKS = [
   { label: "Home", path: "" },
   { label: "Team", path: "/team" },
+  { label: "Ledger", path: "/ledger" },
   { label: "Artifacts", path: "/artifacts" },
 ] as const;
 
-/** Sub-navigation inside a company. Marks the active section. */
+/** Sub-navigation inside a company. Marks the active section; each link is `nav-<label>` for the flows. */
 export function CompanyNav({ slug }: { slug: string }) {
   const pathname = usePathname();
   const base = `/c/${slug}`;
@@ -23,6 +24,7 @@ export function CompanyNav({ slug }: { slug: string }) {
             key={link.label}
             href={href}
             aria-current={active ? "page" : undefined}
+            data-testid={`nav-${link.label.toLowerCase()}`}
             className={`mono-label border-b py-1 ${active ? "border-fg text-fg" : "border-transparent text-faint hover:text-fg"}`}
           >
             {link.label}

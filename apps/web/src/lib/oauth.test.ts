@@ -45,4 +45,41 @@ describe("ONB-3 OAuth helpers (web side: public ids and CSRF state only)", () =>
     const url = new URL(oauthConfig("github", { GITHUB_CLIENT_ID: "x", GITHUB_OAUTH_SCOPE: "public_repo" })!.authorizeUrl("s", "http://x/cb"));
     expect(url.searchParams.get("scope")).toBe("public_repo");
   });
+
+  it("M4: builds the Meta Ads dialog URL from META_APP_ID with the ads scopes; null without it", () => {
+    expect(oauthConfig("meta_ads", {})).toBeNull();
+    const config = oauthConfig("meta_ads", { META_APP_ID: "123456" });
+    expect(config!.publicId).toBe("123456");
+    const url = new URL(config!.authorizeUrl("st4te", "http://localhost:3100/api/connections/meta_ads/callback"));
+    expect(url.origin + url.pathname).toBe("https://www.facebook.com/v21.0/dialog/oauth");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: "123456",
+      redirect_uri: "http://localhost:3100/api/connections/meta_ads/callback",
+      scope: "ads_management,ads_read,pages_show_list",
+      response_type: "code",
+      state: "st4te",
+    });
+  });
+
+  it("M4: builds the Google consent URL for Gmail with offline access and a forced consent (refresh token); null without a client id", () => {
+    expect(oauthConfig("gmail", {})).toBeNull();
+    const url = new URL(oauthConfig("gmail", { GOOGLE_CLIENT_ID: "abc.apps.googleusercontent.com" })!.authorizeUrl("st4te", "http://localhost:3100/api/connections/gmail/callback"));
+    expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: "abc.apps.googleusercontent.com",
+      redirect_uri: "http://localhost:3100/api/connections/gmail/callback",
+      response_type: "code",
+      scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
+      access_type: "offline",
+      prompt: "consent",
+      state: "st4te",
+    });
+  });
+
+  it("M4: the state cookie binds Meta and Gmail states to their provider too", () => {
+    const userId = "11111111-1111-4111-8111-111111111111";
+    expect(parseStateCookie(stateCookieValue("meta_ads", userId, "abc"))).toEqual({ provider: "meta_ads", userId, state: "abc" });
+    expect(parseStateCookie(stateCookieValue("gmail", userId, "abc"))).toEqual({ provider: "gmail", userId, state: "abc" });
+    expect(parseStateCookie(`meta.${userId}.abc`)).toBeNull();
+  });
 });

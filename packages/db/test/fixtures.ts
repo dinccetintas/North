@@ -1,5 +1,8 @@
 import type { CardDraft } from "@north/core";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { recordAction } from "../src/actions";
+import { upsertBudgets } from "../src/budgets";
+import type { RegisterCampaignInput } from "../src/campaigns";
 import { createCompany } from "../src/companies";
 import type { Database } from "../src/types";
 import { localSupabaseEnv } from "./env";
@@ -55,6 +58,27 @@ export async function createOwnerWithCompany(label: string, thesis = "A test com
 export async function createCompanyFor(owner: TestUser, label: string): Promise<string> {
   const company = await createCompany(owner.client, { ownerId: owner.id, name: `${label} Co`, thesis: `${label}: a company whose thesis is long enough to pass validation.` });
   return company.id;
+}
+
+/** An ads budget plus one blocked `ads.start` row: what a campaign row needs to exist (M4). Returns the action id. */
+export async function adsBudgetAndAction(companyId: string, budget: { daily: number; total: number } = { daily: 10, total: 100 }): Promise<string> {
+  await upsertBudgets(service, companyId, [{ category: "ads", totalLimitUsd: budget.total, dailyLimitUsd: budget.daily }]);
+  return recordAction(service, { companyId, taskId: null, agentRole: "growth", kind: "ads.start", tier: "K2", description: "Start the ad test", status: "blocked" });
+}
+
+/** The input `registerCampaign` receives from the worker after an executed `ads.start`; override fields per test. */
+export function sampleCampaignInput(companyId: string, actionId: string, overrides: Partial<RegisterCampaignInput> = {}): RegisterCampaignInput {
+  return Object.freeze({
+    companyId,
+    actionId,
+    provider: "meta_ads",
+    providerCampaignId: `sandbox:campaign:${Math.random().toString(36).slice(2, 10)}`,
+    name: "Acme launch test",
+    metricKey: "signups",
+    dailyBudgetUsd: 10,
+    totalBudgetUsd: 50,
+    ...overrides,
+  });
 }
 
 /** A valid K2 card draft the authority gate would produce for a $10 ad test; override fields per test. */
