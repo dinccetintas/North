@@ -1,6 +1,12 @@
 import type { SignalStatus } from "../signals/types";
 import { firstWords, wordCount } from "../text";
-import { BRIEF_LIST_MAX, BRIEF_MAX_WORDS, type Brief, type BriefInput, type BriefSignal } from "./types";
+import { BRIEF_LIST_MAX, BRIEF_MAX_WORDS, type Brief, type BriefBlockReason, type BriefInput, type BriefSignal } from "./types";
+
+/** The blocked line, first after the headline (the web's kill-switch bar and task list use the same words). */
+export const BLOCKED_WORDS: Readonly<Record<BriefBlockReason, string>> = Object.freeze({
+  subscription_ended: "Agents paused: subscription ended. Subscribe to resume.",
+  credits_exhausted: "Agents waiting for credits: the queue resumes when credits are added.",
+});
 
 /** How a signal's status reads in the brief (the web uses the same words). */
 export const SIGNAL_STATUS_WORDS: Readonly<Record<SignalStatus, string>> = Object.freeze({
@@ -86,7 +92,11 @@ const signalLine = (s: BriefSignal): string => `${s.source} ${s.score}, ${SIGNAL
  * fixed order; every title, question and excerpt is plain text (never HTML).
  */
 export function briefMarkdown(brief: BriefInput): string {
-  const header = [`# Morning brief: ${brief.companyName}, ${brief.day}`, ...(brief.stopped ? ["All agents are stopped (kill switch)."] : [])];
+  const header = [
+    `# Morning brief: ${brief.companyName}, ${brief.day}`,
+    ...(brief.blocked ? [BLOCKED_WORDS[brief.blocked.reason]] : []),
+    ...(brief.stopped ? ["All agents are stopped (kill switch)."] : []),
+  ];
   const sections: readonly (readonly [string, readonly string[]])[] = [
     ["Yesterday", bullets([...outcomeLines(brief.yesterday.outcomes), ...actionLines(brief.yesterday.actions)], "Nothing.")],
     ["Metrics", metricLines(brief)],

@@ -29,6 +29,12 @@ export const EVENT = {
   companyResume: "company/resume",
   connectionOauthCode: "connection/oauth_code",
   connectionRevoked: "connection/revoked",
+  billingSessionRequested: "billing/session_requested",
+  billingEvent: "billing/event",
+  billingTick: "billing/tick",
+  usageTick: "usage/tick",
+  retentionTick: "retention/tick",
+  exportRequested: "export/requested",
 } as const;
 export type EventName = (typeof EVENT)[keyof typeof EVENT];
 
@@ -54,7 +60,7 @@ export type TaskEscalatedEvent = z.infer<typeof TaskEscalatedSchema>;
  * holds the client secret, exchanges it and stores the token (ADR 0008). The
  * code is single-use and short-lived; the web never sees the token.
  */
-export const OAUTH_CODE_PROVIDERS = ["github", "vercel", "meta_ads", "gmail"] as const;
+export const OAUTH_CODE_PROVIDERS = ["github", "vercel", "meta_ads", "gmail", "stripe"] as const;
 
 export const ConnectionOauthCodeSchema = z.object({
   userId: z.string().uuid(),
@@ -116,6 +122,18 @@ export const DecisionDeferredSchema = z.object({
 });
 export type DecisionOpenedEvent = z.infer<typeof DecisionOpenedSchema>;
 export type DecisionDeferredEvent = z.infer<typeof DecisionDeferredSchema>;
+
+/** BIL-1 (ADR 0014): the owner inserted a `requested` billing session; the worker, which holds the Stripe key, creates the provider session. */
+export const BillingSessionRequestedSchema = z.object({ sessionId: z.uuid(), userId: z.uuid() });
+export type BillingSessionRequestedEvent = z.infer<typeof BillingSessionRequestedSchema>;
+
+/** BIL-1: a `billing_events` row is stored and waits to be applied (`apply-billing-event`, one at a time per user). The Stripe body itself is `BillingEventSchema` in `billing/events`. */
+export const BillingEventPayloadSchema = z.object({ billingEventId: z.uuid(), userId: z.uuid() });
+export type BillingEventPayload = z.infer<typeof BillingEventPayloadSchema>;
+
+/** EXP-1 (ADR 0016): the owner inserted a `requested` export; `build-export` fulfils it in the worker. */
+export const ExportRequestedSchema = z.object({ exportId: z.uuid(), userId: z.uuid() });
+export type ExportRequestedEvent = z.infer<typeof ExportRequestedSchema>;
 
 export type CompanyEvent = z.infer<typeof CompanyEventSchema>;
 export type TaskDispatchEvent = z.infer<typeof TaskDispatchSchema>;

@@ -70,8 +70,9 @@ describe("M3 contracts: connections and evidence", () => {
     expect(EVENT.connectionRevoked).toBe("connection/revoked");
     const userId = "11111111-1111-4111-8111-111111111111";
     expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "abc", redirectUri: "http://localhost:3100/api/connections/github/callback" }).success).toBe(true);
-    // M4: gmail and meta_ads became OAuth providers; stripe (M6) still is not.
-    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "stripe", code: "abc", redirectUri: "http://x/cb" }).success).toBe(false);
+    // M4: gmail and meta_ads became OAuth providers; M6: stripe (Stripe Connect, the user's own read) did too. Anything else is refused.
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "stripe", code: "abc", redirectUri: "http://x/cb" }).success).toBe(true);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "slack", code: "abc", redirectUri: "http://x/cb" }).success).toBe(false);
     expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "", redirectUri: "http://x/cb" }).success).toBe(false);
     expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "github", code: "a".repeat(2049), redirectUri: "http://x/cb" }).success).toBe(false);
     expect(ConnectionOauthCodeSchema.safeParse({ userId, provider: "vercel", code: "abc", redirectUri: "not a url" }).success).toBe(false);

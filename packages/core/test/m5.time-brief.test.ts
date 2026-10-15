@@ -71,6 +71,7 @@ const worstCase = (): BriefInput => ({
   day: "2026-10-20",
   companyName: "Ledger Co",
   stopped: true,
+  blocked: null,
   yesterday: {
     outcomes: Array.from({ length: 12 }, (_, i) => ({ what: `Ads window ${i} of the launch test campaign with a long description`, metricKey: "signups", delta: i, costUsd: 4.5, channel: "meta_ads" })),
     actions: Array.from({ length: 20 }, (_, i) => ({ kind: "email.send.first_contact", status: "executed", description: `First-contact email to lead number ${i} at a long company name` })),

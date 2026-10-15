@@ -281,7 +281,9 @@ describe("AGT-2 evidence and ONB-3 connections for growth and sales", () => {
     expect(MetricCollectSchema.safeParse({ companyId, reason: "manual" }).success).toBe(true);
     expect(MetricCollectSchema.safeParse({ companyId, reason: "nope" }).success).toBe(false);
     for (const provider of ["github", "vercel", "meta_ads", "gmail"]) expect(ConnectionOauthCodeSchema.safeParse({ userId: companyId, provider, code: "abc", redirectUri: "http://x/cb" }).success, provider).toBe(true);
-    expect(ConnectionOauthCodeSchema.safeParse({ userId: companyId, provider: "stripe", code: "abc", redirectUri: "http://x/cb" }).success).toBe(false);
+    // M6: stripe joined the OAuth-code providers (OUT-2, the user's own Stripe read); an unknown provider is still refused.
+    expect(ConnectionOauthCodeSchema.safeParse({ userId: companyId, provider: "stripe", code: "abc", redirectUri: "http://x/cb" }).success).toBe(true);
+    expect(ConnectionOauthCodeSchema.safeParse({ userId: companyId, provider: "slack", code: "abc", redirectUri: "http://x/cb" }).success).toBe(false);
     for (const provider of CONNECTION_PROVIDERS) expect(ConnectionRevokedSchema.safeParse({ userId: companyId, provider }).success).toBe(true);
   });
 

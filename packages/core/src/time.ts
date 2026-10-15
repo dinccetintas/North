@@ -4,7 +4,7 @@
  * way; an unknown zone falls back to UTC exactly as the database trigger does.
  */
 
-/** The morning brief hour, local to the owner (BRF-1). A per-user hour is M6 work. */
+/** The default morning brief hour, local to the owner (BRF-1); `users.brief_hour` overrides it per user. */
 export const BRIEF_HOUR = 7;
 
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -43,6 +43,12 @@ export function localDay(timezone: string, now: Date): string {
 /** The owner's hour of the day for `now`, 0..23. */
 export function localHour(timezone: string, now: Date): number {
   return localParts(timezone, now).hour;
+}
+
+/** The owner's calendar month for `now`, as `YYYY-MM`: the `usage` period (BIL-2). */
+export function localMonth(timezone: string, now: Date): string {
+  const { year, month } = localParts(timezone, now);
+  return `${year}-${month}`;
 }
 
 /** A `YYYY-MM-DD` day as a UTC-midnight Date; throws on anything else. */

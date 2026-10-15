@@ -82,11 +82,17 @@ const Signal = z.object({
 
 const Escalation = z.object({ title: z.string().min(1).max(200) });
 
+/** Why agents are not running although nobody pressed the kill switch: the entitlement ended, or the credits ran out (BIL-1, BIL-2). */
+export const BRIEF_BLOCK_REASONS = ["subscription_ended", "credits_exhausted"] as const;
+export type BriefBlockReason = (typeof BRIEF_BLOCK_REASONS)[number];
+
 export const BriefSchema = z.object({
   day: DAY_SCHEMA,
   companyName: z.string().min(1).max(200),
   /** The kill switch is active: the brief says so instead of promising work. */
   stopped: z.boolean(),
+  /** Rendered as the first line after the headline; null (the default, so M5 rows still parse) when agents may run. */
+  blocked: z.object({ reason: z.enum(BRIEF_BLOCK_REASONS) }).nullable().default(null),
   yesterday: z.object({
     outcomes: z.array(Outcome).max(BRIEF_LIST_MAX.outcomes),
     actions: z.array(Action).max(BRIEF_LIST_MAX.actions),
