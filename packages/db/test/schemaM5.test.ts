@@ -165,16 +165,25 @@ describe("M5 schema", () => {
     expect(object.error?.message).toMatch(/plans_revisions_is_array/);
   });
 
-  it("companies.sentry_project_slug: the owner sets it, it is unique, and a bad slug is refused", async () => {
+  it("companies.sentry_project_slug (M5 review M4, 0011): the owner's PATCH is refused, the service role sets it, it is unique, and a bad slug is refused", async () => {
     const slug = `acme-${Math.random().toString(36).slice(2, 8)}`;
-    const set = await ownerRaw.from("companies").update({ sentry_project_slug: slug }).eq("id", owned.companyId).select("sentry_project_slug").single();
+    const squat = await ownerRaw.from("companies").update({ sentry_project_slug: slug }).eq("id", owned.companyId).select("sentry_project_slug");
+    expect(squat.error?.code).toBe("42501");
+    const set = await raw.from("companies").update({ sentry_project_slug: slug }).eq("id", owned.companyId).select("sentry_project_slug").single();
     expect(set.data).toEqual({ sentry_project_slug: slug });
     const other = await createCompanyFor(owned.owner, "sentry-other");
-    const dupe = await ownerRaw.from("companies").update({ sentry_project_slug: slug }).eq("id", other);
+    const dupe = await raw.from("companies").update({ sentry_project_slug: slug }).eq("id", other);
     expect(dupe.error?.code).toBe("23505");
-    const bad = await ownerRaw.from("companies").update({ sentry_project_slug: "Not A Slug" }).eq("id", other);
+    const bad = await raw.from("companies").update({ sentry_project_slug: "Not A Slug" }).eq("id", other);
     expect(bad.error?.message).toMatch(/companies_sentry_project_slug_check/);
-    const cleared = await ownerRaw.from("companies").update({ sentry_project_slug: null }).eq("id", owned.companyId).select("sentry_project_slug").single();
+    const unclaim = await ownerRaw.from("companies").update({ sentry_project_slug: null }).eq("id", owned.companyId).select("sentry_project_slug");
+    expect(unclaim.error?.code).toBe("42501");
+    const cleared = await raw.from("companies").update({ sentry_project_slug: null }).eq("id", owned.companyId).select("sentry_project_slug").single();
     expect(cleared.data).toEqual({ sentry_project_slug: null });
+    // The owner still updates the columns that are theirs (the kill switch, the name, onboarding).
+    const theirs = await ownerRaw.from("companies").update({ name: "Renamed Co", kill_switch_active: true, status: "paused" }).eq("id", owned.companyId).select("name, kill_switch_active, status").single();
+    expect(theirs.data).toEqual({ name: "Renamed Co", kill_switch_active: true, status: "paused" });
+    expect((await ownerRaw.from("companies").update({ kill_switch_active: false, status: "active" }).eq("id", owned.companyId)).error).toBeNull();
+    expect((await ownerRaw.from("companies").update({ owner_id: owned.owner.id }).eq("id", owned.companyId).select("id")).error?.code).toBe("42501");
   });
 });

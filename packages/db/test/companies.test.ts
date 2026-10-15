@@ -37,18 +37,25 @@ describe("companies repository (M5 additions)", () => {
     await service.from("companies").update({ kill_switch_active: false }).eq("id", owned.companyId);
   });
 
-  it("setSentryProject links a Sentry project slug the webhook resolves with companyBySentryProject; slugs are unique", async () => {
+  it("setSentryProject (service role) links a Sentry project slug the webhook resolves with companyBySentryProject; slugs are unique; an owner or a stranger cannot set it (M5 review M4)", async () => {
     const slug = `acme-web-${Math.random().toString(36).slice(2, 8)}`;
     expect(await companyBySentryProject(service, slug)).toBeNull();
-    await setSentryProject(owned.owner.client, owned.companyId, slug);
+    await setSentryProject(service, owned.companyId, slug);
     expect((await companyBySentryProject(service, slug))?.id).toBe(owned.companyId);
     expect(await companyBySentryProject(stranger.client, slug)).toBeNull();
     const other = await createCompanyFor(owned.owner, "companies-m5-other");
-    await expect(setSentryProject(owned.owner.client, other, slug)).rejects.toBeInstanceOf(DbError);
-    await expect(setSentryProject(owned.owner.client, other, "Not A Slug")).rejects.toThrow();
+    await expect(setSentryProject(service, other, slug)).rejects.toBeInstanceOf(DbError);
+    await expect(setSentryProject(service, other, "Not A Slug")).rejects.toThrow();
+    await expect(setSentryProject(owned.owner.client, other, "owner-claimed")).rejects.toBeInstanceOf(DbError);
     await expect(setSentryProject(stranger.client, owned.companyId, "stranger-slug")).rejects.toBeInstanceOf(DbError);
     expect((await companyBySentryProject(service, slug))?.id).toBe(owned.companyId);
-    await setSentryProject(owned.owner.client, owned.companyId, null);
+    await setSentryProject(service, owned.companyId, null);
     expect(await companyBySentryProject(service, slug)).toBeNull();
+  });
+
+  it("M5 review L3: companyBySentryProject answers null, never throws, for a slug outside the strict form", async () => {
+    expect(await companyBySentryProject(service, "Acme Web")).toBeNull();
+    expect(await companyBySentryProject(service, "")).toBeNull();
+    expect(await companyBySentryProject(service, "-leading")).toBeNull();
   });
 });

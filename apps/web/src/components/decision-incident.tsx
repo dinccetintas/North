@@ -7,17 +7,10 @@ const SANDBOX_PR_PREFIX = "sandbox://repos/";
 
 const LEVEL_CLASS: Readonly<Record<string, string>> = Object.freeze({ fatal: "text-error", error: "text-error", warning: "text-warning" });
 
-/** A pull request reference: a real link for http(s), a plain anchor for the sandbox scheme, text for anything else. */
+/** A pull request reference: a real link for http(s) only; the sandbox scheme (or anything else) is text with the ref in `data-ref`, never an anchor (M5 review L2). */
 function PullRequestRef({ url }: { url: string | null }) {
   if (!url) return <span className="text-muted">No pull request yet.</span>;
   const ref: string = url;
-  if (ref.startsWith(SANDBOX_PR_PREFIX)) {
-    return (
-      <a href={ref} className="break-all" data-testid="decision-pr" data-sandbox="true">
-        {ref} (sandbox)
-      </a>
-    );
-  }
   if (isHttpUrl(ref)) {
     return (
       <a href={ref} target="_blank" rel="noreferrer noopener" className="break-all hover:underline" data-testid="decision-pr">
@@ -25,7 +18,13 @@ function PullRequestRef({ url }: { url: string | null }) {
       </a>
     );
   }
-  return <span className="break-all">{ref}</span>;
+  const sandbox = url.startsWith(SANDBOX_PR_PREFIX);
+  return (
+    <span className="break-all" data-testid="decision-pr" data-sandbox={sandbox ? "true" : "false"} data-ref={url}>
+      {url}
+      {sandbox ? " (sandbox)" : ""}
+    </span>
+  );
 }
 
 /**

@@ -69,14 +69,14 @@ export const scanCompanySignalsFn = inngest.createFunction(
   },
 );
 
-/** PRO-2: signal/detected with `kind: error` → incident report, learning, fix task (idempotent) → task/dispatch. */
+/** PRO-2: signal/detected with `kind: error` → incident report, learning, fix task (idempotent; fatal/error only, at most `FIX_TASKS_PER_DAY`) → task/dispatch. */
 export const watchErrors = inngest.createFunction(
   { id: "watch-errors", triggers: [{ event: EVENT.signalDetected, if: 'event.data.kind == "error"' }], cancelOn: cancelOnKillSwitch, retries: 2, concurrency: [{ key: "event.data.signalId", limit: 1 }] },
   async ({ event, step }) => {
     const { companyId, signalId } = SignalDetectedSchema.parse(event.data);
     const deps = await buildDeps();
     const fix = await step.run("fix-task", () => openFixTask(deps, companyId, signalId));
-    if (!fix.reused) await step.sendEvent("dispatch", { name: EVENT.taskDispatch, data: { companyId, taskId: fix.taskId } });
+    if (fix.outcome === "opened" && fix.taskId) await step.sendEvent("dispatch", { name: EVENT.taskDispatch, data: { companyId, taskId: fix.taskId } });
     return { companyId, signalId, ...fix };
   },
 );

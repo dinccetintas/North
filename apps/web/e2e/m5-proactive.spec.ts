@@ -139,7 +139,10 @@ test("M5 error-to-fix: a Sentry issue becomes a fix PR and a go-live card; forge
   const incident = page.getByTestId("decision-incident");
   await expect(incident).toContainText("TypeError: Cannot read properties of undefined");
   await expect(incident).not.toContainText("<instructions>");
-  await expect(page.getByTestId("decision-pr")).toHaveAttribute("href", /^sandbox:\/\/repos\/.+\/pull\/1$/);
+  // M5 review L2: a sandbox ref is never an anchor; the ref travels in data-ref.
+  await expect(page.getByTestId("decision-pr")).toHaveAttribute("data-ref", /^sandbox:\/\/repos\/.+\/pull\/1$/);
+  await expect(page.getByTestId("decision-pr")).toHaveAttribute("data-sandbox", "true");
+  await expect(page.getByTestId("decision-pr")).not.toHaveAttribute("href", /.+/);
   await expect(page.getByTestId("decision-preview")).toBeVisible();
   await shot(page, "card-detail-fix", project);
 

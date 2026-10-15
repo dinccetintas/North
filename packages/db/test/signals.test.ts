@@ -54,6 +54,14 @@ describe("signals repository (PRO-1, PRO-3-CAP)", () => {
     expect(await getSignal(service, owned.companyId, error!)).toMatchObject({ kind: "error", score: 1, status: "new" });
   });
 
+  it("M5 review L4: a candidate may carry its payload so the row is written once; rows without one keep {}", async () => {
+    const issue = { id: "77001", shortId: "NORTH-7", title: "TypeError: y is undefined", level: "error" };
+    const [withPayload] = await insertSignals(service, owned.companyId, [{ ...candidate("77001", { source: "sentry", url: "https://sentry.io/issues/77001/" }), payload: { issue } }], { kind: "error", score: 1 });
+    expect((await getSignal(service, owned.companyId, withPayload!))?.payload).toEqual({ issue });
+    expect((await signalByRef(service, owned.companyId, "reddit", "r-a-2"))?.payload).toEqual({});
+    await expect(insertSignals(service, owned.companyId, [{ ...candidate("77002"), payload: ["not", "an", "object"] as never }], { kind: "error" })).rejects.toThrow();
+  });
+
   it("getSignal and signalByRef are company-scoped; knownSourceRefs lists one source's refs", async () => {
     const found = await signalByRef(owned.owner.client, owned.companyId, "reddit", "r-a-1");
     expect(found?.sourceRef).toBe("r-a-1");
@@ -95,9 +103,9 @@ describe("signals repository (PRO-1, PRO-3-CAP)", () => {
 
   it("listSignals filters by status, kind, week and age, newest first, with a limit", async () => {
     const all = await listSignals(owned.owner.client, owned.companyId, {});
-    expect(all.length).toBe(6);
+    expect(all.length).toBe(7);
     expect([...all].every((s, i, arr) => i === 0 || arr[i - 1]!.createdAt >= s.createdAt)).toBe(true);
-    expect((await listSignals(owned.owner.client, owned.companyId, { kind: ["error"] })).map((s) => s.source)).toEqual(["sentry"]);
+    expect((await listSignals(owned.owner.client, owned.companyId, { kind: ["error"] })).map((s) => s.source)).toEqual(["sentry", "sentry"]);
     expect((await listSignals(owned.owner.client, owned.companyId, { status: ["capped", "card_opened"] })).length).toBe(3);
     expect((await listSignals(owned.owner.client, owned.companyId, { limit: 2 })).length).toBe(2);
     const old = await raw.from("signals").insert({ company_id: owned.companyId, kind: "opportunity", source: "producthunt", source_ref: "ph-old", title: "Old", created_at: "2020-01-01T00:00:00Z" }).select("id").single();

@@ -143,15 +143,21 @@ export async function listActiveCompanies(db: DbClient): Promise<readonly Active
 /** A Sentry project slug as Sentry forms them; mirrors the `companies_sentry_project_slug_check` constraint. */
 export const SentryProjectSlugSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,99}$/, "a Sentry project slug: lowercase letters, digits, '.', '_' or '-'");
 
-/** The company whose Sentry project has this slug (the webhook's lookup), or null when no company claims it. */
+/** The company whose Sentry project has this slug (the webhook's lookup), or null when no company claims it or the slug is not one Sentry forms (M5 review L3: never a throw). */
 export async function companyBySentryProject(db: DbClient, slug: string): Promise<CompanySummary | null> {
-  const s = SentryProjectSlugSchema.parse(slug);
-  const { data, error } = await db.from("companies").select("id, name, slug, status, kill_switch_active").eq("sentry_project_slug", s).maybeSingle();
+  const s = SentryProjectSlugSchema.safeParse(slug);
+  if (!s.success) return null;
+  const { data, error } = await db.from("companies").select("id, name, slug, status, kill_switch_active").eq("sentry_project_slug", s.data).maybeSingle();
   if (error) throw new DbError(`Could not load company by Sentry project: ${error.message}`, error);
   return data ? toSummary(data) : null;
 }
 
-/** Links (or with `null` unlinks) the Sentry project whose issues become fix tasks (PRO-2). The owner sets it from settings; slugs are unique across companies. */
+/**
+ * Links (or with `null` unlinks) the Sentry project whose issues become fix
+ * tasks (PRO-2). Worker (service role) only since 0011 (M5 review M4): the
+ * slug is a claim until a Sentry connection proves it (M6), so an owner's
+ * client is refused by the column grant; slugs are unique across companies.
+ */
 export async function setSentryProject(db: DbClient, companyId: string, slug: string | null): Promise<void> {
   const id = z.string().uuid().parse(companyId);
   const s = SentryProjectSlugSchema.nullable().parse(slug);

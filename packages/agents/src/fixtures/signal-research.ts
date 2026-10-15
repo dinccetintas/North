@@ -15,7 +15,7 @@ const field = (text: string, name: string): string => sanitizeText(new RegExp(`^
 
 /** Reads the data block of a `signal_research` task input; neutral values when a field is missing. */
 export function signalFactsFromInput(instructions: string): SignalFactsFromInput {
-  const source = /<data source="([a-z_]+)">/.exec(instructions)?.[1] ?? "unknown";
+  const source = /<data source="([a-z_]+)"(?: id="[0-9a-f]{16}")?>/.exec(instructions)?.[1] ?? "unknown";
   const url = field(instructions, "url");
   return Object.freeze({
     source,

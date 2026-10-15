@@ -2,7 +2,10 @@ import { Hono } from "hono";
 import { AdDeliverySchema } from "@north/core";
 import { isSandboxAds, isSandboxOutreach, type Integrations } from "@north/integrations";
 import { z } from "zod";
+import { isLoopbackHost } from "./host";
 import type { SimClock } from "./services/clock";
+
+export { isLoopbackHost };
 
 /** Sandbox and live refs are short identifiers; anything else is refused before it reaches the adapters' path checks. */
 const RefSchema = z.string().regex(/^[A-Za-z0-9:._-]{1,120}$/);
@@ -16,11 +19,6 @@ const parseJson = (text: string): unknown => {
     return null;
   }
 };
-
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
-
-/** Whether a bind host keeps the worker on this machine (the only place the simulation routes may exist, M4 review L4). */
-export const isLoopbackHost = (host: string): boolean => LOOPBACK_HOSTS.has(host.trim().toLowerCase());
 
 /**
  * Simulation routes for the sandbox adapters (M4) and the worker's clock

@@ -1,4 +1,4 @@
-import { SIGNAL_KINDS, SIGNAL_SOURCES, SIGNAL_STATUSES, SignalCandidateSchema, type SignalCandidate, type SignalKind, type SignalSource, type SignalStatus } from "@north/core";
+import { SIGNAL_KINDS, SIGNAL_SOURCES, SIGNAL_STATUSES, SignalCandidateSchema, type SignalKind, type SignalSource, type SignalStatus } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
 import { DbError, dbError } from "./errors";
@@ -127,7 +127,11 @@ export function toSignalRecord(row: unknown): SignalRecord {
 const isCapViolation = (error: { code?: string; message?: string } | null): boolean =>
   Boolean(error && error.code === "23505" && /signals_opportunity_week_idx/.test(error.message ?? ""));
 
-const candidateRow = (companyId: string, c: SignalCandidate, o: z.output<typeof InsertSignalsOptionsSchema>) => ({
+/** A candidate with an optional structured payload (the sanitised Sentry issue) written in the same insert (M5 review L4). */
+export const InsertSignalCandidateSchema = SignalCandidateSchema.extend({ payload: z.record(z.string(), z.unknown()).optional() });
+export type InsertSignalCandidate = z.input<typeof InsertSignalCandidateSchema>;
+
+const candidateRow = (companyId: string, c: z.output<typeof InsertSignalCandidateSchema>, o: z.output<typeof InsertSignalsOptionsSchema>) => ({
   company_id: companyId,
   kind: o.kind,
   source: c.source,
@@ -138,17 +142,19 @@ const candidateRow = (companyId: string, c: SignalCandidate, o: z.output<typeof 
   score: o.score,
   status: c.baseline ? ("below_threshold" as const) : o.status,
   observed_at: c.observedAt,
+  ...(c.payload === undefined ? {} : { payload: toJson(c.payload) }),
 });
 
 /**
  * Inserts the candidates a scan produced (worker only) and returns the ids of
  * the rows that were new. A candidate whose `(company, source, sourceRef)`
  * already exists is ignored, so a rescan never duplicates a post. A
- * `baseline` candidate lands `below_threshold` and is never scored.
+ * `baseline` candidate lands `below_threshold` and is never scored. A
+ * candidate's `payload`, when given, lands in the same row write.
  */
-export async function insertSignals(db: DbClient, companyId: string, candidates: readonly SignalCandidate[], options: InsertSignalsOptions): Promise<readonly string[]> {
+export async function insertSignals(db: DbClient, companyId: string, candidates: readonly InsertSignalCandidate[], options: InsertSignalsOptions): Promise<readonly string[]> {
   const id = UuidSchema.parse(companyId);
-  const list = z.array(SignalCandidateSchema).max(MAX_CANDIDATES).parse(candidates);
+  const list = z.array(InsertSignalCandidateSchema).max(MAX_CANDIDATES).parse(candidates);
   const o = InsertSignalsOptionsSchema.parse(options);
   if (list.length === 0) return Object.freeze([]);
   const rows = list.map((c) => candidateRow(id, c, o));

@@ -187,10 +187,16 @@ export interface IncidentData {
 
 const nonEmpty = (value: string | undefined): string | null => (value && value.trim().length > 0 ? value.trim() : null);
 
+/** The webhook stores the issue under `payload.issue`; older or hand-written rows may carry the facts at the root. */
+function incidentFacts(payload: unknown): z.infer<typeof IncidentPayloadSchema> {
+  const nested = payload !== null && typeof payload === "object" && "issue" in payload ? (payload as { issue?: unknown }).issue : undefined;
+  const parsed = IncidentPayloadSchema.safeParse(nested ?? payload ?? {});
+  return parsed.success ? parsed.data : {};
+}
+
 /** The sanitised issue facts of an `error` signal (source `sentry`); the title is text, never HTML. */
 export function incidentView(signal: SignalLike): IncidentData {
-  const parsed = IncidentPayloadSchema.safeParse(signal.payload ?? {});
-  const payload = parsed.success ? parsed.data : {};
+  const payload = incidentFacts(signal.payload);
   const permalink = [signal.url, payload.permalink].find((u): u is string => isHttpUrl(u) && u.startsWith("https://")) ?? null;
   return Object.freeze({
     signalId: signal.id,

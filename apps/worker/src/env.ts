@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { z } from "zod";
+import { isLoopbackHost } from "./host";
 
 const EnvSchema = z
   .object({
@@ -24,7 +25,7 @@ const EnvSchema = z
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     AGENTS_DIR: z.string().default(resolve(process.cwd(), "../../agents")),
-    /** The Sentry internal integration's client secret: the issue webhook is signed with it (PRO-2, ADR 0013). Sandbox mode defaults it; live mode mounts the route only when set. */
+    /** The Sentry internal integration's client secret: the issue webhook is signed with it (PRO-2, ADR 0013). Sandbox mode on a loopback host defaults it; otherwise the route is mounted only when set. */
     SENTRY_CLIENT_SECRET: z.string().min(8).optional(),
     /** The worker's own Sentry project (OBS-1); `@sentry/node` initialises only when set. */
     SENTRY_DSN: z.string().url().optional(),
@@ -48,11 +49,21 @@ export type WorkerEnv = z.infer<typeof EnvSchema>;
 /** The secret the smoke and the e2e sign Sentry webhooks with when no real one is configured (sandbox only). */
 export const SANDBOX_SENTRY_SECRET = "sandbox-sentry-secret";
 
-/** The secret `POST /webhooks/sentry` verifies against, or null when the route must not be mounted (live mode without a secret). */
-export function sentrySecretFor(env: Pick<WorkerEnv, "SENTRY_CLIENT_SECRET" | "INTEGRATIONS_MODE">): string | null {
+export type SentryEnv = Pick<WorkerEnv, "SENTRY_CLIENT_SECRET" | "INTEGRATIONS_MODE" | "WORKER_HOST">;
+
+/**
+ * The secret `POST /webhooks/sentry` verifies against, or null when the route
+ * must not be mounted: live mode without a secret, or sandbox mode on a host
+ * that is not loopback (the public default secret would otherwise accept
+ * forged issues from anywhere, M5 review M1).
+ */
+export function sentrySecretFor(env: SentryEnv): string | null {
   if (env.SENTRY_CLIENT_SECRET) return env.SENTRY_CLIENT_SECRET;
-  return env.INTEGRATIONS_MODE === "sandbox" ? SANDBOX_SENTRY_SECRET : null;
+  return env.INTEGRATIONS_MODE === "sandbox" && isLoopbackHost(env.WORKER_HOST) ? SANDBOX_SENTRY_SECRET : null;
 }
+
+/** The boot line's word for the webhook. */
+export const sentryWebhookLabel = (env: SentryEnv): string => (sentrySecretFor(env) ? "webhook on" : "webhook off (no secret)");
 
 /** Validated worker environment; fails fast with the missing keys named. */
 export function workerEnv(source: NodeJS.ProcessEnv = process.env): WorkerEnv {

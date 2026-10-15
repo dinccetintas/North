@@ -1,4 +1,4 @@
-import { ScoredSignalSchema, sanitizeText, type ScoredSignal, type SignalSource } from "@north/core";
+import { SIGNAL_THRESHOLD, ScoredSignalSchema, sanitizeText, type ScoredSignal, type SignalSource } from "@north/core";
 import type { ScoreCandidate, ScoreContext } from "./prompt";
 
 /**
@@ -38,12 +38,20 @@ export function keywordOverlap(text: string, keywords: readonly string[]): numbe
   return hits / wanted.length;
 }
 
-/** 1 for an observation at or after `now`, falling linearly to the floor at seven days and staying there. */
+/** 1 for an observation at or after `now` (a future timestamp is clamped to `now`, never a bonus), falling linearly to the floor at seven days and staying there. */
 export function recencyFactor(observedAt: string, now: Date): number {
-  const age = (now.getTime() - new Date(observedAt).getTime()) / DAY_MS;
-  if (!Number.isFinite(age) || age <= 0) return 1;
+  const observed = new Date(observedAt).getTime();
+  if (!Number.isFinite(observed)) return 1;
+  const age = (now.getTime() - Math.min(observed, now.getTime())) / DAY_MS;
   return Math.max(RECENCY_FLOOR, 1 - (age / RECENCY_DAYS) * (1 - RECENCY_FLOOR));
 }
+
+/**
+ * M5 review L5: the heuristic is steerable by content (keywords in a title),
+ * so its scores are scaled to stay under `SIGNAL_THRESHOLD`: it orders
+ * candidates and fills gaps, it never opens a card on its own.
+ */
+export const HEURISTIC_MAX_SCORE = round2(SIGNAL_THRESHOLD - 0.01);
 
 export interface HeuristicOptions extends ScoreContext {
   readonly now: Date;
@@ -54,7 +62,7 @@ export function heuristicScore(candidate: ScoreCandidate, options: HeuristicOpti
   const weight = SOURCE_WEIGHT[candidate.source];
   const overlap = keywordOverlap(`${candidate.title} ${candidate.excerpt}`, options.keywords);
   const recency = recencyFactor(candidate.observedAt, options.now);
-  const score = round2(clamp01(weight * (OVERLAP_FLOOR + (1 - OVERLAP_FLOOR) * overlap) * recency));
+  const score = round2(clamp01(weight * (OVERLAP_FLOOR + (1 - OVERLAP_FLOOR) * overlap) * recency) * HEURISTIC_MAX_SCORE);
   const hits = Math.round(overlap * options.keywords.length);
   return Object.freeze(
     ScoredSignalSchema.parse({

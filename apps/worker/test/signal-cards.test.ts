@@ -108,6 +108,51 @@ describe("convertSignals", () => {
     expect(state.signals.get(id)).toMatchObject({ status: "card_opened", cardWeek: WEEK });
   });
 
+  it("M5 review M2: a throw after the reservation leaves no week held; the next scan opens the card", async () => {
+    const id = await seedSignal("r-1", 0.85);
+    dbModule.listActionsByKind.mockImplementationOnce(async () => {
+      throw new Error("postgrest down");
+    });
+    await expect(convertSignals(deps(), "company-1", TUESDAY)).rejects.toThrow(/postgrest down/);
+    expect(state.signals.get(id)).toMatchObject({ status: "scored", cardWeek: null });
+    expect(state.cards.size).toBe(0);
+    const next = await convertSignals(deps(), "company-1", TUESDAY);
+    expect(next.cardsOpened).toHaveLength(1);
+    expect(state.signals.get(id)).toMatchObject({ status: "card_opened", cardWeek: WEEK });
+  });
+
+  it("M5 review M2: a capped row holds no week, and a stale reservation without a card does not count as the week's card", async () => {
+    // A row left `scored` with the week set (the crash the fix above prevents) must not keep the week closed for ever.
+    const stale = await seedSignal("r-stale", 0.85);
+    await dbModule.updateSignal(null, "company-1", stale, { cardWeek: WEEK });
+    const ph = await seedSignal("ph-1", 0.9, "opportunity", "producthunt");
+    const result = await convertSignals(deps(), "company-1", TUESDAY);
+    // The index still holds the week for the stale row, so the Product Hunt row is capped (and holds nothing); the stale row gets its card.
+    expect(result.signals).toEqual([
+      { signalId: ph, status: "capped", cardId: null },
+      { signalId: stale, status: "card_opened", cardId: result.cardsOpened[0] },
+    ]);
+    expect(state.signals.get(ph)).toMatchObject({ status: "capped", cardWeek: null });
+    expect(state.signals.get(stale)).toMatchObject({ status: "card_opened", cardWeek: WEEK });
+    // Once the week's card exists, a later row is capped without a reservation attempt and holds no week.
+    const late = await seedSignal("r-late", 0.8);
+    const second = await convertSignals(deps(), "company-1", "2026-10-22");
+    expect(second).toEqual({ cardsOpened: [], signals: [{ signalId: late, status: "capped", cardId: null }] });
+    expect(state.signals.get(late)).toMatchObject({ status: "capped", cardWeek: null });
+    expect(dbModule.updateSignal).toHaveBeenLastCalledWith(expect.anything(), "company-1", late, { status: "capped", cardWeek: null });
+  });
+
+  it("M5 review M5: an error signal deferred by the fix-task cap is never a card candidate", async () => {
+    const err = await seedSignal("sentry-9", 1, "error", "sentry");
+    await dbModule.updateSignal(null, "company-1", err, { status: "deferred", rationale: "Deferred: 3 fix tasks today" });
+    const drop = await seedSignal("metrics:signups:2026-10-20", 0.75, "metric_drop", "metrics");
+    await dbModule.updateSignal(null, "company-1", drop, { status: "deferred" });
+    const result = await convertSignals(deps(), "company-1", TUESDAY);
+    expect(result.signals.map((s) => s.signalId)).toEqual([drop]);
+    expect(state.signals.get(err)).toMatchObject({ status: "deferred", cardWeek: null });
+    expect(state.cards.size).toBe(1);
+  });
+
   it("the kill switch blocks the gate and the signal is declined, nothing retried", async () => {
     const id = await seedSignal("r-1", 0.85);
     state.killSwitch.set("company-1", true);
@@ -138,7 +183,7 @@ describe("settlement of a signal card", () => {
     expect(done).toMatchObject({ status: "executed", externalRef: expect.stringMatching(/^task:/) });
     const task = [...state.tasks.values()][0]!;
     expect(task).toMatchObject({ role: "research", taskType: "signal_research", status: "queued", metricKey: "artifacts", planId: null });
-    expect(task.input).toContain('<data source="reddit">');
+    expect(task.input).toMatch(/<data source="reddit" id="[0-9a-f]{16}">/);
     expect(task.input).toContain("title: Post r-1");
     expect(done.externalRef).toBe(`task:${task.id}`);
     expect(state.signals.get(id)).toMatchObject({ status: "approved", convertedTaskId: task.id });

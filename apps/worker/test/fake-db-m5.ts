@@ -140,13 +140,13 @@ export function fakeDbM5<T extends TaskLike>(state: M5State, h: M5Helpers<T>) {
 
   return {
     SignalCapError,
-    insertSignals: vi.fn(async (_db: unknown, companyId: string, candidates: { source: string; sourceRef: string; title: string; excerpt?: string; url: string | null; observedAt: string; baseline?: boolean }[], options: { kind: string; score?: number; status?: string }) => {
+    insertSignals: vi.fn(async (_db: unknown, companyId: string, candidates: { source: string; sourceRef: string; title: string; excerpt?: string; url: string | null; observedAt: string; baseline?: boolean; payload?: Record<string, unknown> }[], options: { kind: string; score?: number; status?: string }) => {
       const ids: string[] = [];
       for (const c of candidates) {
         if ([...state.signals.values()].some((s) => s.companyId === companyId && s.source === c.source && s.sourceRef === c.sourceRef)) continue;
         const id = randomUUID();
         const now = isoNow();
-        state.signals.set(id, { id, companyId, kind: options.kind, source: c.source, sourceRef: c.sourceRef, title: c.title, url: c.url, excerpt: c.excerpt ?? "", summary: "", rationale: "", score: options.score ?? 0, status: c.baseline ? "below_threshold" : (options.status ?? "new"), payload: {}, cardWeek: null, convertedCardId: null, convertedTaskId: null, observedAt: c.observedAt, scoredAt: null, createdAt: now, updatedAt: now });
+        state.signals.set(id, { id, companyId, kind: options.kind, source: c.source, sourceRef: c.sourceRef, title: c.title, url: c.url, excerpt: c.excerpt ?? "", summary: "", rationale: "", score: options.score ?? 0, status: c.baseline ? "below_threshold" : (options.status ?? "new"), payload: { ...(c.payload ?? {}) }, cardWeek: null, convertedCardId: null, convertedTaskId: null, observedAt: c.observedAt, scoredAt: null, createdAt: now, updatedAt: now });
         ids.push(id);
       }
       return ids;

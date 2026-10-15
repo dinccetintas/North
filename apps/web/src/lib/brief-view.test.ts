@@ -157,6 +157,12 @@ describe("PRO-2 incident view", () => {
     });
   });
 
+  it("reads the facts the worker stores under payload.issue (the webhook's shape) before the root", () => {
+    const nested = { ...error, url: null, payload: { issue: { shortId: "NORTH-7", level: "fatal", culprit: "lib/db.ts in query", permalink: "https://sentry.io/organizations/north/issues/7/" } } };
+    expect(incidentView(nested)).toMatchObject({ shortId: "NORTH-7", level: "fatal", culprit: "lib/db.ts in query", permalink: "https://sentry.io/organizations/north/issues/7/" });
+    expect(incidentView({ ...error, payload: { issue: "garbage" } })).toMatchObject({ shortId: null, level: null });
+  });
+
   it("survives a missing or malformed payload and refuses a non-https permalink", () => {
     expect(incidentView({ ...error, payload: undefined, url: "http://sentry.example/x" })).toMatchObject({ shortId: null, level: null, culprit: "app/page.tsx in HomePage", permalink: null });
     expect(incidentView({ ...error, payload: "garbage", url: null, excerpt: "" })).toMatchObject({ culprit: null, permalink: null });

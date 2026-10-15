@@ -237,10 +237,13 @@ async function fixPipeline(ctx: Ctx, shortId: string, signalId: string): Promise
   const incidents = (await listArtifacts(db, companyId)).filter((a) => a.kind === "incident_report");
   check(incidents.length === 1, "incident_report", "exactly one artifact", incidents.length);
   const input = fix.input;
-  const open = input.indexOf('<data source="sentry">');
+  // M5 review H1: the block is opened and closed with one per-task nonce; no other `data` tag may exist in the input.
+  const nonce = /<data source="sentry" id="([0-9a-f]{16})">/.exec(input)?.[1] ?? "";
+  const open = input.indexOf(`<data source="sentry" id="${nonce}">`);
   const title = input.indexOf(`title: ${SENTRY_TITLE}`);
-  const close = input.indexOf("</data>");
-  check(open >= 0 && title > open && close > title && !input.includes("<instructions>"), "fix task input", "the issue title inside the <data source=\"sentry\"> block, no <instructions>", input);
+  const close = input.indexOf(`</data id="${nonce}">`);
+  const tags = input.match(/<\/?\s*data\b/gi)?.length ?? 0;
+  check(nonce !== "" && open >= 0 && title > open && close > title && tags === 2 && !input.includes("<instructions>"), "fix task input", "the issue title inside the nonce-closed <data source=\"sentry\"> block, no <instructions>", input);
   const card = await until("fix go-live card", async () => (await listPendingCards(db, companyId)).find((c) => c.actionKind === "deploy.production" && c.taskId === fix.id), { found: () => headActionsForTask(db, fix.id) });
   check(card.tier === "K2" && card.day === simDay(3), "card 1 of D3", `K2 deploy.production on ${simDay(3)}`, { tier: card.tier, day: card.day });
   const actions = await headActionsForTask(db, fix.id);

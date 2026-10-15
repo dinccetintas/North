@@ -92,9 +92,9 @@ describe("env (D5-1)", () => {
   const base = { SUPABASE_URL: "http://127.0.0.1:54321", SUPABASE_SERVICE_ROLE_KEY: "service-role-key-xyz" };
 
   it("defaults the Sentry secret in sandbox mode only and refuses a clock start in live mode", () => {
-    expect(sentrySecretFor({ INTEGRATIONS_MODE: "sandbox", SENTRY_CLIENT_SECRET: undefined })).toBe("sandbox-sentry-secret");
-    expect(sentrySecretFor({ INTEGRATIONS_MODE: "live", SENTRY_CLIENT_SECRET: undefined })).toBeNull();
-    expect(sentrySecretFor({ INTEGRATIONS_MODE: "live", SENTRY_CLIENT_SECRET: "real-secret-123" })).toBe("real-secret-123");
+    expect(sentrySecretFor({ INTEGRATIONS_MODE: "sandbox", SENTRY_CLIENT_SECRET: undefined, WORKER_HOST: "127.0.0.1" })).toBe("sandbox-sentry-secret");
+    expect(sentrySecretFor({ INTEGRATIONS_MODE: "live", SENTRY_CLIENT_SECRET: undefined, WORKER_HOST: "127.0.0.1" })).toBeNull();
+    expect(sentrySecretFor({ INTEGRATIONS_MODE: "live", SENTRY_CLIENT_SECRET: "real-secret-123", WORKER_HOST: "127.0.0.1" })).toBe("real-secret-123");
     expect(workerEnv({ ...base, NORTH_CLOCK_START: START } as NodeJS.ProcessEnv).NORTH_CLOCK_START).toBe(START);
     expect(() => workerEnv({ ...base, INTEGRATIONS_MODE: "live", CONNECTIONS_ENCRYPTION_KEY: "k".repeat(64), NORTH_CLOCK_START: START } as NodeJS.ProcessEnv)).toThrow(/NORTH_CLOCK_START/);
     expect(() => workerEnv({ ...base, SENTRY_DSN: "not a url" } as NodeJS.ProcessEnv)).toThrow(/SENTRY_DSN/);
