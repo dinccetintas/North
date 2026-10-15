@@ -7,6 +7,7 @@ import {
   getKillSwitch,
   getTask,
   headActionsForTask,
+  importLeads,
   listPendingCardsForTask,
   markTaskFailed,
   markTaskRunning,
@@ -14,6 +15,7 @@ import {
   saveTaskResult,
   writeMemoryItems,
   type DbClient,
+  type LeadInput,
   type TaskRecord,
 } from "@north/db";
 import type { AgentRunResult } from "@north/agents";
@@ -66,7 +68,7 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   if (task.status === "running") return noActions("blocked", taskId, { error: "already running" });
 
   const running = await markTaskRunning(db, taskId);
-  const context = await companyContext(db, task.companyId);
+  const context = await companyContext(db, task.companyId, task.taskType);
   const workspaceDir = `${deps.env.WORKSPACE_ROOT}/${task.id}`;
   const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
   const result = await runtime.run({
@@ -173,5 +175,13 @@ async function persistOutput(db: DbClient, task: TaskRecord, raw: unknown): Prom
     artifactIds.push(artifact.id);
   }
   if (output.memory.length > 0) await writeMemoryItems(db, task.companyId, output.memory, task.role);
+  if (output.leads && output.leads.length > 0) await persistLeads(db, task, output.leads);
   return { summary: output.summary, artifactIds, output };
+}
+
+/** `lead_research` output (sales): prospects land in `leads` as `research` rows; an email already known is skipped, never overwritten. Nothing is contacted here. */
+async function persistLeads(db: DbClient, task: TaskRecord, leads: NonNullable<AgentOutput["leads"]>): Promise<void> {
+  const rows: LeadInput[] = leads.map((l) => ({ name: l.name, email: l.email, company: l.company, why: l.why }));
+  const result = await importLeads(db, task.companyId, rows, "research");
+  console.log(`[execute-task] ${task.id}: ${result.imported} lead(s) imported, ${result.skipped} skipped`);
 }

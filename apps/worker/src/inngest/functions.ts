@@ -9,8 +9,10 @@ import { completeAction, gateAction, performPending } from "../services/actions"
 import { planWeek } from "../services/plan-week";
 import { notifyByEmail, notifyByPush } from "../services/notify";
 import { deferredTaskIds, pauseEverything, queuedTaskIds, unsettledAnsweredCards } from "../services/kill-switch";
-import { applyOverdueDefaults, finishTaskIfIdle, settleDecision } from "../services/settle";
-import { runBuildPipeline, type PipelineOutcome, type StepRunner } from "../services/build-pipeline";
+import { killSwitchResumeCard } from "../services/campaigns";
+import { applyOverdueDefaults, finishTaskIfIdle, followUp, settleDecision } from "../services/settle";
+import { runBuildPipeline, type PipelineOutcome } from "../services/build-pipeline";
+import type { StepRunner } from "../services/steps";
 import { attemptDecision, escalateTask } from "../services/escalate";
 import { completeConnection, dropRevokedSecret } from "../services/oauth";
 
@@ -107,8 +109,13 @@ export const settleDecisionFn = inngest.createFunction(
     const deps = await buildDeps();
     const settlement = await step.run("decide", () => settleDecision(deps, cardId));
     if (settlement.kind === "perform") {
-      const outcome = await step.run("perform", () => performPending(deps, settlement.actionId));
-      await step.run("record", () => completeAction(deps, { actionId: settlement.actionId, tier: settlement.tier, outcome }));
+      // One card, one or many actions (a batch): each is performed and recorded in its own steps, then its follow-up runs (a cap raise resumes its campaign).
+      const runner: StepRunner = { run: (id, fn) => step.run(id, fn) as unknown as ReturnType<typeof fn> };
+      for (const [i, actionId] of settlement.actionIds.entries()) {
+        const outcome = await step.run(`perform-${i}`, () => performPending(deps, actionId));
+        const done = await step.run(`record-${i}`, () => completeAction(deps, { actionId, tier: settlement.tier, outcome }));
+        if (done.status === "executed") await followUp(deps, runner, actionId, i);
+      }
     }
     if (settlement.kind === "resume") {
       await step.sendEvent("resume-task", { name: EVENT.taskDispatch, data: { companyId, taskId: settlement.taskId } });
@@ -189,7 +196,7 @@ export const planWeekFn = inngest.createFunction(
   },
 );
 
-/** company/killswitch → in-flight runs are cancelled (cancelOn); campaigns are paused through the adapter. */
+/** company/killswitch → in-flight runs are cancelled (cancelOn); active campaigns are paused at the provider within 5 s (BUD-4). */
 export const killSwitch = inngest.createFunction(
   { id: "kill-switch", triggers: [{ event: EVENT.companyKillSwitch }], retries: 2 },
   async ({ event, step }) => {
@@ -200,7 +207,7 @@ export const killSwitch = inngest.createFunction(
   },
 );
 
-/** company/resume → queued tasks are dispatched again and answered-but-unsettled cards are settled. */
+/** company/resume → queued tasks are dispatched again, answered-but-unsettled cards are settled, and paused campaigns wait for one K2 resume card. */
 export const resumeCompany = inngest.createFunction(
   { id: "resume-company", triggers: [{ event: EVENT.companyResume }], retries: 1 },
   async ({ event, step }) => {
@@ -214,7 +221,11 @@ export const resumeCompany = inngest.createFunction(
     if (cards.length > 0) {
       await step.sendEvent("resettle", cards.map((c) => ({ name: EVENT.decisionAnswered, data: { companyId, cardId: c.cardId, optionId: c.optionId, answeredBy: c.answeredBy } })));
     }
-    return { companyId, redispatched: taskIds.length, resettled: cards.length };
+    const resume = await step.run("resume-card", () => killSwitchResumeCard(deps, companyId));
+    if (resume.kind === "card" && !resume.reused) {
+      await step.sendEvent("resume-card-opened", { name: EVENT.decisionOpened, data: { companyId, cardId: resume.cardId, taskId: null } });
+    }
+    return { companyId, redispatched: taskIds.length, resettled: cards.length, resumeCard: resume.kind };
   },
 );
 
@@ -265,5 +276,3 @@ export const ping = inngest.createFunction(
   { id: "ping", triggers: [{ event: "worker/ping" }] },
   async ({ step }) => step.run("pong", async () => ({ pong: true, at: new Date().toISOString() })),
 );
-
-export const functions = [runTask, settleDecisionFn, decisionDeadlines, notifyDecisionFn, onboardCompany, planWeekFn, killSwitch, resumeCompany, retryDeferred, connectProvider, revokeProvider, sweepSecrets, ping];

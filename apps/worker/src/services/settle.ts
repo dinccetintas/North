@@ -1,6 +1,7 @@
 import { applyDefault, evidenceKindFor, type ActionKind, type Evidence } from "@north/core";
 import {
   answerCard,
+  getCampaign,
   getCard,
   getTask,
   headActionsForTask,
@@ -10,7 +11,7 @@ import {
   markTaskDone,
   markTaskFailed,
   markTaskRunning,
-  pendingActionForCard,
+  pendingActionsForCard,
   recordActionTransition,
   recordLedgerEntry,
   recordMetric,
@@ -20,7 +21,11 @@ import {
 } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./actions";
+import { resumeCampaign, type ResumeReason } from "./campaigns";
 import { CONNECT_OPTION, isConnectCard } from "./connect-card";
+import { loadActionRow } from "./outcomes";
+import type { StepRunner } from "./steps";
+import { providerChecks, verifyEvidence } from "./verifier";
 
 /**
  * Settlement of decision cards, outside the agent run (M2 security review
@@ -32,13 +37,14 @@ export type Settlement =
   | { readonly kind: "nothing"; readonly cardId: string }
   | { readonly kind: "resume"; readonly cardId: string; readonly taskId: string }
   | { readonly kind: "abandon"; readonly cardId: string; readonly taskId: string }
-  | { readonly kind: "declined"; readonly cardId: string; readonly actionId: string; readonly taskId: string | null }
-  | { readonly kind: "perform"; readonly cardId: string; readonly actionId: string; readonly taskId: string | null; readonly tier: ActionRecord["tier"] };
+  | { readonly kind: "declined"; readonly cardId: string; readonly actionIds: readonly string[]; readonly taskId: string | null }
+  | { readonly kind: "perform"; readonly cardId: string; readonly actionIds: readonly string[]; readonly taskId: string | null; readonly tier: ActionRecord["tier"] };
 
 /**
- * Reads the card's answer and moves its pending action: declined now, or
- * handed back to be performed and completed as separate steps. A connect card
- * (ONB-3) has no action: "connected" resumes the task, "skip" abandons it.
+ * Reads the card's answer and moves its pending actions (one for most cards,
+ * one per email of a batch): declined now, or handed back to be performed and
+ * completed as separate steps each. A connect card (ONB-3) has no action:
+ * "connected" resumes the task, "skip" abandons it.
  */
 export async function settleDecision(deps: WorkerDeps, cardId: string): Promise<Settlement> {
   const { db } = deps;
@@ -52,13 +58,38 @@ export async function settleDecision(deps: WorkerDeps, cardId: string): Promise<
     await markTaskFailed(db, card.taskId, `${card.question} Skipped: the account was not connected.`);
     return { kind: "abandon", cardId, taskId: card.taskId };
   }
-  const action = await pendingActionForCard(db, cardId);
-  if (!action) return { kind: "nothing", cardId };
+  const actions = await pendingActionsForCard(db, cardId);
+  const first = actions[0];
+  if (!first) return { kind: "nothing", cardId };
+  const actionIds = Object.freeze(actions.map((a) => a.id));
   if (card.answeredOptionId !== "approve") {
-    await recordActionTransition(db, { actionId: action.id, status: "declined", note: `option ${card.answeredOptionId} by ${card.answeredBy ?? "user"}` });
-    return { kind: "declined", cardId, actionId: action.id, taskId: action.taskId };
+    for (const action of actions) {
+      await recordActionTransition(db, { actionId: action.id, status: "declined", note: `option ${card.answeredOptionId} by ${card.answeredBy ?? "user"}` });
+    }
+    return { kind: "declined", cardId, actionIds, taskId: first.taskId };
   }
-  return { kind: "perform", cardId, actionId: action.id, taskId: action.taskId, tier: action.tier };
+  return { kind: "perform", cardId, actionIds, taskId: first.taskId, tier: first.tier };
+}
+
+export type FollowUp = { readonly kind: "none" } | { readonly kind: "resumed" | "resume_failed"; readonly campaignId: string };
+
+/**
+ * What an executed action asks for next (the caller passes only actions it
+ * just recorded `executed`): an approved cap raise resumes the campaign it
+ * named (K1 `ads.resume` through the gate, its own steps). A resume that the
+ * caps refuse leaves the campaign paused.
+ */
+export async function followUp(deps: WorkerDeps, step: StepRunner, actionId: string, index: number): Promise<FollowUp> {
+  const row = await step.run(`follow-up-${index}-load`, () => loadActionRow(deps.db, actionId));
+  if (!row || row.kind !== "budget.cap.raise") return { kind: "none" };
+  const campaignId = row.spec?.payload?.resumeCampaignId;
+  if (typeof campaignId !== "string") return { kind: "none" };
+  const campaign = await step.run(`follow-up-${index}-campaign`, () => getCampaign(deps.db, campaignId));
+  if (!campaign) return { kind: "none" };
+  const reason: ResumeReason = "cap_raised";
+  const run = await resumeCampaign(deps, step, campaign, reason, `follow-up-${index}-resume`);
+  const ok = run.completed?.status === "notified" || run.completed?.status === "executed";
+  return { kind: ok ? "resumed" : "resume_failed", campaignId };
 }
 
 export interface DefaultedCard {
@@ -89,30 +120,53 @@ export async function applyOverdueDefaults(deps: WorkerDeps, now: Date = new Dat
 
 const NOT_EVIDENCE = new Set(["internal"]);
 
-const usable = (action: ActionRecord): { kind: Evidence["kind"]; ref: string } | null => {
+interface Candidate {
+  readonly kind: Evidence["kind"];
+  readonly ref: string;
+  readonly sandbox: boolean;
+}
+
+const usable = (action: ActionRecord): Candidate | null => {
   if (action.status !== "executed" && action.status !== "notified") return null;
   const kind = evidenceKindFor(action.kind as ActionKind);
   const ref = action.externalRef;
   if (!kind || !ref || NOT_EVIDENCE.has(ref) || ref.startsWith("sandbox:noop:")) return null;
-  return { kind, ref };
+  return { kind, ref, sandbox: action.sandbox };
 };
 
 /**
- * The best evidence a task can show (AGT-2), strongest first: a live or
- * preview URL (the latest executed deploy), else the first artifact, else a
- * provider reference such as a sent message id.
+ * The evidence a task can show (AGT-2), strongest first: a live or preview
+ * URL (the latest executed deploy), else the provider reference of what the
+ * task made happen (the campaign id, the first message id), else its first
+ * artifact. URLs were verified by the pipeline; provider references are
+ * checked against the provider before the task is done.
  */
-export function evidenceFor(task: TaskRecord, actions: readonly ActionRecord[], sandbox: boolean): Evidence | null {
-  const urls = actions.map(usable).filter((e): e is { kind: Evidence["kind"]; ref: string } => e !== null && e.kind === "url");
+export function evidenceCandidates(task: TaskRecord, actions: readonly ActionRecord[], sandbox: boolean): readonly Candidate[] {
+  const refs = actions.map(usable).filter((e): e is Candidate => e !== null);
+  const urls = refs.filter((e) => e.kind === "url");
   const latestUrl = urls[urls.length - 1];
-  if (latestUrl) return { kind: "url", ref: latestUrl.ref, verified: true, sandbox };
+  const provider = refs.filter((e) => e.kind !== "url");
   const artifactId = task.result.artifactIds[0];
-  if (artifactId) return { kind: "artifact_id", ref: artifactId, verified: true, sandbox };
-  for (const action of actions) {
-    const e = usable(action);
-    if (e) return { kind: e.kind, ref: e.ref, verified: true, sandbox: action.sandbox };
+  return Object.freeze([...(latestUrl ? [{ ...latestUrl, sandbox }] : []), ...provider, ...(artifactId ? [{ kind: "artifact_id" as const, ref: artifactId, sandbox }] : [])]);
+}
+
+/** Backwards-compatible view: the strongest candidate as unverified-yet evidence, or null. */
+export function evidenceFor(task: TaskRecord, actions: readonly ActionRecord[], sandbox: boolean): Evidence | null {
+  const first = evidenceCandidates(task, actions, sandbox)[0];
+  return first ? { kind: first.kind, ref: first.ref, verified: true, sandbox: first.sandbox } : null;
+}
+
+/** The first candidate the verifier confirms (provider references are checked live; URLs and artifacts were checked when made). */
+async function verifiedEvidence(deps: WorkerDeps, task: TaskRecord, candidates: readonly Candidate[]): Promise<{ readonly evidence: Evidence | null; readonly detail: string }> {
+  const checks = providerChecks(deps, task.companyId);
+  let detail = "no artifact and no executed action: nothing verifiable to show";
+  for (const c of candidates) {
+    if (c.kind !== "campaign_id" && c.kind !== "message_id") return { evidence: { kind: c.kind, ref: c.ref, verified: true, sandbox: c.sandbox }, detail: "" };
+    const check = await verifyEvidence({ db: deps.db, ...deps.verifier, ...checks }, c.kind, c.ref);
+    if (check.verified) return { evidence: { kind: c.kind, ref: c.ref, verified: true, sandbox: c.sandbox }, detail: check.detail };
+    detail = `${c.kind} ${c.ref} not verified: ${check.detail}`;
   }
-  return null;
+  return { evidence: null, detail };
 }
 
 export type FinishResult = { readonly status: "done" | "failed" | "waiting_decision" | "already" };
@@ -133,10 +187,10 @@ export async function finishTaskIfIdle(deps: WorkerDeps, taskId: string): Promis
   // A quota-deferred step is still owed (DEC-3): the retry cron re-dispatches the task tomorrow; it is not done today.
   if ((await listDeferredRows(db, taskId)).length > 0) return { status: "waiting_decision" };
   const sandbox = deps.integrations.mode === "sandbox" || deps.runtime.name === "mock";
-  const evidence = evidenceFor(task, actions, sandbox);
+  const { evidence, detail } = await verifiedEvidence(deps, task, evidenceCandidates(task, actions, sandbox));
   if (task.status === "waiting_decision") await markTaskRunning(db, taskId);
   if (!evidence) {
-    await markTaskFailed(db, taskId, "no artifact and no executed action: nothing verifiable to show (AGT-2)");
+    await markTaskFailed(db, taskId, `${detail} (AGT-2)`);
     return { status: "failed" };
   }
   await markTaskDone(db, taskId, { evidence, costUsd: task.result.costUsd, outputSummary: task.result.summary });

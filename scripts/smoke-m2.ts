@@ -73,7 +73,8 @@ async function main() {
   const actions = await listRecentActions(db, company.id, 1);
   const executed = actions.find((a) => a.kind === "ads.start" && a.status === "executed");
   assert(executed?.externalRef?.startsWith("sandbox:"), `expected an executed sandbox ads.start action, got ${JSON.stringify(actions.map((a) => [a.kind, a.status]))}`);
-  assert(done1.evidence?.kind === "artifact_id", "approve path should finish with artifact evidence");
+  // M4 (AGT-2): an executed ads.start finishes with the campaign id, confirmed by the ads provider; the artifact is the fallback.
+  assert(done1.evidence?.kind === "campaign_id" && done1.evidence.ref.startsWith("sandbox:campaign:"), `approve path should finish with campaign_id evidence, got ${JSON.stringify(done1.evidence)}`);
 
   // 2) Decline path.
   const task2 = await createTask(db, { companyId: company.id, role: "growth", taskType: "campaign_spec", title: "Second campaign", metricKey: "signups", expectedDelta: 5 });

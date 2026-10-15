@@ -18,6 +18,11 @@ const EnvSchema = z
     SANDBOX_ROOT: z.string().default(resolve(process.cwd(), ".sandbox")),
     /** AES-256-GCM key for connection tokens (ADR 0008); required only in live mode. */
     CONNECTIONS_ENCRYPTION_KEY: z.string().optional(),
+    /** North's own OAuth apps (ADR 0010): they name the application, never an account. All optional; without them the settings page offers "Connect (sandbox)". */
+    META_APP_ID: z.string().optional(),
+    META_APP_SECRET: z.string().optional(),
+    GOOGLE_CLIENT_ID: z.string().optional(),
+    GOOGLE_CLIENT_SECRET: z.string().optional(),
     AGENTS_DIR: z.string().default(resolve(process.cwd(), "../../agents")),
   })
   .refine((env) => env.NODE_ENV !== "production" || Boolean(env.INNGEST_SIGNING_KEY), {

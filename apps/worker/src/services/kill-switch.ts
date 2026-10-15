@@ -1,6 +1,7 @@
-import { listCards, listTasks, pendingActionForCard, recordAction } from "@north/db";
+import { listCards, listTasks, pendingActionForCard } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./actions";
+import { pauseForKillSwitch, type KillSwitchPause } from "./campaigns";
 
 export interface UnsettledCard {
   readonly cardId: string;
@@ -19,21 +20,9 @@ export async function unsettledAnsweredCards(deps: WorkerDeps, companyId: string
   return Object.freeze(out);
 }
 
-/** Kill switch: pause every active campaign through the ads adapter and record it (K1, notified). */
-export async function pauseEverything(deps: WorkerDeps, companyId: string): Promise<{ readonly paused: readonly string[] }> {
-  const { paused } = await deps.integrations.ads.pauseAll(companyId);
-  await recordAction(deps.db, {
-    companyId,
-    taskId: null,
-    agentRole: "ops_finance",
-    kind: "ads.pause",
-    tier: "K1",
-    description: `Kill switch: paused ${paused.length} campaign(s)`,
-    payload: { campaignIds: [...paused] },
-    status: "notified",
-    sandbox: deps.integrations.mode === "sandbox",
-  });
-  return { paused };
+/** Kill switch (BUD-4): every active campaign is paused at the provider within the 5 s SLA and recorded (K1, notified). */
+export function pauseEverything(deps: WorkerDeps, companyId: string): Promise<KillSwitchPause> {
+  return pauseForKillSwitch(deps, companyId);
 }
 
 /** Resume: every queued task is dispatched again; dispatch itself checks the flag. */

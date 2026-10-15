@@ -3,12 +3,10 @@ import { getTask } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { completeAction, gateAction, performPending, type GatedAction } from "./actions";
 import { openConnectCard } from "./connect-card";
+import type { StepRunner } from "./steps";
 import { verifyUrl } from "./verifier";
 
-/** The subset of Inngest's `step` the pipeline needs; each call is a durable, memoised step. */
-export interface StepRunner {
-  run<T>(id: string, fn: () => Promise<T>): Promise<T>;
-}
+export type { StepRunner } from "./steps";
 
 export interface PipelineOutcome {
   readonly status: "live_card_opened" | "preview_only" | "failed" | "connect_card_opened" | "connect_deferred";

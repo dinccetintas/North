@@ -54,8 +54,8 @@ describe("runBuildPipeline (M3: repo → push → preview → go-live card)", ()
     Object.assign(state.cards.get(outcome.cardId!)!, { answeredOptionId: "approve", answeredAt: new Date().toISOString(), answeredBy: "user" });
     const settlement = await settleDecision(deps, outcome.cardId!);
     if (settlement.kind !== "perform") throw new Error(settlement.kind);
-    const performed = await performPending(deps, settlement.actionId);
-    await completeAction(deps, { actionId: settlement.actionId, tier: settlement.tier, outcome: performed });
+    const performed = await performPending(deps, settlement.actionIds[0]!);
+    await completeAction(deps, { actionId: settlement.actionIds[0]!, tier: settlement.tier, outcome: performed });
     expect(performed).toMatchObject({ ok: true, externalRef: "http://127.0.0.1:3101/sandbox/sites/live-lumen-ledger-site/" });
     expect(await finishTaskIfIdle(deps, task.id)).toEqual({ status: "done" });
     expect(state.tasks.get(task.id)?.evidence).toMatchObject({ kind: "url", ref: "http://127.0.0.1:3101/sandbox/sites/live-lumen-ledger-site/", verified: true, sandbox: true });

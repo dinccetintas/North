@@ -2,6 +2,9 @@ import { vi } from "vitest";
 import { transition, type ActionSpec, type TaskEvent } from "@north/core";
 import type { WorkerDeps } from "../src/deps";
 import { createSandboxIntegrations, type SandboxEvent } from "@north/integrations";
+import { emptyM4State, fakeDbM4, type M4State } from "./fake-db-m4";
+
+export type { FakeBudget, FakeCampaign, FakeLead } from "./fake-db-m4";
 
 /**
  * In-memory stand-in for the `@north/db` repositories the services use.
@@ -68,15 +71,14 @@ export interface FakeConnection {
   accountLabel: string;
 }
 
-export interface FakeState {
+export interface FakeState extends M4State {
   tasks: Map<string, FakeTask>;
   actions: FakeAction[];
   cards: Map<string, FakeCard>;
   killSwitch: Map<string, boolean>;
-  budgets: Map<string, { category: string; totalLimitUsd: number; dailyLimitUsd: number; spentTotalUsd: number; spentTodayUsd: number }[]>;
   autoRules: Map<string, { id: string; kind: string; maxAmountUsd?: number; category?: string; active: boolean }[]>;
   quotaExhausted: boolean;
-  metrics: { companyId: string; metricKey: string; value: number }[];
+  metrics: { companyId: string; metricKey: string; value: number; source?: string }[];
   ledger: unknown[];
   notifications: unknown[];
   pushSubscriptions: { endpoint: string; p256dh: string; auth: string }[];
@@ -86,7 +88,7 @@ export interface FakeState {
 }
 
 export function emptyState(): FakeState {
-  return { tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), budgets: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
+  return { ...emptyM4State(), tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
 }
 
 let counter = 0;
@@ -124,7 +126,7 @@ function fakeQuery(state: FakeState) {
       return api;
     },
     in: (col: string, values: unknown[]) => {
-      filters.push((a) => (col === "supersedes" ? values.includes(a.supersedes) : true));
+      filters.push((a) => (col === "supersedes" ? values.includes(a.supersedes) : col === "id" ? values.includes(a.id) : true));
       return api;
     },
     contains: (_col: string, value: Record<string, unknown>) => {
@@ -137,7 +139,7 @@ function fakeQuery(state: FakeState) {
     },
     order: () => api,
     limit: () => api,
-    rows: () => state.actions.filter((a) => filters.every((f) => f(a))).map((a) => ({ id: a.id, payload: a.payload, status: a.status, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId })),
+    rows: () => state.actions.filter((a) => filters.every((f) => f(a))).map((a) => ({ id: a.id, payload: a.payload, status: a.status, kind: a.kind, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId })),
     single: async () => {
       const row = api.rows()[0];
       return row ? { data: row, error: null } : { data: null, error: { message: "no rows" } };
@@ -163,6 +165,7 @@ export function fakeDbModule(state: FakeState) {
   };
   const toRecord = (a: FakeAction) => ({ ...a, payload: { ...a.payload } });
   return {
+    ...fakeDbM4(state, { DbError, nextId, actions: () => state.actions, heads, toRecord, ledger: () => state.ledger }),
     DbError,
     QuotaExceededError,
     AlreadyAnsweredError,
@@ -175,7 +178,7 @@ export function fakeDbModule(state: FakeState) {
       task.result = { artifactIds: [...result.artifactIds], costUsd: result.costUsd, summary: result.summary };
       task.outputSummary = result.summary;
     }),
-    listBudgets: vi.fn(async (_db: unknown, companyId: string) => state.budgets.get(companyId) ?? []),
+    listBudgets: vi.fn(async (_db: unknown, companyId: string) => (state.budgets.get(companyId) ?? []).map((b) => ({ dailyExtraUsd: 0, ...b }))),
     listActiveAutoRules: vi.fn(async (_db: unknown, companyId: string) => state.autoRules.get(companyId) ?? []),
     getKillSwitch: vi.fn(async (_db: unknown, companyId: string) => state.killSwitch.get(companyId) ?? false),
     recordAction: vi.fn(async (_db: unknown, input: Record<string, unknown>) => {
@@ -262,9 +265,8 @@ export function fakeDbModule(state: FakeState) {
       const hit = [...state.metrics].reverse().find((m) => m.companyId === companyId && m.metricKey === key);
       return hit ? { value: hit.value } : null;
     }),
-    recordMetric: vi.fn(async (_db: unknown, input: { companyId: string; metricKey: string; value: number }) => {
+    recordMetric: vi.fn(async (_db: unknown, input: { companyId: string; metricKey: string; value: number; source: string }) => {
       state.metrics.push(input);
-      return nextId("metric");
     }),
     recordLedgerEntry: vi.fn(async (_db: unknown, input: unknown) => {
       state.ledger.push(input);
@@ -286,6 +288,11 @@ export function fakeDbModule(state: FakeState) {
       state.memory.push(...items.map((item) => ({ companyId, item })));
     }),
     getArtifact: vi.fn(async (_db: unknown, id: string) => (id.startsWith("art-") ? { id, title: "Artifact", version: 1 } : null)),
+    createArtifact: vi.fn(async (_db: unknown, input: { kind: string; title: string }) => ({ id: nextId("art"), kind: input.kind, title: input.title, version: 1 })),
+    recordAgentRun: vi.fn(async () => undefined),
+    currentThesis: vi.fn(async () => ({ text: "Bookkeeping for solo consultants.", targetCustomer: "solo consultants", whyNow: "now" })),
+    listGoals: vi.fn(async () => []),
+    memoryDigest: vi.fn(async () => "Thesis: Bookkeeping for solo consultants."),
     listTasks: vi.fn(async (_db: unknown, companyId: string, opts: { status?: string[] }) => [...state.tasks.values()].filter((t) => t.companyId === companyId && (!opts.status || opts.status.includes(t.status)))),
   };
 }
@@ -296,9 +303,9 @@ export function fakeDbModule(state: FakeState) {
  * keeps the sandbox adapters but makes the services look up the owner's
  * connections (ONB-3 connect cards).
  */
-export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200, mode: "sandbox" | "live" = "sandbox"): WorkerDeps {
+export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200, mode: "sandbox" | "live" = "sandbox", root = "/tmp/north-test-sandbox"): WorkerDeps {
   const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
-  const sandbox = createSandboxIntegrations((e) => void events.push(e), { root: "/tmp/north-test-sandbox", siteBaseUrl: "http://127.0.0.1:3101" });
+  const sandbox = createSandboxIntegrations((e) => void events.push(e), { root, siteBaseUrl: "http://127.0.0.1:3101" });
   return {
     env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: mode } as WorkerDeps["env"],
     db,
@@ -309,8 +316,7 @@ export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifySt
   };
 }
 
-/** A step runner that just runs; the unit tests do not need Inngest's memoisation. */
-export const directSteps = { run: <T>(_id: string, fn: () => Promise<T>) => fn() };
+export { directSteps } from "../src/services/steps";
 
 export function seedTask(state: FakeState, overrides: Partial<FakeTask> = {}): FakeTask {
   const task: FakeTask = {

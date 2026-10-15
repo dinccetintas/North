@@ -5,7 +5,8 @@ import { adsStart, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState 
 const state: FakeState = emptyState();
 vi.mock("@north/db", () => fakeDbModule(state));
 
-const { completeAction, deferredActionsFor, gateAction, performAction, performPending } = await import("../src/services/actions");
+const { completeAction, deferredActionsFor, gateAction, performPending } = await import("../src/services/actions");
+const { performAction } = await import("../src/services/perform");
 const { applyOverdueDefaults, finishTaskIfIdle, settleDecision } = await import("../src/services/settle");
 const { notifyDecision, cardUrl } = await import("../src/services/notify");
 const { deferredTaskIds, unsettledAnsweredCards } = await import("../src/services/kill-switch");
@@ -45,10 +46,10 @@ describe("performAction", () => {
     expect(events[0]).toMatchObject({ provider: "ads", op: "startCampaign", payload: { dailyBudgetUsd: 5 } });
   });
 
-  it("routes first-contact email to the mail adapter", async () => {
+  it("routes first-contact email to the user's own outreach mailbox, never the platform mail provider (ADR 0010)", async () => {
     const result = await performAction(fakeDeps(state, events), { kind: "email.send.first_contact", companyId: "company-1", agentRole: "sales", description: "Hello", payload: { to: "mara@example.test", subject: "Hi", text: "Body" } });
     expect(result.externalRef).toMatch(/^sandbox:msg:/);
-    expect(events[0]).toMatchObject({ provider: "mail", payload: { to: "mara@example.test", kind: "first_contact" } });
+    expect(events[0]).toMatchObject({ provider: "outreach", payload: { to: "mara@example.test", kind: "first_contact" } });
   });
 
   it("throws for kinds without an adapter instead of inventing a reference", async () => {
@@ -98,6 +99,23 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
     const second = await openCardFor(task.id, mail("b@example.test"));
     expect(first.cardId).not.toBe(second.cardId);
     expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+  });
+
+  it("DEC-3 / SLS-K2: five first-contact sends of one batch open ONE card and five pending rows on it", async () => {
+    const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
+    const recipients = ["a", "b", "c", "d", "e"].map((n) => `${n}@example.test`);
+    const mail = (to: string) => ({ kind: "email.send.first_contact" as const, companyId: "x", agentRole: "x", description: `Email ${to}`, payload: { batchId: `batch-${task.id}`, recipients, to, subject: "s", text: "t" } });
+    const gated: Awaited<ReturnType<typeof openCardFor>>[] = [];
+    for (const to of recipients) gated.push(await openCardFor(task.id, mail(to)));
+    expect(new Set(gated.map((g) => g.cardId)).size).toBe(1);
+    expect(new Set(gated.map((g) => g.actionId)).size).toBe(5);
+    expect(state.cards.size).toBe(1);
+    expect(state.cards.get(gated[0]!.cardId)).toMatchObject({ question: "Send 5 first-contact emails?", tier: "K2", actionKind: "email.send.first_contact" });
+    expect(state.actions.filter((a) => a.status === "pending" && a.decisionCardId === gated[0]!.cardId)).toHaveLength(5);
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+    // Gating the same send again reuses its own row, not a sixth one.
+    expect((await openCardFor(task.id, mail("a@example.test"))).actionId).toBe(gated[0]!.actionId);
+    expect(state.actions).toHaveLength(5);
   });
 
   it("gating the same spec twice reuses the pending action and card (idempotent under step retries)", async () => {
@@ -199,14 +217,18 @@ describe("settleDecision (DEC-2): the card's stored answer is the only input", (
     Object.assign(state.cards.get(gated.cardId)!, { answeredOptionId: "approve", answeredAt: new Date().toISOString(), answeredBy: "user" });
     const deps = fakeDeps(state, events);
     const settlement = await settleDecision(deps, gated.cardId);
-    expect(settlement).toMatchObject({ kind: "perform", actionId: gated.actionId, taskId: task.id, tier: "K2" });
+    expect(settlement).toMatchObject({ kind: "perform", actionIds: [gated.actionId], taskId: task.id, tier: "K2" });
     if (settlement.kind !== "perform") return;
-    const outcome = await performPending(deps, settlement.actionId);
-    const completed = await completeAction(deps, { actionId: settlement.actionId, tier: settlement.tier, outcome });
+    const outcome = await performPending(deps, settlement.actionIds[0]!);
+    const completed = await completeAction(deps, { actionId: settlement.actionIds[0]!, tier: settlement.tier, outcome });
     expect(completed).toMatchObject({ status: "executed", externalRef: expect.stringMatching(/^sandbox:campaign:/) });
     expect(events.map((e) => e.op)).toEqual(["startCampaign"]);
+    // The executed start registered the campaign row (ADR 0009).
+    expect([...state.campaigns.values()]).toHaveLength(1);
+    expect([...state.campaigns.values()][0]).toMatchObject({ actionId: gated.actionId, taskId: task.id, providerCampaignId: completed.externalRef, status: "active", dailyBudgetUsd: 10, totalBudgetUsd: 50, metricKey: "signups" });
     expect(await finishTaskIfIdle(deps, task.id)).toEqual({ status: "done" });
-    expect(state.tasks.get(task.id)).toMatchObject({ status: "done", evidence: { kind: "artifact_id", ref: "art-1", verified: true } });
+    // AGT-2: the campaign id (confirmed by ads.status) is the evidence, stronger than the artifact.
+    expect(state.tasks.get(task.id)).toMatchObject({ status: "done", evidence: { kind: "campaign_id", ref: completed.externalRef, verified: true } });
     expect(state.ledger).toHaveLength(1);
   });
 
