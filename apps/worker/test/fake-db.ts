@@ -139,7 +139,7 @@ function fakeQuery(state: FakeState) {
     },
     order: () => api,
     limit: () => api,
-    rows: () => state.actions.filter((a) => filters.every((f) => f(a))).map((a) => ({ id: a.id, payload: a.payload, status: a.status, kind: a.kind, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId })),
+    rows: () => state.actions.filter((a) => filters.every((f) => f(a))).map((a) => ({ id: a.id, payload: a.payload, status: a.status, kind: a.kind, supersedes: a.supersedes, company_id: a.companyId, task_id: a.taskId, decision_card_id: a.decisionCardId })),
     single: async () => {
       const row = api.rows()[0];
       return row ? { data: row, error: null } : { data: null, error: { message: "no rows" } };

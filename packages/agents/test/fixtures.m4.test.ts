@@ -129,10 +129,11 @@ describe("M4 guides and roles", () => {
     expect(TASK_GUIDES.campaign_spec).toMatch(/stop rule/i);
   });
 
-  it("sales may write leads; growth may resume ads (K1)", async () => {
+  it("sales may write leads; growth may pause ads but never resume them (M4 review H1: resumes are the worker's own, reason or card)", async () => {
     const roles = await loadTestRoles();
     expect(requireRole(roles, "sales").tools).toContain("leads.write");
-    expect(requireRole(roles, "growth").tools).toContain("ads.resume");
+    expect(requireRole(roles, "growth").tools).toContain("ads.pause");
+    expect(requireRole(roles, "growth").tools).not.toContain("ads.resume");
     expect(requireRole(roles, "sales").max_action_tier).toBe("K2");
     expect(requireRole(roles, "growth").max_action_tier).toBe("K2");
   });

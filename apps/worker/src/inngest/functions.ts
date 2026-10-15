@@ -100,10 +100,12 @@ export const runTask = inngest.createFunction(
 /**
  * decision/answered → settle the card's pending action from the answer stored
  * on the card (never from the event), perform it when approved, then finish
- * the task if nothing else is pending. One run per card at a time.
+ * the task if nothing else is pending. One run per card at a time. The kill
+ * switch cancels the run and `performPending` refuses under it, so the row
+ * stays pending and `company/resume` re-settles the card (M4 review H4).
  */
 export const settleDecisionFn = inngest.createFunction(
-  { id: "settle-decision", triggers: [{ event: EVENT.decisionAnswered }], retries: 2, concurrency: [{ key: "event.data.cardId", limit: 1 }] },
+  { id: "settle-decision", triggers: [{ event: EVENT.decisionAnswered }], cancelOn: cancelOnKillSwitch, retries: 2, concurrency: [{ key: "event.data.cardId", limit: 1 }] },
   async ({ event, step }) => {
     const { companyId, cardId } = DecisionAnsweredSchema.parse(event.data);
     const deps = await buildDeps();

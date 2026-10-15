@@ -149,7 +149,9 @@ describe("performAction in live mode", () => {
     const deps = liveDeps(seen);
     const started = await performAction(deps, { kind: "ads.start", companyId: "company-1", agentRole: "growth", description: "Start", amountUsd: 50, category: "ads", payload: { name: "Launch", dailyBudgetUsd: 10, audience: "a", creativeMarkdown: "# Hi" } });
     expect(started.externalRef).toMatch(/^sandbox:campaign:/);
-    const sent = await performAction(deps, { kind: "email.send.first_contact", companyId: "company-1", agentRole: "sales", description: "Hi", payload: { to: "mara@example.test", subject: "Hi", text: "Body" } });
+    await dbModule.importLeads(null, "company-1", [{ name: "Mara", email: "mara@example.test" }], "upload");
+    const leadId = [...state.leads.values()].find((l) => l.email === "mara@example.test")!.id;
+    const sent = await performAction(deps, { kind: "email.send.first_contact", companyId: "company-1", agentRole: "sales", description: "Hi", payload: { to: "mara@example.test", subject: "Hi", text: "Body", leadId } });
     expect(sent.externalRef).toMatch(/^sandbox:msg:/);
     expect(seen.ads).toEqual([{ token: "token-for-c-meta_ads", scopes: ["act:123", "page:456"] }]);
     expect(seen.outreach).toEqual([{ token: "token-for-c-gmail", account: "ceo@example.test" }]);

@@ -116,6 +116,12 @@ export interface OutreachMailProvider {
   status(messageId: string): Promise<MessageStatus>;
 }
 
+/** The sent message a reply answers (M4 review H2): the provider's message id and its thread, so a reply can never leave the lead's thread. */
+export interface InReplyTo {
+  readonly messageId: string;
+  readonly threadId: string;
+}
+
 /** Same shape as the platform mail input; declared here so outreach does not depend on the mail section. */
 export interface OutreachSendInput {
   readonly companyId: string;
@@ -123,6 +129,8 @@ export interface OutreachSendInput {
   readonly subject: string;
   readonly text: string;
   readonly kind: "first_contact" | "reply";
+  /** Required by the worker for `reply`: the thread the lead replied in. */
+  readonly inReplyTo?: InReplyTo;
 }
 
 export interface AnalyticsSnapshot {

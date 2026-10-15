@@ -55,7 +55,7 @@ describe("budgets repository (ONB-2, BUD)", () => {
     await upsertBudgets(service, owned.companyId, [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10 }]);
     await service.from("budgets").update({ spent_total_usd: 0, spent_today_usd: 0, daily_extra_usd: 0 }).eq("company_id", owned.companyId).eq("category", "ads");
     const first = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 4 });
-    expect(first).toEqual({ spentTodayUsd: 4, spentTotalUsd: 4, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10, totalLimitUsd: 100, capDaily: false, capTotal: false });
+    expect(first).toEqual({ spentTodayUsd: 4, spentTotalUsd: 4, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10, totalLimitUsd: 100, capDaily: false, capTotal: false, applied: true });
     expect(Object.isFrozen(first)).toBe(true);
     const second = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 7 });
     expect(second).toMatchObject({ spentTodayUsd: 11, spentTotalUsd: 11, capDaily: true, capTotal: false });
@@ -76,5 +76,18 @@ describe("budgets repository (ONB-2, BUD)", () => {
     expect(rolled).toMatchObject({ spentTodayUsd: 2, spentTotalUsd: 13, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10 });
     await expect(raiseDailyCap(owned.owner.client, { companyId: owned.companyId, category: "ads", amountUsd: 1 })).rejects.toBeInstanceOf(DbError);
     expect(await getBudget(owned.owner.client, owned.companyId, "other")).toBeNull();
+  });
+
+  it("M4 review M1: a cap raise for a day before the budget's extra day is not applied (a card approved after midnight never raises the next day's cap)", async () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const rolled = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 0, day: tomorrow });
+    expect(rolled).toMatchObject({ applied: true, dailyExtraUsd: 0 });
+    const stale = await raiseDailyCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 10, day: today });
+    expect(stale).toMatchObject({ applied: false, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10 });
+    const fresh = await raiseDailyCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 10, day: tomorrow });
+    expect(fresh).toMatchObject({ applied: true, dailyExtraUsd: 10, dailyLimitEffectiveUsd: 20 });
+    const late = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 1, day: today });
+    expect(late).toMatchObject({ applied: false, spentTodayUsd: 2, spentTotalUsd: 14 });
   });
 });

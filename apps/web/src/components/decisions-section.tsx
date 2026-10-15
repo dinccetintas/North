@@ -34,7 +34,7 @@ const todayIso = (): string => new Date().toISOString().slice(0, 10);
  * The morning screen's centre: pending cards (never more than the quota), the
  * "n of q" counter, and today's answered cards folded below (DEC-2/3).
  */
-export async function DecisionsSection({ slug, companyId }: { slug: string; companyId: string }) {
+export async function DecisionsSection({ slug, companyId, stopped = false }: { slug: string; companyId: string; stopped?: boolean }) {
   const db = await createClient();
   const user = await currentUser();
   const [pending, recent, openedToday, profile] = await Promise.all([
@@ -62,7 +62,7 @@ export async function DecisionsSection({ slug, companyId }: { slug: string; comp
       ) : (
         <div className="mt-3 flex flex-col gap-3" data-testid="pending-cards">
           {pending.map((card) => (
-            <DecisionCard key={card.id} slug={slug} card={toCardData(card)} />
+            <DecisionCard key={card.id} slug={slug} card={toCardData(card)} stopped={stopped} />
           ))}
         </div>
       )}

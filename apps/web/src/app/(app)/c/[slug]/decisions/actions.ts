@@ -2,10 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { AlreadyAnsweredError, answerCard, createAutoRule, getCard, getCompanyBySlug, listActiveAutoRules, listAnsweredCards, type CardRecord, type DbClient } from "@north/db";
+import { AlreadyAnsweredError, answerCard, createAutoRule, getCard, getCompanyBySlug, listActiveAutoRules, listAnsweredCards, type CardRecord, type CompanySummary, type DbClient } from "@north/db";
 import { ACTION_KINDS, BUDGET_CATEGORIES } from "@north/core/authority/action";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
 import { EVENT } from "@north/core/events";
+import { answerRefusal } from "@/lib/kill-switch-guard";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import { inngest } from "@/inngest/client";
 
@@ -25,11 +26,11 @@ export type AutoRuleInput = z.input<typeof AutoRuleInputSchema>;
 
 const GENERIC_ERROR = "Something went wrong; nothing was changed. Try again.";
 
-/** The card under RLS, checked against the company the URL names; null when either is not the caller's. */
-async function ownedCard(db: DbClient, slug: string, cardId: string): Promise<CardRecord | null> {
+/** The card under RLS with its company, checked against the slug the URL names; null when either is not the caller's. */
+async function ownedCard(db: DbClient, slug: string, cardId: string): Promise<{ readonly card: CardRecord; readonly company: CompanySummary } | null> {
   const [company, card] = await Promise.all([getCompanyBySlug(db, slug), getCard(db, cardId)]);
   if (!company || !card || card.companyId !== company.id) return null;
-  return card;
+  return { card, company };
 }
 
 /** Tells the worker a card was answered. The answer already stands in the database; the event only wakes settlement. */
@@ -47,7 +48,8 @@ async function wakeWorker(companyId: string, cardId: string, optionId: string): 
  * DEC-2: one tap answers a card. The answer is written under RLS first, then the
  * worker is woken so settlement happens within two seconds. A second tap on an
  * already answered card re-sends the wake-up (harmless) and reports success,
- * so a double tap or a lost event never shows an error.
+ * so a double tap or a lost event never shows an error. While the company's
+ * kill switch is on nothing is answered (M4 review H4).
  */
 export async function answerCardAction(input: AnswerInput): Promise<ActionResult<{ readonly optionId: string }>> {
   const user = await currentUser();
@@ -57,8 +59,11 @@ export async function answerCardAction(input: AnswerInput): Promise<ActionResult
   const { slug, cardId, optionId } = parsed.data;
 
   const db = await createClient();
-  const card = await ownedCard(db, slug, cardId);
-  if (!card) return { ok: false, error: "Card not found" };
+  const owned = await ownedCard(db, slug, cardId);
+  if (!owned) return { ok: false, error: "Card not found" };
+  const { card } = owned;
+  const stopped = answerRefusal(owned.company);
+  if (stopped) return { ok: false, error: stopped };
 
   let recorded = optionId;
   try {
@@ -89,8 +94,9 @@ export async function acceptAutoRuleAction(input: AutoRuleInput): Promise<Action
   const { slug, cardId, kind, maxAmountUsd, category } = parsed.data;
 
   const db = await createClient();
-  const card = await ownedCard(db, slug, cardId);
-  if (!card) return { ok: false, error: "Card not found" };
+  const owned = await ownedCard(db, slug, cardId);
+  if (!owned) return { ok: false, error: "Card not found" };
+  const { card } = owned;
   if (card.actionKind !== kind || card.answeredOptionId !== "approve") return { ok: false, error: "A rule can only follow an approved card for the same action" };
 
   const [history, rules] = await Promise.all([listAnsweredCards(db, card.companyId, kind), listActiveAutoRules(db, card.companyId)]);

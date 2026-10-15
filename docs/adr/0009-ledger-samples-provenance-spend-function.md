@@ -61,7 +61,9 @@ spend downwards costs nothing more. The append-only trigger stays.
 `apply_budget_spend(company, category, amount, day)` (service role only) rolls
 the day when `day` is new (resetting `spent_today_usd` and `daily_extra_usd`),
 adds the amount, refuses negatives and returns `cap_daily`, `cap_total`,
-`spent_today`, `spent_total` and `daily_limit_effective`. Owners may update
+`spent_today`, `spent_total`, `daily_limit_effective` and `applied` (false
+when the call's day is already over for the row: a late spend counts against
+the total only and a late cap raise is not applied, migration 0009). Owners may update
 only `total_limit_usd` and `daily_limit_usd` (column grants); the `spent_*`
 columns and `daily_extra_usd` / `daily_extra_date` are written by nothing but
 this function and `raise_daily_cap(company, category, amount, day)`.

@@ -18,11 +18,12 @@ app.get("/health", (c) => c.json({ ok: true, app: "north-worker", time: new Date
 // Sandbox "hosting" and simulation: deployments the sandbox deploy adapter
 // wrote under <SANDBOX_ROOT>/sites are served here so the evidence verifier's
 // GET is real, and the sandbox ads/mail adapters accept simulated deliveries
-// and replies. Live mode serves none of it (ADR 0007, ADR 0010).
+// and replies, on a loopback WORKER_HOST only. Live mode serves none of it
+// (ADR 0007, ADR 0010, M4 review L4).
 if (env.INTEGRATIONS_MODE === "sandbox") {
   const sitesRoot = relative(process.cwd(), `${env.SANDBOX_ROOT}/sites`) || ".";
   app.use("/sandbox/sites/*", serveStatic({ root: sitesRoot, rewriteRequestPath: (path) => path.replace(/^\/sandbox\/sites/, "").replace(/\/$/, "/index.html") }));
-  app.route("/", sandboxRoutes(deps.integrations));
+  app.route("/", sandboxRoutes(deps.integrations, env.WORKER_HOST));
 }
 app.on(
   ["GET", "PUT", "POST"],

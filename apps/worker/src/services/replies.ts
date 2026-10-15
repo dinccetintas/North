@@ -1,6 +1,7 @@
-import { ActionSpecSchema, batchPayload, windowDelta, type ActionSpec } from "@north/core";
-import { latestChannelSample, latestMetric, listActionsByKind, markLeads, recordAttributionWindow, recordMetric, type ActionRecord, type DbClient } from "@north/db";
+import { batchPayload, windowDelta } from "@north/core";
+import { latestChannelSample, latestMetric, listActionsByKind, markLeads, recordAttributionWindow, recordMetric, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { specsByHead } from "./action-specs";
 import { providerAuthFor } from "./provider-auth";
 
 /** The sends of one outreach batch: executed first-contact heads grouped by their `batchId`, with the lead each one contacted. */
@@ -19,26 +20,6 @@ export interface RepliesResult {
 
 const SINCE_DAYS = 30;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The stored specs of the rows these heads superseded (the executed row carries no payload of its own). */
-async function specsByHead(db: DbClient, heads: readonly ActionRecord[]): Promise<ReadonlyMap<string, ActionSpec>> {
-  const out = new Map<string, ActionSpec>();
-  const pending = new Map<string, string>();
-  for (const head of heads) {
-    const own = ActionSpecSchema.safeParse((head.payload as { spec?: unknown }).spec);
-    if (own.success) out.set(head.id, own.data);
-    else if (head.supersedes) pending.set(head.supersedes, head.id);
-  }
-  if (pending.size === 0) return out;
-  const { data, error } = await db.from("actions").select("id, payload").in("id", [...pending.keys()]);
-  if (error) throw new Error(`could not load batch specs: ${error.message}`);
-  for (const row of data ?? []) {
-    const parsed = ActionSpecSchema.safeParse((row.payload as { spec?: unknown } | null)?.spec);
-    const headId = pending.get(row.id);
-    if (parsed.success && headId) out.set(headId, parsed.data);
-  }
-  return out;
-}
 
 /** Executed first-contact sends of the last 30 days, grouped by batch (SLS-K2). */
 export async function outreachBatches(db: DbClient, companyId: string): Promise<readonly OutreachBatch[]> {
@@ -82,7 +63,7 @@ async function collectBatch(deps: WorkerDeps, companyId: string, batch: Outreach
     note: `${batch.messageIds.length} first-contact emails, ${replies} replies so far`,
   });
   const repliedLeads = counts.filter((c) => c.replies > 0).flatMap((c) => (batch.leadIdByMessage[c.messageId] ? [batch.leadIdByMessage[c.messageId] as string] : []));
-  if (repliedLeads.length > 0) await markLeads(deps.db, repliedLeads, "replied");
+  if (repliedLeads.length > 0) await markLeads(deps.db, companyId, repliedLeads, "replied");
   return { replies, newEntry: !result.duplicate };
 }
 

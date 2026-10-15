@@ -87,7 +87,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
       <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
         <MorningHeader name={company.name} />
         <OnboardingCard slug={slug} />
-        <DecisionsSection slug={slug} companyId={company.id} />
+        <DecisionsSection slug={slug} companyId={company.id} stopped={company.killSwitchActive} />
       </main>
     );
   }
@@ -131,7 +131,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
         </div>
       </section>
 
-      <DecisionsSection slug={slug} companyId={company.id} />
+      <DecisionsSection slug={slug} companyId={company.id} stopped={company.killSwitchActive} />
 
       <WebsiteLine live={site.live} preview={site.preview} />
 

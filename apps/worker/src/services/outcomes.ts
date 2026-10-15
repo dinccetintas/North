@@ -1,6 +1,7 @@
 import { ActionSpecSchema, type ActionKind, type ActionSpec } from "@north/core";
 import { markLeads, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { resolveCampaigns } from "./campaign-lookup";
 import { markCampaignActive, markCampaignPaused, registerCampaignFor, type PauseReason } from "./campaign-rows";
 
 /** The pending row an action was recorded as, with its stored spec: what `performPending` runs and `completeAction` settles. */
@@ -10,15 +11,17 @@ export interface PendingRow {
   readonly taskId: string | null;
   readonly kind: ActionKind;
   readonly status: string;
+  /** The card that approved the row, when one did (a K1 or auto-rule row has none). */
+  readonly decisionCardId: string | null;
   readonly spec: ActionSpec | null;
 }
 
 /** Loads an action row by id (any status); `spec` is null when the stored spec does not validate. */
 export async function loadActionRow(db: DbClient, actionId: string): Promise<PendingRow | null> {
-  const { data, error } = await db.from("actions").select("id, company_id, task_id, kind, payload, status").eq("id", actionId).single();
+  const { data, error } = await db.from("actions").select("id, company_id, task_id, kind, payload, status, decision_card_id").eq("id", actionId).single();
   if (error || !data) return null;
   const spec = ActionSpecSchema.safeParse((data.payload as { spec?: unknown } | null)?.spec);
-  return Object.freeze({ id: data.id, companyId: data.company_id, taskId: data.task_id, kind: data.kind as ActionKind, status: data.status, spec: spec.success ? spec.data : null });
+  return Object.freeze({ id: data.id, companyId: data.company_id, taskId: data.task_id, kind: data.kind as ActionKind, status: data.status, decisionCardId: data.decision_card_id ?? null, spec: spec.success ? spec.data : null });
 }
 
 export interface ExecutedOutcome {
@@ -26,9 +29,6 @@ export interface ExecutedOutcome {
   readonly sandbox: boolean;
   readonly meta?: Readonly<Record<string, string>>;
 }
-
-const campaignIdsOf = (payload: Record<string, unknown>): readonly string[] =>
-  Array.isArray(payload.campaignIds) ? payload.campaignIds.filter((id): id is string => typeof id === "string") : typeof payload.campaignId === "string" ? [payload.campaignId] : [];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -49,16 +49,17 @@ export async function applyOutcome(deps: WorkerDeps, row: PendingRow, outcome: E
     case "ads.pause": {
       const reason: PauseReason = payload.reason === "cap" ? "cap" : payload.reason === "kill_switch" ? "kill_switch" : "user";
       const day = typeof payload.day === "string" ? payload.day : undefined;
-      for (const id of campaignIdsOf(payload).filter((c) => UUID.test(c))) await markCampaignPaused(deps, id, reason, day);
+      // The same company-scoped resolution the perform step used (H1): provider ids map back to the company's rows.
+      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignPaused(deps, campaign.id, reason, day);
       return;
     }
     case "ads.resume":
-      for (const id of campaignIdsOf(payload).filter((c) => UUID.test(c))) await markCampaignActive(deps, id);
+      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignActive(deps, campaign.id);
       return;
     case "email.send.first_contact": {
       const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
       const batchId = typeof payload.batchId === "string" ? payload.batchId : undefined;
-      if (leadId && UUID.test(leadId)) await markLeads(deps.db, [leadId], "contacted", { messageId: outcome.externalRef, ...(batchId ? { batchId } : {}) });
+      if (leadId && UUID.test(leadId)) await markLeads(deps.db, row.companyId, [leadId], "contacted", { messageId: outcome.externalRef, ...(batchId ? { batchId } : {}) });
       return;
     }
     default:

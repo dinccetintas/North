@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createSandboxIntegrations, type Integrations } from "@north/integrations";
-import { sandboxRoutes } from "../src/sandbox-routes";
+import { isLoopbackHost, sandboxRoutes } from "../src/sandbox-routes";
 
 /**
  * D4-5 simulation routes: a delivery window and a reply can be reported to
@@ -43,6 +43,20 @@ describe("sandbox routes", () => {
     expect(await integrations.outreach(null).replies({ companyId: "company-1", messageIds: [messageId] })).toEqual([{ messageId, replies: 2, lastReplyAt: expect.any(String) }]);
     expect((await post(app, `/sandbox/mail/${encodeURIComponent(messageId)}/reply`, JSON.stringify({ at: "yesterday" }))).status).toBe(400);
     expect((await post(app, "/sandbox/mail/sandbox:msg:nope/reply")).status).toBe(404);
+  });
+
+  it("M4 review L4: the routes exist only on a loopback host; a worker bound to 0.0.0.0 serves none of them", async () => {
+    for (const host of ["0.0.0.0", "10.0.0.5", "worker.internal", ""]) {
+      const app = sandboxRoutes(integrations, host);
+      expect((await post(app, "/sandbox/ads/x/deliver", JSON.stringify({ spendUsd: 4, impressions: 1, clicks: 1, conversions: 0 }))).status).toBe(404);
+      expect((await post(app, "/sandbox/mail/x/reply")).status).toBe(404);
+    }
+    for (const host of ["127.0.0.1", "localhost", "::1", "[::1]"]) {
+      expect((await post(sandboxRoutes(integrations, host), "/sandbox/mail/sandbox:msg:nope/reply")).status).toBe(404);
+      expect((await post(sandboxRoutes(integrations, host), "/sandbox/ads/x/deliver", "nope")).status).toBe(400);
+    }
+    expect(isLoopbackHost("127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
   });
 
   it("in live mode neither route exists (404): nothing can inject figures into a real ledger", async () => {

@@ -84,7 +84,7 @@ export async function followUp(deps: WorkerDeps, step: StepRunner, actionId: str
   if (!row || row.kind !== "budget.cap.raise") return { kind: "none" };
   const campaignId = row.spec?.payload?.resumeCampaignId;
   if (typeof campaignId !== "string") return { kind: "none" };
-  const campaign = await step.run(`follow-up-${index}-campaign`, () => getCampaign(deps.db, campaignId));
+  const campaign = await step.run(`follow-up-${index}-campaign`, () => getCampaign(deps.db, row.companyId, campaignId));
   if (!campaign) return { kind: "none" };
   const reason: ResumeReason = "cap_raised";
   const run = await resumeCampaign(deps, step, campaign, reason, `follow-up-${index}-resume`);

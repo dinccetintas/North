@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NotConfiguredError, ProviderError } from "../src/errors";
 import type { FetchLike } from "../src/live/github";
-import { GMAIL_API, GmailOutreach, buildRawMessage, normaliseAddress, parseGmailRef } from "../src/live/gmail";
+import { GMAIL_API, GmailOutreach, REPLY_METADATA_HEADERS, buildRawMessage, countReplies, normaliseAddress, parseGmailRef } from "../src/live/gmail";
 
 interface Call {
   readonly method: string;
@@ -88,7 +88,8 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
     ]);
     const url = new URL(calls[0]!.url);
     expect(url.searchParams.get("format")).toBe("metadata");
-    expect(url.searchParams.getAll("metadataHeaders")).toEqual(["From"]);
+    expect(url.searchParams.getAll("metadataHeaders")).toEqual([...REPLY_METADATA_HEADERS]);
+    expect(REPLY_METADATA_HEADERS).toEqual(["From", "Auto-Submitted", "Precedence"]);
     expect(calls.map((c) => c.path)).toEqual(["/gmail/v1/users/me/threads/t1", "/gmail/v1/users/me/threads/t2", "/gmail/v1/users/me/threads/t_missing"]);
   });
 
@@ -123,5 +124,46 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
     expect(parseGmailRef("gmail:m1:t1")).toEqual({ messageId: "m1", threadId: "t1" });
     expect(parseGmailRef("gmail:m1")).toBeNull();
     expect(parseGmailRef("sandbox:msg:1")).toBeNull();
+  });
+  it("M4 review H2: a reply is bound to the lead's thread: threadId in the send body, In-Reply-To and References from the thread's Message-ID header", async () => {
+    const { calls, fetchImpl } = scripted({
+      "GET /gmail/v1/users/me/messages/m1": () => ({ status: 200, json: { id: "m1", threadId: "t1", payload: { headers: [{ name: "Message-ID", value: "<orig-123@mail.gmail.com>" }] } } }),
+      "POST /gmail/v1/users/me/messages/send": () => ({ status: 200, json: { id: "m2", threadId: "t1" } }),
+    });
+    const gmail = new GmailOutreach(auth, fetchImpl);
+    await expect(gmail.send({ ...input, kind: "reply", inReplyTo: { messageId: "m1", threadId: "t1" } })).resolves.toEqual({ messageId: "gmail:m2:t1", sandbox: false });
+    const lookup = calls.find((c) => c.path.endsWith("/messages/m1"));
+    expect(new URL(lookup!.url).searchParams.getAll("metadataHeaders")).toEqual(["Message-ID"]);
+    const send = calls.find((c) => c.path.endsWith("/messages/send"))!;
+    expect(send.body?.threadId).toBe("t1");
+    const headers = decodeRaw(String(send.body?.raw)).split("\r\n\r\n")[0]?.split("\r\n");
+    expect(headers).toContain("In-Reply-To: <orig-123@mail.gmail.com>");
+    expect(headers).toContain("References: <orig-123@mail.gmail.com>");
+    // Without a Message-ID header the API id is used as a best effort; a first contact carries no thread at all.
+    const { calls: bare, fetchImpl: bareFetch } = scripted({
+      "GET /gmail/v1/users/me/messages/m1": () => ({ status: 404, json: {} }),
+      "POST /gmail/v1/users/me/messages/send": () => ({ status: 200, json: { id: "m3", threadId: "t1" } }),
+    });
+    await new GmailOutreach(auth, bareFetch).send({ ...input, kind: "reply", inReplyTo: { messageId: "m1", threadId: "t1" } });
+    expect(decodeRaw(String(bare.at(-1)?.body?.raw))).toContain("In-Reply-To: <m1>");
+    expect(buildRawMessage({ to: "a@example.test", subject: "s", text: "t" })).not.toContain("In-Reply-To");
+    const injected = buildRawMessage({ to: "a@example.test", subject: "s", text: "t", inReplyTo: "<x>\r\nBcc: evil@example.test" }).split("\r\n\r\n")[0]?.split("\r\n") ?? [];
+    expect(injected.some((h) => h.startsWith("Bcc:"))).toBe(false);
+    expect(injected).toHaveLength(7);
+  });
+
+  it("M4 review L1: bounces and auto-replies are not replies (Auto-Submitted, Precedence bulk/auto_reply, mailer-daemon and postmaster senders)", () => {
+    const from = (value: string, extra: { name: string; value: string }[] = []) => ({ payload: { headers: [{ name: "From", value }, ...extra] } });
+    const messages = [
+      { id: "m1", internalDate: "1000", ...from("founder@acme.example") },
+      { id: "m2", internalDate: "2000", ...from("Mail Delivery Subsystem <MAILER-DAEMON@googlemail.com>") },
+      { id: "m3", internalDate: "3000", ...from("postmaster@example.test") },
+      { id: "m4", internalDate: "4000", ...from("mara@example.test", [{ name: "Auto-Submitted", value: "auto-replied" }]) },
+      { id: "m5", internalDate: "5000", ...from("mara@example.test", [{ name: "Precedence", value: "bulk" }]) },
+      { id: "m6", internalDate: "6000", ...from("mara@example.test", [{ name: "Precedence", value: "auto_reply" }]) },
+      { id: "m7", internalDate: "7000", ...from("mara@example.test", [{ name: "Auto-Submitted", value: "no" }, { name: "Precedence", value: "list" }]) },
+      { id: "m8", internalDate: "8000", ...from("Mara <mara@example.test>") },
+    ];
+    expect(countReplies(messages, "m1", "founder@acme.example")).toEqual({ replies: 2, lastReplyAt: new Date(8000).toISOString() });
   });
 });

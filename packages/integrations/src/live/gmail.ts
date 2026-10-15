@@ -1,5 +1,5 @@
 import { NotConfiguredError, ProviderError, redactSecret as redact } from "../errors";
-import { RepliesInputSchema, type MessageStatus, type OutreachMailProvider, type OutreachSendInput, type RepliesInput, type ReplyCount, type SendOutreachResult } from "../growth-types";
+import { RepliesInputSchema, type InReplyTo, type MessageStatus, type OutreachMailProvider, type OutreachSendInput, type RepliesInput, type ReplyCount, type SendOutreachResult } from "../growth-types";
 import { OutreachSendInputSchema } from "../sandbox/outreach";
 import type { ProviderAuth } from "../types";
 import type { FetchLike } from "./github";
@@ -17,9 +17,14 @@ function headerValue(value: string): string {
   return /^[\x20-\x7e]*$/.test(clean) ? clean : `=?UTF-8?B?${Buffer.from(clean, "utf8").toString("base64")}?=`;
 }
 
-/** The RFC 2822 message Gmail sends: To, Subject, MIME headers, a base64 text/plain body. `From` is the connected mailbox (Gmail fills it). */
-export function buildRawMessage(input: { readonly to: string; readonly subject: string; readonly text: string }): string {
-  const headers = [`To: ${headerValue(input.to)}`, `Subject: ${headerValue(input.subject)}`, "MIME-Version: 1.0", 'Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64"];
+/**
+ * The RFC 2822 message Gmail sends: To, Subject, MIME headers, a base64
+ * text/plain body; for a reply, `In-Reply-To` and `References` naming the
+ * message it answers (M4 review H2). `From` is the connected mailbox (Gmail fills it).
+ */
+export function buildRawMessage(input: { readonly to: string; readonly subject: string; readonly text: string; readonly inReplyTo?: string }): string {
+  const thread = input.inReplyTo ? [`In-Reply-To: ${headerValue(input.inReplyTo)}`, `References: ${headerValue(input.inReplyTo)}`] : [];
+  const headers = [`To: ${headerValue(input.to)}`, `Subject: ${headerValue(input.subject)}`, ...thread, "MIME-Version: 1.0", 'Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64"];
   const body = Buffer.from(input.text, "utf8").toString("base64").replace(/(.{76})/g, "$1\r\n");
   return `${headers.join("\r\n")}\r\n\r\n${body}`;
 }
@@ -43,13 +48,28 @@ interface GmailThreadMessage {
   readonly payload?: { readonly headers?: readonly { readonly name: string; readonly value: string }[] };
 }
 
-const fromOf = (message: GmailThreadMessage): string | undefined => message.payload?.headers?.find((h) => h.name.toLowerCase() === "from")?.value;
+const headerOf = (message: GmailThreadMessage, name: string): string | undefined => message.payload?.headers?.find((h) => h.name.toLowerCase() === name)?.value;
 
-/** Messages after the sent one whose From is not the connected address; the last one's time. */
+/** The headers a thread read asks for: the sender, and the two that mark bounces and auto-replies (M4 review L1). */
+export const REPLY_METADATA_HEADERS = ["From", "Auto-Submitted", "Precedence"] as const;
+const AUTOMATED_PRECEDENCE = new Set(["bulk", "auto_reply", "junk"]);
+const AUTOMATED_SENDERS = ["mailer-daemon@", "postmaster@"];
+
+/** A bounce or an automatic answer: `Auto-Submitted` other than `no`, `Precedence` bulk/auto_reply, or a mailer-daemon/postmaster sender. */
+export function isAutomated(message: GmailThreadMessage): boolean {
+  const auto = headerOf(message, "auto-submitted")?.trim().toLowerCase();
+  if (auto !== undefined && auto !== "no") return true;
+  const precedence = headerOf(message, "precedence")?.trim().toLowerCase();
+  if (precedence !== undefined && AUTOMATED_PRECEDENCE.has(precedence)) return true;
+  const from = normaliseAddress(headerOf(message, "from") ?? "");
+  return AUTOMATED_SENDERS.some((prefix) => from.startsWith(prefix));
+}
+
+/** Messages after the sent one whose From is not the connected address and that are not bounces or auto-replies; the last one's time. */
 export function countReplies(messages: readonly GmailThreadMessage[], sentMessageId: string, connected: string): { readonly replies: number; readonly lastReplyAt: string | null } {
   const index = messages.findIndex((m) => m.id === sentMessageId);
   const after = index === -1 ? [] : messages.slice(index + 1);
-  const replies = after.filter((m) => normaliseAddress(fromOf(m) ?? "") !== connected);
+  const replies = after.filter((m) => normaliseAddress(headerOf(m, "from") ?? "") !== connected && !isAutomated(m));
   const times = replies.map((m) => Number(m.internalDate ?? NaN)).filter((t) => Number.isFinite(t));
   const last = times.length > 0 ? new Date(Math.max(...times)).toISOString() : null;
   return Object.freeze({ replies: replies.length, lastReplyAt: last });
@@ -105,10 +125,19 @@ export class GmailOutreach implements OutreachMailProvider {
     return this.connectedAddress;
   }
 
+  /** The RFC 2822 `Message-ID` of a sent message (what a reply's `In-Reply-To` must name); the API id as a best effort when the header is unavailable. */
+  private async rfcMessageId(thread: InReplyTo): Promise<string> {
+    const { data } = await this.api<{ payload?: { headers?: readonly { name: string; value: string }[] } }>("GET", `/messages/${encodeURIComponent(thread.messageId)}?format=metadata&metadataHeaders=Message-ID`, undefined, [200, 404]);
+    const header = data?.payload?.headers?.find((h) => h.name.toLowerCase() === "message-id")?.value.trim();
+    return header && header.length > 0 ? header : `<${thread.messageId}>`;
+  }
+
+  /** A reply goes into the thread it answers (`threadId` in the request, `In-Reply-To`/`References` in the message); a first contact opens a new one. */
   async send(raw: OutreachSendInput): Promise<SendOutreachResult> {
     const input = OutreachSendInputSchema.parse(raw);
-    const rawMessage = base64url(Buffer.from(buildRawMessage(input), "utf8"));
-    const { data } = await this.api<{ id?: string; threadId?: string }>("POST", "/messages/send", { raw: rawMessage });
+    const inReplyTo = input.inReplyTo ? await this.rfcMessageId(input.inReplyTo) : undefined;
+    const rawMessage = base64url(Buffer.from(buildRawMessage({ to: input.to, subject: input.subject, text: input.text, ...(inReplyTo ? { inReplyTo } : {}) }), "utf8"));
+    const { data } = await this.api<{ id?: string; threadId?: string }>("POST", "/messages/send", { raw: rawMessage, ...(input.inReplyTo ? { threadId: input.inReplyTo.threadId } : {}) });
     if (!data?.id || !data.threadId) throw new ProviderError("gmail", "send returned no message id");
     return Object.freeze({ messageId: `${REF_PREFIX}${data.id}:${data.threadId}`, sandbox: false });
   }
@@ -124,7 +153,7 @@ export class GmailOutreach implements OutreachMailProvider {
         counts.push(Object.freeze({ messageId, replies: 0, lastReplyAt: null }));
         continue;
       }
-      const { data } = await this.api<{ messages?: readonly GmailThreadMessage[] }>("GET", `/threads/${encodeURIComponent(ref.threadId)}?format=metadata&metadataHeaders=From`, undefined, [200, 404]);
+      const { data } = await this.api<{ messages?: readonly GmailThreadMessage[] }>("GET", `/threads/${encodeURIComponent(ref.threadId)}?format=metadata&${REPLY_METADATA_HEADERS.map((h) => `metadataHeaders=${h}`).join("&")}`, undefined, [200, 404]);
       const counted = countReplies(data?.messages ?? [], ref.messageId, connected);
       counts.push(Object.freeze({ messageId, ...counted }));
     }

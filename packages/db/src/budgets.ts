@@ -79,6 +79,8 @@ export interface BudgetSpendResult {
   readonly totalLimitUsd: number;
   readonly capDaily: boolean;
   readonly capTotal: boolean;
+  /** False when the call's day is already over for the row (an earlier day than its spend or extra day): nothing day-bound was applied (M4 review M1). */
+  readonly applied: boolean;
 }
 
 export const BudgetSpendInputSchema = z.object({
@@ -98,6 +100,7 @@ const BudgetSpendRpcSchema = z.object({
   total_limit: z.coerce.number(),
   cap_daily: z.boolean(),
   cap_total: z.boolean(),
+  applied: z.boolean(),
 });
 
 const toSpendResult = (data: unknown): BudgetSpendResult => {
@@ -110,6 +113,7 @@ const toSpendResult = (data: unknown): BudgetSpendResult => {
     totalLimitUsd: r.total_limit,
     capDaily: r.cap_daily,
     capTotal: r.cap_total,
+    applied: r.applied,
   });
 };
 

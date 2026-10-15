@@ -1,5 +1,5 @@
-import { windowDelta, type CapKind, type MetricCollectEvent } from "@north/core";
-import { latestChannelSample, listCampaigns, recordAttributionWindow, recordMetric, updateCampaignTotals, type CampaignRecord } from "@north/db";
+import { capExceeded, windowDelta, type CapKind, type MetricCollectEvent } from "@north/core";
+import { getBudget, latestChannelSample, listCampaigns, recordAttributionWindow, recordMetric, updateCampaignTotals, type CampaignRecord, type DbClient } from "@north/db";
 import { isSandboxAds, NotConfiguredError, type CampaignInsights } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
 import { completeAction, performPending } from "./actions";
@@ -98,16 +98,27 @@ export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord
     day: today,
     note: `${campaign.name}: $${raw.spendUsd} spent, ${raw.clicks} clicks, ${raw.conversions} conversions in the window`,
   });
-  const spentBefore = campaign.lastCollectedAt?.slice(0, 10) === today ? campaign.spentTodayUsd : 0;
-  const updated = await updateCampaignTotals(deps.db, campaign.id, {
-    spentTodayUsd: round2(spentBefore + delta.costUsd),
-    spentTotalUsd: insights.spendUsd,
-    impressions: insights.impressions,
-    clicks: insights.clicks,
-    conversions: insights.conversions,
-    lastCollectedAt: now.toISOString(),
-  });
+  const updated = await updateCampaignTotals(deps.db, campaign.id, { ...(await totalsFromSamples(deps.db, campaign, key, insights, today)), lastCollectedAt: now.toISOString() });
   return { skipped: false, duplicate: result.duplicate, capDaily: result.capDaily, capTotal: result.capTotal, campaign: updated };
+}
+
+/**
+ * The campaign row's figures follow the latest channel samples, never the
+ * step's local delta (M4 review L2): a step retried after a successful RPC
+ * finds the samples already written and lands on the same numbers. Today's
+ * spend grows by what the row has not reflected yet.
+ */
+async function totalsFromSamples(db: DbClient, campaign: CampaignRecord, key: string, insights: CampaignInsights, today: string) {
+  const sample = async (metricKey: "ad_spend_usd" | "ad_impressions" | "ad_clicks", fallback: number): Promise<number> => (await latestChannelSample(db, campaign.companyId, metricKey, key))?.value ?? fallback;
+  const spentTotalUsd = await sample("ad_spend_usd", insights.spendUsd);
+  const spentBefore = campaign.lastCollectedAt?.slice(0, 10) === today ? campaign.spentTodayUsd : 0;
+  return {
+    spentTodayUsd: round2(spentBefore + Math.max(0, spentTotalUsd - campaign.spentTotalUsd)),
+    spentTotalUsd,
+    impressions: await sample("ad_impressions", insights.impressions),
+    clicks: await sample("ad_clicks", insights.clicks),
+    conversions: insights.conversions,
+  };
 }
 
 /** A reached cap pauses an active campaign, and a row already `paused_cap` whose provider still delivers (a registration refused by the trigger). */
@@ -145,33 +156,61 @@ async function companySamples(deps: WorkerDeps, companyId: string, source: "anal
   }
 }
 
+interface CapTally {
+  readonly paused: string[];
+  readonly cards: string[];
+  /** Campaign ids asked in this run, so the end-of-run retry skips them. */
+  readonly asked: Set<string>;
+}
+
+/** The cap card for one campaign (idempotent per campaign, day and cap level); an auto-ruled raise is performed and resumes the campaign. */
+async function askCap(deps: WorkerDeps, step: StepRunner, id: string, campaign: CampaignRecord, cap: CapKind, today: string, out: CapTally): Promise<void> {
+  out.asked.add(campaign.id);
+  const card = await step.run(`${id}-card`, () => openCapCard(deps, campaign, cap, today));
+  if (card.kind === "opened") out.cards.push(card.cardId);
+  if (card.kind === "execute") {
+    const outcome = await step.run(`${id}-perform`, () => performPending(deps, card.actionId));
+    const done = await step.run(`${id}-record`, () => completeAction(deps, { actionId: card.actionId, tier: card.tier, outcome }));
+    if (done.status === "executed") await resumeCampaign(deps, step, campaign, "cap_raised", `${id}-resume`);
+  }
+}
+
 /** BUD-3 for one campaign whose window reached a cap: pause (through the gate) and ask (one card per campaign, day and cap level). */
-async function handleCap(deps: WorkerDeps, step: StepRunner, i: number, window: AttributedWindow, today: string, out: { paused: string[]; cards: string[] }): Promise<void> {
+async function handleCap(deps: WorkerDeps, step: StepRunner, i: number, window: AttributedWindow, today: string, out: CapTally): Promise<void> {
   const cap: CapKind = window.capTotal ? "total" : "daily";
   const campaign = window.campaign;
   if (await step.run(`cap-${i}-check`, () => needsProviderPause(deps, campaign))) {
     const run = await pauseForCap(deps, step, campaign, cap, today, `cap-${i}-pause`);
     if (run.completed?.status === "notified" || run.completed?.status === "executed") out.paused.push(campaign.id);
   }
-  const card = await step.run(`cap-${i}-card`, () => openCapCard(deps, campaign, cap, today));
-  if (card.kind === "opened") out.cards.push(card.cardId);
-  if (card.kind === "execute") {
-    const outcome = await step.run(`cap-${i}-perform`, () => performPending(deps, card.actionId));
-    const done = await step.run(`cap-${i}-record`, () => completeAction(deps, { actionId: card.actionId, tier: card.tier, outcome }));
-    if (done.status === "executed") await resumeCampaign(deps, step, campaign, "cap_raised", `cap-${i}-resume`);
-  }
+  await askCap(deps, step, `cap-${i}`, campaign, cap, today, out);
+}
+
+/**
+ * M4 review M2: a campaign still paused for a cap the budget still shows
+ * asks again (a quota-deferred card, or a row the trigger registered
+ * paused_cap). Idempotent: an open or answered card for the day is found.
+ */
+async function retryCapCards(deps: WorkerDeps, step: StepRunner, companyId: string, today: string, out: CapTally): Promise<void> {
+  const paused = (await step.run("cap-retry-campaigns", () => listCampaigns(deps.db, companyId, { status: ["paused_cap"] }))).filter((c) => !out.asked.has(c.id));
+  if (paused.length === 0) return;
+  const budget = await step.run("cap-retry-budget", () => getBudget(deps.db, companyId, "ads"));
+  const caps = budget ? capExceeded(budget) : { daily: false, total: false };
+  if (!caps.daily && !caps.total) return;
+  for (const [i, campaign] of paused.entries()) await askCap(deps, step, `cap-retry-${i}`, campaign, caps.total ? "total" : "daily", today, out);
 }
 
 /**
  * OUT-2: one company's hourly collection, every I/O its own durable step:
  * pace (sandbox + cron) → insights and attribution per campaign → cap pause
- * and card → day roll → outreach replies → analytics and payments samples.
+ * and card → day roll → cap cards still owed → outreach replies → analytics
+ * and payments samples.
  */
 export async function collectCompanyMetrics(deps: WorkerDeps, step: StepRunner, companyId: string, reason: MetricCollectEvent["reason"], now: () => Date = () => new Date()): Promise<CollectResult> {
   const today = todayIsoDate(now());
   const campaigns = await step.run("campaigns", () => listCampaigns(deps.db, companyId, { status: ["active", "paused_cap"] }));
   if (reason === "cron" && deps.integrations.mode === "sandbox") await step.run("pace", () => paceSandbox(deps, campaigns));
-  const out = { paused: [] as string[], cards: [] as string[] };
+  const out: CapTally = { paused: [], cards: [], asked: new Set() };
   let entries = 0;
   for (const [i, campaign] of campaigns.entries()) {
     const insights = await step.run(`insights-${i}`, () => readInsights(deps, campaign));
@@ -181,6 +220,7 @@ export async function collectCompanyMetrics(deps: WorkerDeps, step: StepRunner, 
     if (window.capDaily || window.capTotal) await handleCap(deps, step, i, window, today, out);
   }
   const resumed = await resumeAfterDayRoll(deps, step, companyId, today);
+  await retryCapCards(deps, step, companyId, today, out);
   const replies = await step.run("outreach-replies", () => collectReplies(deps, companyId, now()));
   const analytics = await step.run("analytics", () => companySamples(deps, companyId, "analytics"));
   const payments = await step.run("payments", () => companySamples(deps, companyId, "payments"));

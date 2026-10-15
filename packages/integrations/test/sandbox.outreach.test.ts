@@ -80,4 +80,16 @@ describe("SandboxOutreach (B4-3, SLS-K2)", () => {
     await expect(outreach.send({ ...input, kind: "notification" as unknown as "reply" })).rejects.toThrow();
     await expect(outreach.replies({ companyId: "c1", messageIds: [] })).rejects.toThrow();
   });
+  it("M4 review H2: a reply records the thread it belongs to (inReplyTo) next to the message; a first contact records none", async () => {
+    const dir = await root();
+    const { events, sink } = recorder();
+    const outreach = new SandboxOutreach(sink, dir);
+    const first = await outreach.send(input);
+    const reply = await outreach.send({ ...input, kind: "reply", inReplyTo: { messageId: first.messageId, threadId: first.messageId } });
+    const stored = JSON.parse(await readFile(join(dir, "mail", `${reply.messageId}.json`), "utf8"));
+    expect(stored).toMatchObject({ kind: "reply", inReplyTo: { messageId: first.messageId, threadId: first.messageId } });
+    expect(JSON.parse(await readFile(join(dir, "mail", `${first.messageId}.json`), "utf8")).inReplyTo).toBeUndefined();
+    expect(events[1]?.payload).toMatchObject({ kind: "reply", inReplyTo: { threadId: first.messageId } });
+    await expect(outreach.send({ ...input, kind: "reply", inReplyTo: { messageId: "", threadId: "x" } })).rejects.toThrow();
+  });
 });

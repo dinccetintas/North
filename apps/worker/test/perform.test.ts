@@ -63,11 +63,12 @@ describe("performAction (D4-1)", () => {
     const pause = await performAction(deps, { kind: "ads.pause", companyId: "company-1", agentRole: "growth", description: "Pause", payload: { campaignId: row.id, reason: "cap" } });
     expect(pause).toEqual({ externalRef: `paused:${started.externalRef}`, sandbox: true });
     expect(await deps.integrations.ads(null).status("company-1", started.externalRef)).toBe("paused");
-    const resume = await performAction(deps, { kind: "ads.resume", companyId: "company-1", agentRole: "growth", description: "Resume", payload: { campaignIds: [row.id] } });
+    await dbModule.setCampaignStatus(null, row.id, "paused_cap", { pausedDay: today });
+    const resume = await performAction(deps, { kind: "ads.resume", companyId: "company-1", agentRole: "growth", description: "Resume", payload: { campaignIds: [row.id], reason: "day_roll" } });
     expect(resume.externalRef).toBe(`resumed:${started.externalRef}`);
     expect(await deps.integrations.ads(null).status("company-1", started.externalRef)).toBe("active");
     state.budgets.set("company-1", [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 11, spentTodayUsd: 11 }]);
-    await expect(performAction(deps, { kind: "ads.resume", companyId: "company-1", agentRole: "growth", description: "Resume", payload: { campaignId: row.id } })).rejects.toBeInstanceOf(BudgetCapReachedError);
+    await expect(performAction(deps, { kind: "ads.resume", companyId: "company-1", agentRole: "growth", description: "Resume", payload: { campaignId: row.id, reason: "cap_raised" } })).rejects.toBeInstanceOf(BudgetCapReachedError);
     await expect(performAction(deps, { kind: "ads.pause", companyId: "company-1", agentRole: "growth", description: "Pause", payload: {} })).rejects.toThrow(/no campaign id/);
   });
 
@@ -84,7 +85,10 @@ describe("performAction (D4-1)", () => {
 
   it("every email kind leaves through the outreach provider (the user's mailbox); kinds without an adapter throw", async () => {
     const deps = fakeDeps(state, events, 200, "sandbox", root);
-    const reply = await performAction(deps, { kind: "email.send.reply", companyId: "company-1", agentRole: "sales", description: "Re", payload: { to: "a@example.test", subject: "Re", text: "t" } });
+    await dbModule.importLeads(null, "company-1", [{ name: "a", email: "a@example.test" }], "upload");
+    const lead = [...state.leads.values()][0]!;
+    Object.assign(lead, { status: "replied", messageId: "sandbox:msg:first" });
+    const reply = await performAction(deps, { kind: "email.send.reply", companyId: "company-1", agentRole: "sales", description: "Re", payload: { to: "a@example.test", subject: "Re", text: "t", leadId: lead.id } });
     expect(reply.externalRef).toMatch(/^sandbox:msg:/);
     expect(events.map((e) => `${e.provider}:${e.op}`)).toEqual(["outreach:send"]);
     expect(events[0]?.payload).toMatchObject({ kind: "reply" });

@@ -32,7 +32,7 @@ English `Code name`. Turkish names are the spec's wording.
 | Company Memory (Şirket Hafızası) | `Memory` | Thesis, personas, decisions, documents and learnings, searchable (pgvector). All agents read the same memory. |
 | Artifact (Artefakt) | `Artifact` | A persistent output produced by an agent (PRD, business plan, deck, website, creative). Versioned and downloadable. |
 | Brief (Brifing) | `Brief` | Morning summary per company: yesterday, metrics, pending cards, today's plan. Readable in 60 seconds. |
-| Kill Switch | `KillSwitch` | "Stop all agents": freezes the queue and pauses active campaigns within 5 seconds. Present on every screen. |
+| Kill Switch | `KillSwitch` | "Stop all agents": freezes the queue, pauses every campaign that may still deliver (`active`, and a cap or user pause the provider may not have applied) within 5 seconds, and takes no card answer until resume. Present on every screen. |
 | Connection (Bağlantı) | `Connection` | A user's OAuth link to an external tool (GitHub, Vercel, Stripe, Gmail, Meta Ads). Tokens encrypted at rest and read by the worker only (ADR 0008); in sandbox mode "Connect (sandbox)" records one without a token. |
 | Connect Card (Bağlantı kartı) | `ConnectCard` | A K2 card with options `connected` / `skip` opened when a task needs an account the user has not connected (ONB-3). It carries no action: "connected" re-dispatches the task, "skip" (the default) marks it failed. |
 | Credit | `Credit` | The unit of work included in a subscription plan; consumed by tasks. |

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
-import { countLeads, importLeads, listLeads, markLeads, nextUnsentLeads } from "../src/leads";
+import { countLeads, getLead, importLeads, listLeads, markLeads, nextUnsentLeads } from "../src/leads";
 import { LeadsCsvError, MAX_LEADS_PER_IMPORT, parseLeadsCsv } from "../src/leads-csv";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("parseLeadsCsv (pure)", () => {
   it("parses the four columns with RFC 4180 quoting, trims, lowercases emails and tolerates a BOM and CRLF", () => {
@@ -74,13 +74,23 @@ describe("leads repository (SLS-K2 input)", () => {
     expect(await importLeads(service, owned.companyId, [{ name: "Dee", email: "dee@example.test", why: "found" }], "research")).toEqual({ imported: 1, skipped: 0 });
     const next = await nextUnsentLeads(service, owned.companyId, 2);
     expect(next.map((l) => l.email)).toEqual(["ada@example.test", "bob@example.test"]);
-    expect(await markLeads(service, next.map((l) => l.id), "contacted", { batchId: "batch-1", messageId: "sandbox:msg:1" })).toBe(2);
+    expect(await markLeads(service, owned.companyId, next.map((l) => l.id), "contacted", { batchId: "batch-1", messageId: "sandbox:msg:1" })).toBe(2);
     expect((await nextUnsentLeads(owned.owner.client, owned.companyId, 5)).map((l) => l.email)).toEqual(["cy@example.test", "dee@example.test"]);
-    expect(await markLeads(service, [next[0]!.id], "replied")).toBe(1);
+    expect(await markLeads(service, owned.companyId, [next[0]!.id], "replied")).toBe(1);
     const ada = (await listLeads(owned.owner.client, owned.companyId, { status: ["replied"] }))[0];
     expect(ada).toMatchObject({ email: "ada@example.test", status: "replied", batchId: "batch-1", messageId: "sandbox:msg:1" });
     expect(await countLeads(owned.owner.client, owned.companyId, { status: ["new"] })).toBe(2);
-    await expect(markLeads(owned.owner.client, [next[1]!.id], "replied")).rejects.toBeInstanceOf(DbError);
-    expect(await markLeads(service, [], "replied")).toBe(0);
+    await expect(markLeads(owned.owner.client, owned.companyId, [next[1]!.id], "replied")).rejects.toBeInstanceOf(DbError);
+    expect(await markLeads(service, owned.companyId, [], "replied")).toBe(0);
+  });
+
+  it("M4 review H3/M3: markLeads and getLead are company-scoped; a foreign company id changes and finds nothing", async () => {
+    const foreign = await createCompanyFor(owned.owner, "leads-foreign");
+    const [lead] = await listLeads(service, owned.companyId, { status: ["new"] });
+    expect(await markLeads(service, foreign, [lead!.id], "opted_out")).toBe(0);
+    expect((await getLead(service, owned.companyId, lead!.id))?.status).toBe("new");
+    expect(await getLead(service, foreign, lead!.id)).toBeNull();
+    expect(await getLead(stranger.client, owned.companyId, lead!.id)).toBeNull();
+    expect((await getLead(owned.owner.client, owned.companyId, lead!.id))?.email).toBe(lead!.email);
   });
 });

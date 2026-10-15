@@ -8,6 +8,8 @@ import { defaultSandboxRoot, safeJoin } from "./files";
 import { recordSandboxEvent, sandboxRef } from "./record";
 
 /** What the sandbox keeps of a sent message: who, what and when. Never the body. */
+const InReplyToSchema = z.object({ messageId: z.string().min(1).max(200), threadId: z.string().min(1).max(200) });
+
 export const SandboxMessageSchema = z.object({
   messageId: z.string().min(1),
   companyId: z.string().min(1),
@@ -15,6 +17,8 @@ export const SandboxMessageSchema = z.object({
   subject: z.string().min(1).max(998),
   kind: z.enum(["first_contact", "reply"]),
   sentAt: z.string(),
+  /** The thread a reply was sent in (M4 review H2); absent on a first contact. */
+  inReplyTo: InReplyToSchema.optional(),
 });
 export type SandboxMessage = z.infer<typeof SandboxMessageSchema>;
 
@@ -24,6 +28,7 @@ export const OutreachSendInputSchema = z.object({
   subject: z.string().trim().min(1).max(998),
   text: z.string().min(1).max(100_000),
   kind: z.enum(["first_contact", "reply"]),
+  inReplyTo: InReplyToSchema.optional(),
 });
 
 const ReplyLineSchema = z.object({ at: z.iso.datetime({ offset: true }) });
@@ -92,7 +97,8 @@ export class SandboxOutreach implements OutreachMailProvider {
   async send(raw: OutreachSendInput): Promise<SendOutreachResult> {
     const input = OutreachSendInputSchema.parse(raw);
     const messageId = sandboxRef("msg");
-    const message: SandboxMessage = Object.freeze({ messageId, companyId: input.companyId, to: input.to, subject: input.subject, kind: input.kind, sentAt: this.clock().toISOString() });
+    const thread = input.inReplyTo ? { inReplyTo: { ...input.inReplyTo } } : {};
+    const message: SandboxMessage = Object.freeze({ messageId, companyId: input.companyId, to: input.to, subject: input.subject, kind: input.kind, sentAt: this.clock().toISOString(), ...thread });
     const path = this.messagePath(messageId);
     if (!path) throw new ProviderError("sandbox-outreach", "could not build a message path");
     await mkdir(this.dir, { recursive: true });
@@ -102,7 +108,7 @@ export class SandboxOutreach implements OutreachMailProvider {
       op: "send",
       companyId: input.companyId,
       ref: messageId,
-      payload: { to: input.to, subject: input.subject, kind: input.kind, textChars: input.text.length },
+      payload: { to: input.to, subject: input.subject, kind: input.kind, textChars: input.text.length, ...thread },
     });
     return Object.freeze({ messageId, sandbox: true });
   }

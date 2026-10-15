@@ -1,4 +1,4 @@
-import { capExceeded, type ActionSpec, type CapKind } from "@north/core";
+import { capExceeded, type ActionSpec, type CapKind, type CampaignStatus } from "@north/core";
 import { getBudget, listActionsByKind, listCampaigns, recordAction, setCampaignStatus, type CampaignRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { gateAction, gateStandalone, runGated, type GatedAction, type GatedRun } from "./actions";
@@ -13,9 +13,9 @@ export { registerCampaignFor as registerCampaign } from "./campaign-rows";
 export const KILL_PAUSE_TIMEOUT_MS = 4_000;
 const GROWTH = "growth";
 
-/** A worker-made campaign action is gated against the campaign's task when it still has one, else standalone. */
+/** A worker-made campaign action is gated against the campaign's task when it still has one, else standalone; either way as the worker's own (M4 review H1). */
 function gateCampaignAction(deps: WorkerDeps, campaign: CampaignRecord, spec: ActionSpec): Promise<GatedAction> {
-  return campaign.taskId ? gateAction(deps, campaign.taskId, spec) : gateStandalone(deps, spec);
+  return campaign.taskId ? gateAction(deps, campaign.taskId, spec, { origin: "worker" }) : gateStandalone(deps, spec);
 }
 
 /** BUD-3, first half: pause the campaign at the provider (K1 `ads.pause` through the gate, `notified`) and mark the row `paused_cap` for the day. */
@@ -99,16 +99,22 @@ export interface KillSwitchPause {
   readonly failed: readonly string[];
 }
 
+/** Rows the kill switch leaves alone: finished, or already paused by a kill switch. Every other row may still deliver at the provider (M4 review M4). */
+const KILL_SKIP: ReadonlySet<CampaignStatus> = new Set(["ended", "paused_kill"]);
+
 /**
- * BUD-4: the kill switch pauses every active campaign at the provider,
- * concurrently with a 4 s timeout each, and records one K1 `ads.pause` row
- * with the ids (plus one `failed` row for what could not be paused, which
- * keeps `active` with `last_error`). This is the one path that records
+ * BUD-4: the kill switch pauses every row that may still deliver (`active`,
+ * and a `paused_cap` or `paused_user` row the provider may not have paused
+ * yet) at the provider, concurrently with a 4 s timeout each, and records
+ * one K1 `ads.pause` row with the ids (plus one `failed` row for what could
+ * not be paused, which keeps its status with `last_error`). Active rows
+ * become `paused_kill`; a cap pause keeps its status and day, so the day
+ * roll and the cap card still own it. This is the one path that records
  * without `gate()`: under an active kill switch the gate's only verdict is
  * `block`, and the pause is the kill switch's own effect.
  */
 export async function pauseForKillSwitch(deps: WorkerDeps, companyId: string): Promise<KillSwitchPause> {
-  const active = await listCampaigns(deps.db, companyId, { status: ["active"] });
+  const active = (await listCampaigns(deps.db, companyId)).filter((c) => !KILL_SKIP.has(c.status));
   const attempts = active.length === 0 ? [] : await pauseAtProvider(deps, active, companyId);
   const paused = attempts.filter((a) => a.error === null).map((a) => a.campaign);
   const failed = attempts.filter((a) => a.error !== null);
@@ -129,8 +135,8 @@ export async function pauseForKillSwitch(deps: WorkerDeps, companyId: string): P
     });
     for (const a of failed) console.error(`[kill-switch] campaign ${a.campaign.id} not paused: ${a.error}`);
   }
-  for (const campaign of paused) await markCampaignPaused(deps, campaign.id, "kill_switch");
-  for (const a of failed) await setCampaignStatus(deps.db, a.campaign.id, "active", { lastError: a.error?.slice(0, 2000) ?? null });
+  for (const campaign of paused.filter((c) => c.status === "active")) await markCampaignPaused(deps, campaign.id, "kill_switch");
+  for (const a of failed) await setCampaignStatus(deps.db, a.campaign.id, a.campaign.status, { lastError: a.error?.slice(0, 2000) ?? null });
   return Object.freeze({ paused: Object.freeze(paused.map((c) => c.id)), failed: Object.freeze(failed.map((a) => a.campaign.id)) });
 }
 

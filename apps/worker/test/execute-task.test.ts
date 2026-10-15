@@ -67,7 +67,7 @@ describe("companyContext hand-overs", () => {
     const deps = fakeDeps(state, events);
     await dbModule.importLeads(null, "company-1", [...LEADS, { name: "X", email: "x@example.test" }], "upload");
     const [contacted] = await dbModule.nextUnsentLeads(null, "company-1", 1);
-    await dbModule.markLeads(null, [contacted!.id], "contacted", { batchId: "batch-old" });
+    await dbModule.markLeads(null, "company-1", [contacted!.id], "contacted", { batchId: "batch-old" });
     state.site = { live: "https://lumen.example", preview: "http://127.0.0.1:3101/sandbox/sites/x/" };
 
     const outreach = await companyContext(deps.db, "company-1", "outreach_batch");

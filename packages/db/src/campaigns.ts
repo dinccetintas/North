@@ -186,10 +186,11 @@ export async function registerCampaign(db: DbClient, input: RegisterCampaignInpu
   return toCampaignRecord(data);
 }
 
-/** One campaign by id, or null when it does not exist or is not visible under RLS. */
-export async function getCampaign(db: DbClient, campaignId: string): Promise<CampaignRecord | null> {
+/** One campaign of the company by id, or null when it does not exist, belongs to another company or is not visible under RLS (M4 review M3). */
+export async function getCampaign(db: DbClient, companyId: string, campaignId: string): Promise<CampaignRecord | null> {
+  const company = UuidSchema.parse(companyId);
   const id = UuidSchema.parse(campaignId);
-  const { data, error } = await db.from("campaigns").select(CAMPAIGN_COLUMNS).eq("id", id).maybeSingle();
+  const { data, error } = await db.from("campaigns").select(CAMPAIGN_COLUMNS).eq("company_id", company).eq("id", id).maybeSingle();
   if (error) throw dbError("Could not load campaign", error);
   return data ? toCampaignRecord(data) : null;
 }

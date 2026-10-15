@@ -5,7 +5,6 @@ import { getCard, getTask, headActionsForTask, listActiveAutoRules, listAnswered
 import { isConnectCard } from "@north/core/connections";
 import { isHttpUrl } from "@north/core/url";
 import { suggestAutoRule } from "@north/core/decisions/autorule";
-import { campaignNameOf } from "@/lib/card-facts";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { formatDue, formatUsd, roleTitle, tierLabel } from "@/lib/labels";
@@ -89,7 +88,7 @@ export default async function DecisionPage({ params }: { params: Params }) {
   const isCap = card.actionKind === CAP_KIND;
   const pending = isBatch || isCap ? await pendingCardActions(db, card.id) : [];
   const recipients = isBatch ? recipientsOf(card.id, pending, actions) : [];
-  const campaign = isCap ? await capCardCampaign(db, company.id, { campaignId: campaignIdOf(card.id, pending, actions), campaignName: campaignNameOf(cardData.facts) }) : null;
+  const campaign = isCap ? await capCardCampaign(db, company.id, campaignIdOf(card.id, pending, actions)) : null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -104,7 +103,7 @@ export default async function DecisionPage({ params }: { params: Params }) {
       </h1>
 
       <div className="mt-8">
-        <DecisionCard slug={slug} card={cardData} compact={false} />
+        <DecisionCard slug={slug} card={cardData} compact={false} stopped={company.killSwitchActive} />
       </div>
 
       {previewUrl ? (

@@ -118,8 +118,22 @@ export async function listLeads(db: DbClient, companyId: string, opts: ListLeads
   return Object.freeze((data ?? []).map(toRecord));
 }
 
-/** Worker only: moves the given leads to a status, optionally stamping the batch and message that contacted them. Returns how many rows changed. */
-export async function markLeads(db: DbClient, leadIds: readonly string[], status: LeadStatus, opts: MarkLeadsOptions = {}): Promise<number> {
+/** One lead of the company by id, or null when it does not exist, belongs to another company or is not visible under RLS. */
+export async function getLead(db: DbClient, companyId: string, leadId: string): Promise<LeadRecord | null> {
+  const company = UuidSchema.parse(companyId);
+  const id = UuidSchema.parse(leadId);
+  const { data, error } = await db.from("leads").select(LEAD_COLUMNS).eq("company_id", company).eq("id", id).maybeSingle();
+  if (error) throw dbError("Could not load lead", error);
+  return data ? toRecord(data) : null;
+}
+
+/**
+ * Worker only: moves the given leads of the company to a status, optionally
+ * stamping the batch and message that contacted them. Scoped by company (M4
+ * review H3/M3): ids of another company change nothing. Returns how many rows changed.
+ */
+export async function markLeads(db: DbClient, companyId: string, leadIds: readonly string[], status: LeadStatus, opts: MarkLeadsOptions = {}): Promise<number> {
+  const company = UuidSchema.parse(companyId);
   const ids = z.array(UuidSchema).max(MAX_LEADS_PER_IMPORT).parse(leadIds);
   const next = z.enum(LEAD_STATUSES).parse(status);
   if (ids.length === 0) return 0;
@@ -128,7 +142,7 @@ export async function markLeads(db: DbClient, leadIds: readonly string[], status
     ...(opts.batchId === undefined ? {} : { batch_id: z.string().min(1).max(64).parse(opts.batchId) }),
     ...(opts.messageId === undefined ? {} : { message_id: z.string().min(1).max(500).parse(opts.messageId) }),
   };
-  const { data, error } = await db.from("leads").update(patch).in("id", ids).select("id");
+  const { data, error } = await db.from("leads").update(patch).eq("company_id", company).in("id", ids).select("id");
   if (error) throw dbError("Could not mark leads", error);
   return data?.length ?? 0;
 }

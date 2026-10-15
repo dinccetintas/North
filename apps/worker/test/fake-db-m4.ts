@@ -15,6 +15,8 @@ export interface FakeBudget {
   totalLimitUsd: number;
   dailyLimitUsd: number;
   dailyExtraUsd?: number;
+  /** The day the extra belongs to; a raise for an earlier day is not applied (migration 0009). */
+  dailyExtraDate?: string;
   spentTotalUsd: number;
   spentTodayUsd: number;
 }
@@ -103,7 +105,7 @@ export interface M4Helpers<A extends FakeActionLike> {
 
 const effective = (b: FakeBudget) => b.dailyLimitUsd + (b.dailyExtraUsd ?? 0);
 const capsOf = (b: FakeBudget) => ({ capDaily: b.spentTodayUsd >= effective(b), capTotal: b.spentTotalUsd >= b.totalLimitUsd });
-const spendResult = (b: FakeBudget) => ({ spentTodayUsd: b.spentTodayUsd, spentTotalUsd: b.spentTotalUsd, dailyExtraUsd: b.dailyExtraUsd ?? 0, dailyLimitEffectiveUsd: effective(b), totalLimitUsd: b.totalLimitUsd, ...capsOf(b) });
+const spendResult = (b: FakeBudget, applied = true) => ({ spentTodayUsd: b.spentTodayUsd, spentTotalUsd: b.spentTotalUsd, dailyExtraUsd: b.dailyExtraUsd ?? 0, dailyLimitEffectiveUsd: effective(b), totalLimitUsd: b.totalLimitUsd, ...capsOf(b), applied });
 
 export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<A>) {
   class BudgetCapError extends h.DbError {}
@@ -140,8 +142,9 @@ export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<
       b.spentTotalUsd += input.amountUsd;
       return spendResult(b);
     }),
-    raiseDailyCap: vi.fn(async (_db: unknown, input: { companyId: string; category: string; amountUsd: number }) => {
+    raiseDailyCap: vi.fn(async (_db: unknown, input: { companyId: string; category: string; amountUsd: number; day?: string }) => {
       const b = budgetOf(input.companyId, input.category);
+      if (b.dailyExtraDate && input.day && input.day < b.dailyExtraDate) return spendResult(b, false);
       b.dailyExtraUsd = (b.dailyExtraUsd ?? 0) + input.amountUsd;
       return spendResult(b);
     }),
@@ -184,7 +187,10 @@ export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<
       state.campaigns.set(row.id, row);
       return frozenCampaign(row);
     }),
-    getCampaign: vi.fn(async (_db: unknown, id: string) => (state.campaigns.get(id) ? frozenCampaign(campaign(id)) : null)),
+    getCampaign: vi.fn(async (_db: unknown, companyId: string, id: string) => {
+      const row = state.campaigns.get(id);
+      return row && row.companyId === companyId ? frozenCampaign(row) : null;
+    }),
     getCampaignByProviderId: vi.fn(async (_db: unknown, companyId: string, providerCampaignId: string) => {
       const row = [...state.campaigns.values()].find((c) => c.companyId === companyId && c.providerCampaignId === providerCampaignId);
       return row ? frozenCampaign(row) : null;
@@ -245,11 +251,15 @@ export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<
     }),
     nextUnsentLeads: vi.fn(async (_db: unknown, companyId: string, limit = 5) => [...state.leads.values()].filter((l) => l.companyId === companyId && l.status === "new").slice(0, limit).map((l) => ({ ...l }))),
     listLeads: vi.fn(async (_db: unknown, companyId: string, opts: { status?: readonly string[] } = {}) => [...state.leads.values()].filter((l) => l.companyId === companyId && (!opts.status || opts.status.includes(l.status))).map((l) => ({ ...l }))),
-    markLeads: vi.fn(async (_db: unknown, ids: readonly string[], status: string, opts: { batchId?: string; messageId?: string } = {}) => {
+    getLead: vi.fn(async (_db: unknown, companyId: string, id: string) => {
+      const lead = state.leads.get(id);
+      return lead && lead.companyId === companyId ? { ...lead } : null;
+    }),
+    markLeads: vi.fn(async (_db: unknown, companyId: string, ids: readonly string[], status: string, opts: { batchId?: string; messageId?: string } = {}) => {
       let n = 0;
       for (const id of ids) {
         const lead = state.leads.get(id);
-        if (!lead) continue;
+        if (!lead || lead.companyId !== companyId) continue;
         Object.assign(lead, { status, ...(opts.batchId ? { batchId: opts.batchId } : {}), ...(opts.messageId ? { messageId: opts.messageId } : {}) });
         n += 1;
       }

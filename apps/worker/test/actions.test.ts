@@ -3,7 +3,8 @@ import type { SandboxEvent } from "@north/integrations";
 import { adsStart, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState } from "./fake-db";
 
 const state: FakeState = emptyState();
-vi.mock("@north/db", () => fakeDbModule(state));
+const dbModule = fakeDbModule(state);
+vi.mock("@north/db", () => dbModule);
 
 const { completeAction, deferredActionsFor, gateAction, performPending } = await import("../src/services/actions");
 const { performAction } = await import("../src/services/perform");
@@ -31,6 +32,14 @@ async function executeThrough(taskId: string, spec = adsStart()) {
   return { gated, completed };
 }
 
+/** A lead of company-1 in the given status (H2/H3: every send names its lead). */
+async function seedLead(email: string, status = "new", messageId: string | null = null) {
+  await dbModule.importLeads(null, "company-1", [{ name: email, email }], "upload");
+  const lead = [...state.leads.values()].find((l) => l.email === email)!;
+  Object.assign(lead, { status, messageId });
+  return lead;
+}
+
 /** Opens a K2 card for a task and returns the ids the settle path needs. */
 async function openCardFor(taskId: string, spec = adsStart()) {
   const gated = await gateAction(fakeDeps(state, events), taskId, spec);
@@ -47,7 +56,8 @@ describe("performAction", () => {
   });
 
   it("routes first-contact email to the user's own outreach mailbox, never the platform mail provider (ADR 0010)", async () => {
-    const result = await performAction(fakeDeps(state, events), { kind: "email.send.first_contact", companyId: "company-1", agentRole: "sales", description: "Hello", payload: { to: "mara@example.test", subject: "Hi", text: "Body" } });
+    const lead = await seedLead("mara@example.test");
+    const result = await performAction(fakeDeps(state, events), { kind: "email.send.first_contact", companyId: "company-1", agentRole: "sales", description: "Hello", payload: { to: "mara@example.test", subject: "Hi", text: "Body", leadId: lead.id } });
     expect(result.externalRef).toMatch(/^sandbox:msg:/);
     expect(events[0]).toMatchObject({ provider: "outreach", payload: { to: "mara@example.test", kind: "first_contact" } });
   });
@@ -68,7 +78,8 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
 
   it("K1 actions are recorded pending, performed in a separate step, then recorded notified with their reference", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
-    const { gated, completed } = await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "a@example.test", subject: "Re", text: "t" } });
+    const lead = await seedLead("a@example.test", "replied", "sandbox:msg:first");
+    const { gated, completed } = await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "a@example.test", subject: "Re", text: "t", leadId: lead.id } });
     expect(gated).toMatchObject({ kind: "execute", tier: "K1" });
     expect(completed).toMatchObject({ status: "notified", externalRef: expect.stringMatching(/^sandbox:msg:/) });
     expect(state.actions.map((a) => a.status)).toEqual(["pending", "notified"]);
@@ -104,6 +115,7 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
   it("DEC-3 / SLS-K2: five first-contact sends of one batch open ONE card and five pending rows on it", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
     const recipients = ["a", "b", "c", "d", "e"].map((n) => `${n}@example.test`);
+    for (const r of recipients) await seedLead(r);
     const mail = (to: string) => ({ kind: "email.send.first_contact" as const, companyId: "x", agentRole: "x", description: `Email ${to}`, payload: { batchId: `batch-${task.id}`, recipients, to, subject: "s", text: "t" } });
     const gated: Awaited<ReturnType<typeof openCardFor>>[] = [];
     for (const to of recipients) gated.push(await openCardFor(task.id, mail(to)));
@@ -145,7 +157,8 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
 
   it("a provider failure is recorded as failed on the action, after the pending row exists", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
-    const { completed } = await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "not-an-email", subject: "Re", text: "t" } });
+    const lead = await seedLead("a@example.test", "replied", "sandbox:msg:first");
+    const { completed } = await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "a@example.test", subject: "", text: "t", leadId: lead.id } });
     expect(completed).toMatchObject({ status: "failed", externalRef: null });
     expect(state.actions.map((a) => a.status)).toEqual(["pending", "failed"]);
   });
@@ -307,7 +320,8 @@ describe("finishTaskIfIdle (AGT-2: no evidence, no done)", () => {
 
   it("uses an executed action's reference as evidence for action-only tasks", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
-    await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "a@example.test", subject: "Re", text: "t" } });
+    const lead = await seedLead("a@example.test", "replied", "sandbox:msg:first");
+    await executeThrough(task.id, { kind: "email.send.reply", companyId: "x", agentRole: "x", description: "Reply", payload: { to: "a@example.test", subject: "Re", text: "t", leadId: lead.id } });
     expect(await finishTaskIfIdle(fakeDeps(state, events), task.id)).toEqual({ status: "done" });
     expect(state.tasks.get(task.id)?.evidence).toMatchObject({ kind: "message_id", ref: expect.stringMatching(/^sandbox:msg:/), verified: true });
   });

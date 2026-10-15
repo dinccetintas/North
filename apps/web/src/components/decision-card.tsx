@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { answerCardAction } from "@/app/(app)/c/[slug]/decisions/actions";
+import { STOPPED_MESSAGE } from "@/lib/kill-switch-guard";
 import { formatDue, formatUsd, tierLabel } from "@/lib/labels";
 
 /** Serialisable slice of a `CardRecord` the card needs; the page passes it from the server. */
@@ -29,6 +30,8 @@ export interface DecisionCardProps {
   readonly card: DecisionCardData;
   /** Show the rationale and the detail link (home); the detail page passes false. */
   readonly compact?: boolean;
+  /** The company's kill switch is on: no answer is taken until the CEO resumes (M4 review H4). */
+  readonly stopped?: boolean;
 }
 
 /**
@@ -36,7 +39,7 @@ export interface DecisionCardProps {
  * option is a button. After the tap the card shows the answer at once and the
  * server action tells the worker.
  */
-export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) {
+export function DecisionCard({ slug, card, compact = true, stopped = false }: DecisionCardProps) {
   const [pending, startTransition] = useTransition();
   const [answered, setAnswered] = useState<string | null>(card.answeredOptionId);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +64,7 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
       data-card-id={card.id}
       data-action-kind={card.actionKind}
       data-answered={answered ?? ""}
+      data-stopped={stopped ? "true" : "false"}
       aria-busy={pending}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -99,7 +103,7 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
               <button
                 key={option.id}
                 type="button"
-                disabled={pending}
+                disabled={pending || stopped}
                 onClick={() => answer(option.id)}
                 data-testid={`answer-${option.id}`}
                 className={recommended ? "retro-button retro-button-primary" : "retro-button"}
@@ -112,6 +116,11 @@ export function DecisionCard({ slug, card, compact = true }: DecisionCardProps) 
         </div>
       )}
 
+      {!answered && stopped ? (
+        <p className="mono-label mt-3 text-error" data-testid="card-stopped" role="status">
+          {STOPPED_MESSAGE}
+        </p>
+      ) : null}
       {!answered ? (
         <p className="mono-label mt-3 text-faint">
           {card.defaultOptionId

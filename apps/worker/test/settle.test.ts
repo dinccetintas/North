@@ -100,7 +100,7 @@ describe("cap card settlement (BUD-3)", () => {
     await deps.integrations.ads(null).pauseCampaign("company-1", started.campaignId);
     const campaign = await dbModule.registerCampaign(null, { companyId: "company-1", taskId: task.id, actionId: "action-0", provider: "meta_ads", providerCampaignId: started.campaignId, name: "Launch test", metricKey: "signups", dailyBudgetUsd: 10, totalBudgetUsd: 50, status: "paused_cap" });
     state.budgets.set("company-1", [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 11, spentTodayUsd: 11 }]);
-    const gated = await gateAction(deps, task.id, { kind: "budget.cap.raise", companyId: "x", agentRole: "growth", description: "Today's ads cap ($10) is spent on Launch test ($11 so far). Raise today's cap by $10 and resume?", amountUsd: 10, category: "ads", payload: { campaignId: campaign.id, campaignName: "Launch test", resumeCampaignId: campaign.id, cap: "daily", day: today, spentUsd: 11, capUsd: 10 } });
+    const gated = await gateAction(deps, task.id, { kind: "budget.cap.raise", companyId: "x", agentRole: "growth", description: "Today's ads cap ($10) is spent on Launch test ($11 so far). Raise today's cap by $10 and resume?", amountUsd: 10, category: "ads", payload: { campaignId: campaign.id, campaignName: "Launch test", resumeCampaignId: campaign.id, cap: "daily", day: today, spentUsd: 11, capUsd: 10 } }, { origin: "worker" });
     if (gated.kind !== "card") throw new Error(gated.kind);
     expect(state.cards.get(gated.cardId)).toMatchObject({ tier: "K2", actionKind: "budget.cap.raise", defaultOptionId: "decline" });
     answer(gated.cardId, "approve");

@@ -1,6 +1,7 @@
-import { ActionSpecSchema, capCardSpec, type ActionSpec, type CapKind, type Tier } from "@north/core";
-import { getBudget, listActionsByKind, recordActionTransition, type ActionRecord, type CampaignRecord } from "@north/db";
+import { capCardSpec, type ActionSpec, type CapKind, type Tier } from "@north/core";
+import { getBudget, listActionsByKind, recordActionTransition, type ActionRecord, type CampaignRecord, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { specsByHead } from "./action-specs";
 import { gateAction, gateStandalone } from "./actions";
 import { todayIsoDate } from "./dates";
 
@@ -27,22 +28,26 @@ const keyOf = (payload: Record<string, unknown> | undefined): CapKey | null =>
 
 const sameKey = (a: CapKey, b: CapKey | null): boolean => b !== null && a.campaignId === b.campaignId && a.day === b.day && a.cap === b.cap && a.capUsd === b.capUsd;
 
-/** Cap-card rows already recorded for this campaign, day and cap level (chain heads), split into asked (any status) and quota-deferred. */
-function priorCards(rows: readonly ActionRecord[], key: CapKey): { readonly asked: ActionRecord | undefined; readonly deferred: readonly ActionRecord[] } {
-  const matching = rows.filter((a) => {
-    const stored = ActionSpecSchema.safeParse((a.payload as { spec?: unknown }).spec);
-    return stored.success && sameKey(key, keyOf(stored.data.payload));
-  });
+/**
+ * Cap-card rows already recorded for this campaign, day and cap level (chain
+ * heads, their spec read back through the chain so an answered card counts),
+ * split into asked (pending or answered) and quota-deferred.
+ */
+async function priorCards(db: DbClient, rows: readonly ActionRecord[], key: CapKey): Promise<{ readonly asked: ActionRecord | undefined; readonly deferred: readonly ActionRecord[] }> {
+  const specs = await specsByHead(db, rows);
+  const matching = rows.filter((a) => sameKey(key, keyOf(specs.get(a.id)?.payload)));
   const deferred = matching.filter((a) => a.status === "blocked" && a.payload.quota_deferred === true);
-  return { asked: matching.find((a) => !deferred.includes(a)), deferred };
+  const asked = matching.find((a) => !deferred.includes(a) && a.status !== "blocked");
+  return { asked, deferred };
 }
 
 /**
  * BUD-3, second half: one K2 `budget.cap.raise` card per campaign, day and
- * cap level, through the gate with the campaign's task. An open or answered
- * card for the same key means none; a quota-deferred one is retried (the
- * campaign is already paused, so waiting costs nothing). Approving raises the
- * cap for the day and resumes the campaign (settle's follow-up).
+ * cap level, through the gate with the campaign's task as the worker's own
+ * request. An open or answered card for the same key means none; a
+ * quota-deferred one is retried by the next collection (the campaign is
+ * already paused, so waiting costs nothing). Approving raises the cap for
+ * the day and resumes the campaign (settle's follow-up).
  */
 export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate()): Promise<CapCardOutcome> {
   const budget = await getBudget(deps.db, campaign.companyId, "ads");
@@ -50,12 +55,11 @@ export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, ca
   const spec: ActionSpec = capCardSpec({ campaign, budget, cap, day });
   const key = keyOf(spec.payload);
   if (!key) return { kind: "none", reason: "cap card spec has no key" };
-  const prior = priorCards(await listActionsByKind(deps.db, campaign.companyId, CAP_KIND, LOOKBACK_DAYS), key);
+  const prior = await priorCards(deps.db, await listActionsByKind(deps.db, campaign.companyId, CAP_KIND, LOOKBACK_DAYS), key);
   if (prior.asked) return { kind: "exists", actionId: prior.asked.id };
-  const gated = campaign.taskId ? await gateAction(deps, campaign.taskId, spec) : await gateStandalone(deps, spec);
-  if (gated.kind !== "deferred") {
-    for (const row of prior.deferred) await recordActionTransition(deps.db, { actionId: row.id, status: "blocked", note: "retried" });
-  }
+  const gated = campaign.taskId ? await gateAction(deps, campaign.taskId, spec, { origin: "worker" }) : await gateStandalone(deps, spec);
+  // The new attempt is the live one: earlier deferred rows are retired whatever the outcome (the collector retries, M4 review M2).
+  for (const row of prior.deferred) await recordActionTransition(deps.db, { actionId: row.id, status: "blocked", note: "retried" });
   switch (gated.kind) {
     case "card":
       return { kind: "opened", cardId: gated.cardId, actionId: gated.actionId };

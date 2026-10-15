@@ -3,7 +3,7 @@ import { recordAction } from "../src/actions";
 import { BudgetCapError, getCampaign, getCampaignByProviderId, listCampaigns, listCompaniesWithCollectables, registerCampaign, setCampaignStatus, updateCampaignTotals } from "../src/campaigns";
 import { setKillSwitch } from "../src/companies";
 import { DbError } from "../src/errors";
-import { adsBudgetAndAction, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCampaignInput, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { adsBudgetAndAction, createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCampaignInput, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
   let owned: OwnedCompany;
@@ -29,10 +29,10 @@ describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
     const again = await registerCampaign(service, { ...input, providerCampaignId: "sandbox:campaign:ignored" });
     expect(again.id).toBe(created.id);
     expect(again.providerCampaignId).toBe("sandbox:campaign:one");
-    expect(await getCampaign(owned.owner.client, created.id)).toEqual(created);
+    expect(await getCampaign(owned.owner.client, owned.companyId, created.id)).toEqual(created);
     expect(await getCampaignByProviderId(owned.owner.client, owned.companyId, "sandbox:campaign:one")).toEqual(created);
     expect((await listCampaigns(owned.owner.client, owned.companyId)).map((c) => c.id)).toEqual([created.id]);
-    expect(await getCampaign(stranger.client, created.id)).toBeNull();
+    expect(await getCampaign(stranger.client, owned.companyId, created.id)).toBeNull();
     expect(await listCampaigns(stranger.client, owned.companyId)).toEqual([]);
   });
 
@@ -42,7 +42,7 @@ describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
     const [campaign] = await listCampaigns(service, owned.companyId);
     await expect(setCampaignStatus(owned.owner.client, campaign!.id, "paused_user")).rejects.toBeInstanceOf(DbError);
     await expect(updateCampaignTotals(owned.owner.client, campaign!.id, { spentTotalUsd: 1 })).rejects.toBeInstanceOf(DbError);
-    expect((await getCampaign(service, campaign!.id))?.status).toBe("active");
+    expect((await getCampaign(service, owned.companyId, campaign!.id))?.status).toBe("active");
   });
 
   it("setCampaignStatus records the pause day and updateCampaignTotals the collected figures; listCampaigns filters by status", async () => {
@@ -63,7 +63,15 @@ describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
     await expect(registerCampaign(service, sampleCampaignInput(owned.companyId, big, { dailyBudgetUsd: 11 }))).rejects.toBeInstanceOf(BudgetCapError);
     const parked = await registerCampaign(service, sampleCampaignInput(owned.companyId, big, { dailyBudgetUsd: 11, status: "paused_user" }));
     await expect(setCampaignStatus(service, parked.id, "active")).rejects.toBeInstanceOf(BudgetCapError);
-    expect((await getCampaign(service, parked.id))?.status).toBe("paused_user");
+    expect((await getCampaign(service, owned.companyId, parked.id))?.status).toBe("paused_user");
+  });
+
+  it("M4 review M3: getCampaign is company-scoped; a foreign company id (even with the service role) finds nothing", async () => {
+    const [campaign] = await listCampaigns(service, owned.companyId);
+    const foreign = await createCompanyFor(owned.owner, "campaigns-foreign");
+    expect(await getCampaign(service, foreign, campaign!.id)).toBeNull();
+    expect(await getCampaignByProviderId(service, foreign, campaign!.providerCampaignId)).toBeNull();
+    expect((await getCampaign(service, owned.companyId, campaign!.id))?.id).toBe(campaign!.id);
   });
 
   it("listCompaniesWithCollectables: campaigns active/paused_cap or recent first-contact sends, kill switch off", async () => {

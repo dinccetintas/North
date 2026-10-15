@@ -15,17 +15,23 @@ const parseJson = (text: string): unknown => {
   }
 };
 
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/** Whether a bind host keeps the worker on this machine (the only place the simulation routes may exist, M4 review L4). */
+export const isLoopbackHost = (host: string): boolean => LOOPBACK_HOSTS.has(host.trim().toLowerCase());
+
 /**
  * Simulation routes for the sandbox adapters (M4): the e2e flow, the smoke
  * script and a developer "report" a delivery window or a reply through the
- * worker's loopback server. Mounted in sandbox mode only; in live mode these
- * paths do not exist (404), so nothing can inject figures into a real ledger.
+ * worker's loopback server. Mounted in sandbox mode on a loopback host only;
+ * in live mode, or on a worker bound to any other address, these paths do
+ * not exist (404), so nothing can inject figures into a real ledger.
  */
-export function sandboxRoutes(integrations: Integrations): Hono {
+export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1"): Hono {
   const app = new Hono();
   const ads = integrations.ads(null);
   const outreach = integrations.outreach(null);
-  if (integrations.mode !== "sandbox" || !isSandboxAds(ads) || !isSandboxOutreach(outreach)) return app;
+  if (integrations.mode !== "sandbox" || !isLoopbackHost(host) || !isSandboxAds(ads) || !isSandboxOutreach(outreach)) return app;
 
   app.post("/sandbox/ads/:campaignId/deliver", async (c) => {
     const campaignId = RefSchema.safeParse(c.req.param("campaignId"));

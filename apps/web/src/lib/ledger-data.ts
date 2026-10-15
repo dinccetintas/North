@@ -24,13 +24,6 @@ import { budgetRows, ledgerRows, outreachRows, type BudgetRowData, type Campaign
  * `ledgerEntriesForReport(db, companyId, days)`, `listBudgets`,
  * `listActionsByKind(db, companyId, kind, sinceDays)`, `countLeads(db, companyId)`,
  * `pendingActionsForCard(db, cardId)`.
- *
- * TODO(WP-A4): until `packages/db` exports `listCampaigns` (campaigns.ts),
- * `listActionsByKind` and `pendingActionsForCard` (actions.ts) and `countLeads`
- * (leads.ts), this is the one file the web typecheck fails on. The campaign
- * record must carry `id, providerCampaignId, name, status, dailyBudgetUsd,
- * spentTodayUsd, spentTotalUsd, impressions, clicks, conversions, sandbox`
- * (see `CampaignLike`).
  */
 
 export const LEDGER_WINDOW_DAYS = 30;
@@ -102,12 +95,12 @@ export interface DecisionCampaignData {
   readonly totalCapUsd: number;
 }
 
-/** The campaign a cap card is about (BUD-3), by id or, when the action row no longer carries it, by name; null when unknown. */
-export async function capCardCampaign(db: DbClient, companyId: string, ref: { readonly campaignId: string | null; readonly campaignName: string | null }): Promise<DecisionCampaignData | null> {
-  if (!ref.campaignId && !ref.campaignName) return null;
+/** The campaign a cap card is about (BUD-3), by the id its action row carries (`payload.campaignId`, always present); null when unknown. */
+export async function capCardCampaign(db: DbClient, companyId: string, campaignId: string | null): Promise<DecisionCampaignData | null> {
+  if (!campaignId) return null;
   const [campaignRecords, budgets] = await Promise.all([listCampaigns(db, companyId, {}), listBudgets(db, companyId)]);
   const campaigns: readonly CampaignLike[] = campaignRecords.map(toCampaignRow);
-  const campaign = campaigns.find((c) => c.id === ref.campaignId) ?? campaigns.find((c) => c.name === ref.campaignName) ?? null;
+  const campaign = campaigns.find((c) => c.id === campaignId) ?? null;
   if (!campaign) return null;
   const budget = budgets.find((b: BudgetState) => b.category === "ads") ?? null;
   return Object.freeze({

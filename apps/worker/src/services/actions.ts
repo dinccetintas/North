@@ -1,21 +1,7 @@
 import { ActionSpecSchema, batchPayload, gate, type ActionKind, type ActionSpec, type GateDecision, type Tier } from "@north/core";
-import {
-  QuotaExceededError,
-  getCard,
-  getKillSwitch,
-  getTask,
-  headActionsForTask,
-  listActiveAutoRules,
-  listBudgets,
-  markTaskWaiting,
-  openCard,
-  recordAction,
-  recordActionTransition,
-  type ActionRecord,
-  type DbClient,
-  type TaskRecord,
-} from "@north/db";
+import { QuotaExceededError, getCard, getKillSwitch, getTask, headActionsForTask, listActiveAutoRules, listBudgets, markTaskWaiting, openCard, recordAction, recordActionTransition, type ActionRecord, type DbClient, type TaskRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { batchOpenRefusal, batchReuseRefusal, BATCH_MISMATCH } from "./batch-scope";
 import { BudgetCapReachedError } from "./budget-check";
 import { applyOutcome, loadActionRow } from "./outcomes";
 import { performAction } from "./perform";
@@ -23,6 +9,7 @@ import { ConnectionRequiredError } from "./provider-auth";
 import type { StepRunner } from "./steps";
 
 export { performAction, type PerformResult } from "./perform";
+export { deferredActionsFor, listDeferredRows, type DeferredRow } from "./deferred";
 
 /**
  * Outcome of gating one action. `execute` means a pending row exists and the
@@ -42,21 +29,11 @@ const DEFAULT_CARD_WINDOW_MS = 24 * 3600 * 1000;
 /** Internal action kinds never leave the platform; they are recorded as executed without an adapter. */
 export const INTERNAL_KINDS: ReadonlySet<ActionKind> = new Set(["research", "draft", "artifact.write", "memory.write"]);
 
-/** Kinds an adapter exists for. Anything else external is recorded `blocked` (`no_adapter`), never faked as executed. */
-export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set([
-  "ads.start",
-  "ads.pause",
-  "ads.resume",
-  "budget.cap.raise",
-  "email.send.first_contact",
-  "email.send.reply",
-  "support.reply.template",
-  "support.reply.custom",
-  "repo.create",
-  "repo.push",
-  "deploy.preview",
-  "deploy.production",
-]);
+/** Kinds an adapter exists for. Anything else external is recorded `blocked` (`no_adapter`), never faked as executed. `support.reply.*` wait for a support inbox (M4 review H2). */
+export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.pause", "ads.resume", "budget.cap.raise", "email.send.first_contact", "email.send.reply", "repo.create", "repo.push", "deploy.preview", "deploy.production"]);
+
+/** Kinds only the worker itself may request (M4 review H1): a resume carries the worker's reason or a card; a cap raise is the collector's card. An agent asking for them is blocked. */
+export const WORKER_ONLY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.resume", "budget.cap.raise"]);
 
 const specKey = (spec: ActionSpec): string => JSON.stringify({ kind: spec.kind, description: spec.description, amountUsd: spec.amountUsd ?? null, category: spec.category ?? null, payload: spec.payload ?? null });
 const storedSpec = (a: ActionRecord): ActionSpec | null => {
@@ -86,6 +63,9 @@ export function existingBatchCard(actions: readonly ActionRecord[], spec: Action
   });
 }
 
+/** Who asks: an agent's run, or the worker's own effect (cap pause and card, day roll, kill-switch resume card). */
+export type GateOrigin = "agent" | "worker";
+
 /** Who an action is gated for: a task's run (parks the task on a card) or a standalone worker effect (cap pause, kill-switch resume card). */
 export interface GateContext {
   readonly companyId: string;
@@ -94,6 +74,11 @@ export interface GateContext {
   readonly task: TaskRecord | null;
   /** Chain heads to reuse a pending card or batch against (idempotent gating). */
   readonly existing: readonly ActionRecord[];
+  readonly origin: GateOrigin;
+}
+
+export interface GateOptions {
+  readonly origin?: GateOrigin;
 }
 
 async function parkTask(db: DbClient, task: TaskRecord | null): Promise<void> {
@@ -103,17 +88,26 @@ async function parkTask(db: DbClient, task: TaskRecord | null): Promise<void> {
 /**
  * Gates one requested action for a task (DEC-1): the task supplies the company
  * and role, its chain heads give the cards to reuse, and a card parks it.
+ * Agent requests are the default origin; the worker's own effects say so.
  */
-export async function gateAction(deps: WorkerDeps, taskId: string, raw: ActionSpec): Promise<GatedAction> {
+export async function gateAction(deps: WorkerDeps, taskId: string, raw: ActionSpec, opts: GateOptions = {}): Promise<GatedAction> {
   const task = await getTask(deps.db, taskId);
   if (!task) throw new Error(`task ${taskId} not found`);
   const existing = await headActionsForTask(deps.db, taskId);
-  return gateFor(deps, { companyId: task.companyId, taskId, agentRole: task.role, task, existing }, raw);
+  return gateFor(deps, { companyId: task.companyId, taskId, agentRole: task.role, task, existing, origin: opts.origin ?? "agent" }, raw);
 }
 
 /** Gates a worker-made action that belongs to no task run (the kill-switch resume card); `existing` gives the rows to reuse. */
 export function gateStandalone(deps: WorkerDeps, raw: ActionSpec, existing: readonly ActionRecord[] = []): Promise<GatedAction> {
-  return gateFor(deps, { companyId: raw.companyId, taskId: null, agentRole: raw.agentRole, task: null, existing }, raw);
+  return gateFor(deps, { companyId: raw.companyId, taskId: null, agentRole: raw.agentRole, task: null, existing, origin: "worker" }, raw);
+}
+
+type RecordBase = Omit<Parameters<typeof recordAction>[1], "payload" | "status">;
+
+/** A refusal the gate records as `blocked` with its marker (`no_adapter`, `worker_only`, `batch_mismatch`); the raw reason stays in the payload. */
+async function blockWith(db: DbClient, base: RecordBase, payload: Record<string, unknown>, marker: string, reason: string): Promise<GatedAction> {
+  const actionId = await recordAction(db, { ...base, payload: { ...payload, [marker]: true, blocked_reason: reason.slice(0, 500) }, status: "blocked" });
+  return { kind: "blocked", actionId, reason: marker };
 }
 
 /**
@@ -135,11 +129,9 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
     const actionId = await recordAction(db, { ...base, payload, status: "blocked" });
     return { kind: "blocked", actionId, reason: decision.reasons.join(", ") };
   }
-  if (!INTERNAL_KINDS.has(action.kind) && !ADAPTER_KINDS.has(action.kind)) {
-    // No adapter yet: never open a card for it and never fake a reference (AGT-2).
-    const actionId = await recordAction(db, { ...base, payload: { ...payload, no_adapter: true }, status: "blocked" });
-    return { kind: "blocked", actionId, reason: "no_adapter" };
-  }
+  // No adapter yet: never open a card for it and never fake a reference (AGT-2).
+  if (!INTERNAL_KINDS.has(action.kind) && !ADAPTER_KINDS.has(action.kind)) return blockWith(db, base, payload, "no_adapter", "no adapter for this kind");
+  if (WORKER_ONLY_KINDS.has(action.kind) && ctx.origin !== "worker") return blockWith(db, base, payload, "worker_only", `${action.kind} is the platform's own effect; agents cannot request it`);
   if (decision.kind === "run" || decision.kind === "notify") {
     if (INTERNAL_KINDS.has(action.kind)) {
       const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef: "internal" });
@@ -151,9 +143,11 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
 
   const reused = await reuseCard(deps, ctx, action, base, payload, decision.card.dueAt);
   if (reused) {
-    await parkTask(db, ctx.task);
+    if (reused.kind !== "blocked") await parkTask(db, ctx.task);
     return reused;
   }
+  const refusal = action.kind === "email.send.first_contact" ? await batchOpenRefusal(deps, ctx.companyId, action) : null;
+  if (refusal) return blockWith(db, base, payload, BATCH_MISMATCH, refusal);
   try {
     const card = await openCard(db, { ...decision.card, taskId: ctx.taskId });
     const actionId = await recordAction(db, { ...base, payload, status: "pending", decisionCardId: card.id });
@@ -167,9 +161,11 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
   }
 }
 
-type RecordBase = Omit<Parameters<typeof recordAction>[1], "payload" | "status">;
-
-/** An open card to reuse: the same spec's own pending row (step retry), or the batch's card with a new pending row for this send (SLS-K2). Null when a card must be opened. */
+/**
+ * An open card to reuse: the same spec's own pending row (step retry), or the
+ * batch's card with a new pending row for this send when the send fits the
+ * card's verified scope (SLS-K2, M4 review H3). Null when a card must be opened.
+ */
 async function reuseCard(deps: WorkerDeps, ctx: GateContext, action: ActionSpec, base: RecordBase, payload: Record<string, unknown>, dueAt: string): Promise<GatedAction | null> {
   const same = existingCardFor(ctx.existing, action);
   if (same?.decisionCardId) {
@@ -178,6 +174,8 @@ async function reuseCard(deps: WorkerDeps, ctx: GateContext, action: ActionSpec,
   }
   const batch = existingBatchCard(ctx.existing, action);
   if (!batch?.decisionCardId) return null;
+  const refusal = await batchReuseRefusal(deps, batch.decisionCardId, action);
+  if (refusal) return blockWith(deps.db, base, payload, BATCH_MISMATCH, refusal);
   const card = await getCard(deps.db, batch.decisionCardId);
   const actionId = await recordAction(deps.db, { ...base, payload, status: "pending", decisionCardId: batch.decisionCardId });
   return { kind: "card", actionId, cardId: batch.decisionCardId, dueAt: card?.dueAt ?? dueAt };
@@ -185,16 +183,24 @@ async function reuseCard(deps: WorkerDeps, ctx: GateContext, action: ActionSpec,
 
 export type PerformOutcome =
   | { readonly ok: true; readonly externalRef: string; readonly sandbox: boolean; readonly meta?: Readonly<Record<string, string>> }
-  | { readonly ok: false; readonly error: string; readonly connectionRequired?: string; readonly capReached?: true };
+  | { readonly ok: false; readonly error: string; readonly connectionRequired?: string; readonly capReached?: true; readonly killed?: true };
 
-/** Loads the pending action and executes its stored spec. Provider failures come back as data so the next step can record them. */
+const KILLED: PerformOutcome = Object.freeze({ ok: false, error: "kill switch active", killed: true });
+
+/**
+ * Loads the pending action and executes its stored spec. Provider failures
+ * come back as data so the next step can record them. Under the kill switch
+ * nothing is performed (M4 review H4): the row stays pending and the resume
+ * re-settles its card.
+ */
 export async function performPending(deps: WorkerDeps, actionId: string): Promise<PerformOutcome> {
   const row = await loadActionRow(deps.db, actionId);
   if (!row) return { ok: false, error: `action ${actionId} not found` };
   if (row.status !== "pending") return { ok: false, error: `action ${actionId} is ${row.status}, not pending` };
   if (!row.spec) return { ok: false, error: "stored action spec is invalid" };
+  if (await getKillSwitch(deps.db, row.companyId)) return KILLED;
   try {
-    const result = await performAction(deps, row.spec);
+    const result = await performAction(deps, row.spec, { decisionCardId: row.decisionCardId });
     return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox, ...(result.meta ? { meta: result.meta } : {}) };
   } catch (cause) {
     if (cause instanceof ConnectionRequiredError) return { ok: false, error: cause.message, connectionRequired: cause.provider };
@@ -204,7 +210,8 @@ export async function performPending(deps: WorkerDeps, actionId: string): Promis
 }
 
 export interface CompletedAction {
-  readonly status: "executed" | "notified" | "failed";
+  /** `pending` only when the kill switch stopped the perform step: no transition was written. */
+  readonly status: "executed" | "notified" | "failed" | "pending";
   readonly externalRef: string | null;
 }
 
@@ -215,6 +222,7 @@ export interface CompletedAction {
  */
 export async function completeAction(deps: WorkerDeps, input: { readonly actionId: string; readonly tier: Tier; readonly outcome: PerformOutcome }): Promise<CompletedAction> {
   if (!input.outcome.ok) {
+    if (input.outcome.killed) return { status: "pending", externalRef: null };
     await recordActionTransition(deps.db, { actionId: input.actionId, status: "failed", note: input.outcome.error.slice(0, 500) });
     return { status: "failed", externalRef: null };
   }
@@ -237,50 +245,4 @@ export async function runGated(deps: WorkerDeps, step: StepRunner, id: string, g
   const outcome = await step.run(`${id}-perform`, () => performPending(deps, gated.actionId));
   const completed = await step.run(`${id}-record`, () => completeAction(deps, { actionId: gated.actionId, tier: gated.tier, outcome }));
   return { gated, completed };
-}
-
-export interface DeferredRow {
-  readonly id: string;
-  readonly companyId: string;
-  readonly taskId: string;
-  readonly spec: ActionSpec;
-}
-
-const DEFERRED_SCAN_LIMIT = 1000;
-
-/**
- * Quota-deferred actions still waiting for a retry: blocked rows flagged
- * `quota_deferred` whose chain has not moved on. A retry appends a "retried"
- * transition, so the original row is superseded and never picked up twice.
- */
-export async function listDeferredRows(db: DbClient, taskId?: string): Promise<readonly DeferredRow[]> {
-  const base = db.from("actions").select("id, company_id, task_id, payload, supersedes").eq("status", "blocked").contains("payload", { quota_deferred: true }).not("task_id", "is", null);
-  const { data, error } = await (taskId ? base.eq("task_id", taskId) : base).order("created_at", { ascending: true }).limit(DEFERRED_SCAN_LIMIT);
-  if (error) throw new Error(`could not load deferred actions: ${error.message}`);
-  const rows = data ?? [];
-  const ids = rows.map((r) => r.id);
-  const superseded = ids.length === 0 ? new Set<string>() : await supersededAmong(db, ids);
-  const out: DeferredRow[] = [];
-  for (const row of rows) {
-    if (superseded.has(row.id) || !row.task_id) continue;
-    const parsed = ActionSpecSchema.safeParse((row.payload as { spec?: unknown }).spec);
-    if (parsed.success) out.push({ id: row.id, companyId: row.company_id, taskId: row.task_id, spec: parsed.data });
-  }
-  return Object.freeze(out);
-}
-
-/** Ids among `ids` that some later row supersedes (the retry marker row carries no quota flag, so it is looked up explicitly). */
-async function supersededAmong(db: DbClient, ids: readonly string[]): Promise<Set<string>> {
-  const { data, error } = await db.from("actions").select("supersedes").in("supersedes", [...ids]);
-  if (error) throw new Error(`could not check action chains: ${error.message}`);
-  return new Set((data ?? []).flatMap((r) => (r.supersedes ? [r.supersedes] : [])));
-}
-
-/** Actions stored as quota-deferred for a task, so a retry re-gates them instead of re-running the agent. Each is marked retried. */
-export async function deferredActionsFor(db: DbClient, task: TaskRecord): Promise<readonly ActionSpec[]> {
-  const rows = await listDeferredRows(db, task.id);
-  for (const row of rows) {
-    await recordActionTransition(db, { actionId: row.id, status: "blocked", note: "retried" });
-  }
-  return Object.freeze(rows.map((r) => r.spec));
 }
