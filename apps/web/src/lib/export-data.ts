@@ -1,5 +1,5 @@
 import { listActionsByKind, listExports, type CompanySummary, type DbClient } from "@north/db";
-import type { ExportLike, RepoRef } from "./export-view";
+import { latestRepoRef, type ExportLike, type RepoRef } from "./export-view";
 
 /**
  * EXP-1 reads for `/settings/export`, as the owner. The worker writes the
@@ -13,13 +13,12 @@ import type { ExportLike, RepoRef } from "./export-view";
 /** A repository is created once, at the first build; a year covers every company the founder still runs. */
 const REPO_LOOKBACK_DAYS = 365;
 
-/** The latest executed `repo.create` reference of each company (null before the first build). */
+/** The latest `repo.create` reference of each company (null before the first build). */
 export async function loadRepoRefs(db: DbClient, companies: readonly Pick<CompanySummary, "id" | "name">[]): Promise<readonly RepoRef[]> {
   return Promise.all(
     companies.map(async (c) => {
       const actions = await listActionsByKind(db, c.id, "repo.create", REPO_LOOKBACK_DAYS);
-      const executed = actions.find((a) => a.status === "executed" && a.externalRef !== null);
-      return Object.freeze({ companyId: c.id, name: c.name, ref: executed?.externalRef ?? null });
+      return Object.freeze({ companyId: c.id, name: c.name, ref: latestRepoRef(actions) });
     }),
   );
 }

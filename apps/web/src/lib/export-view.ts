@@ -100,8 +100,16 @@ export function exportAccess(e: Pick<Entitlement, "status" | "retentionUntil" | 
 export interface RepoRef {
   readonly companyId: string;
   readonly name: string;
-  /** The latest executed `repo.create` reference, as the worker recorded it. */
+  /** The latest `repo.create` reference that reached the provider, as the worker recorded it. */
   readonly ref: string | null;
+}
+
+/** `repo.create` is K1: the worker records it `notified`; an auto-approved or older row may read `executed`. */
+const REACHED_PROVIDER: ReadonlySet<string> = new Set(["notified", "executed"]);
+
+/** The newest `repo.create` reference among rows listed newest first, or null before the first build. */
+export function latestRepoRef(actions: readonly { readonly status: string; readonly externalRef: string | null }[]): string | null {
+  return actions.find((a) => REACHED_PROVIDER.has(a.status) && a.externalRef !== null)?.externalRef ?? null;
 }
 
 export interface RepoLink extends RepoRef {

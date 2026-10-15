@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exportAccess, exportRows, expiresLabel, formatBytes, repoLinks } from "./export-view";
+import { exportAccess, exportRows, expiresLabel, formatBytes, latestRepoRef, repoLinks } from "./export-view";
 
 const NOW = new Date("2026-10-15T10:00:00.000Z");
 const C1 = "00000000-0000-4000-8000-0000000000c1";
@@ -70,5 +70,20 @@ describe("EXP-1 the code is already in your GitHub", () => {
       { companyId: "c", name: "Gamma", ref: "javascript:alert(1)", href: null },
       { companyId: "d", name: "Delta", ref: null, href: null },
     ]);
+  });
+});
+
+describe("EXP-1 the repository reference of a company", () => {
+  const row = (status: string, externalRef: string | null) => ({ status, externalRef });
+
+  it("takes repo.create as recorded: K1 rows are notified, not executed", () => {
+    expect(latestRepoRef([row("notified", "sandbox://repos/sandbox/acme-site")])).toBe("sandbox://repos/sandbox/acme-site");
+    expect(latestRepoRef([row("executed", "https://github.com/acme/site")])).toBe("https://github.com/acme/site");
+  });
+
+  it("skips rows without a reference or that never reached the provider, newest first", () => {
+    expect(latestRepoRef([row("pending", null), row("failed", "x"), row("notified", "sandbox://repos/sandbox/old")])).toBe("sandbox://repos/sandbox/old");
+    expect(latestRepoRef([row("notified", null)])).toBeNull();
+    expect(latestRepoRef([])).toBeNull();
   });
 });
