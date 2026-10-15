@@ -13,10 +13,12 @@ import { PostHogAnalytics } from "../src/live/posthog";
 import { PRODUCTHUNT_NOT_CONFIGURED, ProductHuntSignals } from "../src/live/producthunt";
 import { RedditSignals } from "../src/live/reddit";
 import { ResendMail } from "../src/live/resend";
+import { StripeBilling } from "../src/live/stripe-billing";
 import { StripeReadPayments } from "../src/live/stripe-read";
 import { WebPush } from "../src/live/web-push";
 import { SandboxAds } from "../src/sandbox/ads";
 import { SandboxAnalytics } from "../src/sandbox/analytics";
+import { SandboxBilling } from "../src/sandbox/billing";
 import { createSandboxIntegrations } from "../src/sandbox/index";
 import { SandboxMail } from "../src/sandbox/mail";
 import { SandboxOutreach } from "../src/sandbox/outreach";
@@ -28,6 +30,7 @@ import type { SandboxEvent } from "../src/types";
 
 const VAPID = { VAPID_PUBLIC_KEY: "pub", VAPID_PRIVATE_KEY: "priv", VAPID_SUBJECT: "mailto:ceo@example.test" };
 const RESEND = { RESEND_API_KEY: "re_test", RESEND_FROM: "North <north@example.test>" };
+const STRIPE = { STRIPE_SECRET_KEY: "fake-platform-key", STRIPE_WEBHOOK_SECRET: "fake-webhook-secret" };
 
 const warnings = () => {
   const lines: string[] = [];
@@ -62,6 +65,7 @@ describe("selectIntegrations", () => {
       expect(integrations.payments(null)).toBeInstanceOf(SandboxPayments);
       expect(integrations.mail).toBeInstanceOf(SandboxMail);
       expect(integrations.push).toBeInstanceOf(SandboxPush);
+      expect(integrations.billing).toBeInstanceOf(SandboxBilling);
     }
     expect(lines).toEqual([]);
   });
@@ -76,7 +80,7 @@ describe("selectIntegrations", () => {
 
   it("BUD-2: in live mode ads and outreach are always the user-connection adapters, which refuse without auth", async () => {
     const { lines, warn } = warnings();
-    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, warn, { allowUrl: async () => true });
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, ...STRIPE }, undefined, warn, { allowUrl: async () => true });
     expect(integrations.mode).toBe("live");
     expect(integrations.ads({ token: "t", scopes: ["act:1"] })).toBeInstanceOf(MetaAds);
     expect(integrations.outreach({ token: "t" })).toBeInstanceOf(GmailOutreach);
@@ -88,43 +92,47 @@ describe("selectIntegrations", () => {
     expect(lines).toEqual([]);
   });
 
-  it("live analytics and payments are honest stubs that say why they are not configured", async () => {
+  it("live analytics is an honest stub; live payments is the user's Stripe read, which refuses without a connection", async () => {
     const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live" }, undefined, () => undefined);
     expect(integrations.analytics({ token: "t" })).toBeInstanceOf(PostHogAnalytics);
-    expect(integrations.payments({ token: "t" })).toBeInstanceOf(StripeReadPayments);
+    expect(integrations.payments({ token: "t", scope: "acct_1A" })).toBeInstanceOf(StripeReadPayments);
     await expect(integrations.analytics(null).read("c1")).rejects.toThrow(/tracker/);
-    await expect(integrations.payments(null).read("c1")).rejects.toThrow(/M6/);
+    await expect(integrations.payments(null).read("c1")).rejects.toBeInstanceOf(NotConfiguredError);
+    await expect(integrations.payments(null).read("c1")).rejects.toThrow(/not connected/);
     const google = new GoogleAds();
     await expect(google.startCampaign({ companyId: "c1", name: "n", dailyBudgetUsd: 1 })).rejects.toBeInstanceOf(NotConfiguredError);
     await expect(google.pauseMany("c1", ["x"])).rejects.toThrow(/developer-token/);
     await expect(google.status("c1", "x")).rejects.toThrow(/Meta first/);
   });
 
-  it("in live mode without platform keys mail and push fall back to sandbox and warn once each; ads never does", () => {
+  it("in live mode without platform keys mail, push and billing fall back to sandbox and warn once each; ads never does", () => {
     const { lines, warn } = warnings();
     const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live" }, undefined, warn);
     expect(integrations.mail).toBeInstanceOf(SandboxMail);
     expect(integrations.push).toBeInstanceOf(SandboxPush);
+    expect(integrations.billing).toBeInstanceOf(SandboxBilling);
     expect(integrations.ads(null)).toBeInstanceOf(MetaAds);
-    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(2);
+    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(3);
     expect(lines.join("\n")).toMatch(/mail/);
     expect(lines.join("\n")).toMatch(/push/);
+    expect(lines.join("\n")).toMatch(/the billing keys are missing; using the billing sandbox adapter/);
     expect(lines.join("\n")).not.toMatch(/ads/);
   });
 
   it("the platform Meta keys are gone: they select nothing", () => {
     const { lines, warn } = warnings();
-    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", META_ACCESS_TOKEN: "tok", META_AD_ACCOUNT_ID: "act_1", ...RESEND, ...VAPID }, undefined, warn);
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", META_ACCESS_TOKEN: "tok", META_AD_ACCOUNT_ID: "act_1", ...RESEND, ...VAPID, ...STRIPE }, undefined, warn);
     expect(integrations.ads(null)).toBeInstanceOf(MetaAds);
     expect(lines.filter((l) => !/competitor/.test(l))).toEqual([]);
   });
 
   it("treats a half-configured provider as missing", () => {
     const { lines, warn } = warnings();
-    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", RESEND_API_KEY: "re_x", VAPID_PUBLIC_KEY: "pub" }, undefined, warn);
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", RESEND_API_KEY: "re_x", VAPID_PUBLIC_KEY: "pub", STRIPE_SECRET_KEY: "fake-x" }, undefined, warn);
     expect(integrations.mail).toBeInstanceOf(SandboxMail);
     expect(integrations.push).toBeInstanceOf(SandboxPush);
-    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(2);
+    expect(integrations.billing).toBeInstanceOf(SandboxBilling);
+    expect(lines.filter((l) => !/competitor/.test(l))).toHaveLength(3);
   });
 
   it("passes the sink to the sandbox fallbacks in live mode", async () => {
@@ -167,7 +175,7 @@ describe("B5-3 selectIntegrations: signal sources (PRO-1)", () => {
       calls.push(url);
       return new Response("<title>T</title>", { status: 200, headers: { "content-type": "text/html" } });
     };
-    const denied = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, warn, { fetchImpl });
+    const denied = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, ...STRIPE }, undefined, warn, { fetchImpl });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/allowUrl/);
     expect(await denied.signals[1]!.scan(scan)).toEqual([]);
@@ -176,5 +184,46 @@ describe("B5-3 selectIntegrations: signal sources (PRO-1)", () => {
     const allowed = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID }, undefined, () => undefined, { fetchImpl, allowUrl: async () => true });
     expect(await allowed.signals[1]!.scan(scan)).toHaveLength(1);
     expect(calls).toEqual(["https://incumbent-a.example/pricing"]);
+  });
+});
+
+describe("B6-4 selectIntegrations: billing and the user's Stripe (BIL-1, OUT-2)", () => {
+  const USER = "8f14e45f-ceea-467f-a0e6-0e1a2b3c4d5e";
+
+  it("sandbox: billing is the SandboxBilling of the simulation surface, on SANDBOX_ROOT and SANDBOX_SITE_BASE_URL, keys ignored", async () => {
+    const root = await mkdtemp(join(tmpdir(), "north-select-billing-"));
+    const { lines, warn } = warnings();
+    const integrations = selectIntegrations({ SANDBOX_ROOT: root, SANDBOX_SITE_BASE_URL: "http://127.0.0.1:4101", ...STRIPE }, undefined, warn);
+    expect(integrations.billing).toBeInstanceOf(SandboxBilling);
+    expect(integrations.billing).toBe((integrations as ReturnType<typeof createSandboxIntegrations>).sandbox.billing);
+    const { customerId } = await integrations.billing.ensureCustomer({ userId: USER, email: "mara@example.test" });
+    const session = await integrations.billing.createPortalSession({ customerId, returnUrl: "http://localhost:3100/settings/billing" });
+    expect(session.url).toBe(`http://127.0.0.1:4101/sandbox/billing/portal/${customerId}`);
+    expect(lines).toEqual([]);
+  });
+
+  it("live with both Stripe keys: the StripeBilling adapter over the injected fetch, no billing warning", async () => {
+    const { lines, warn } = warnings();
+    const urls: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ object: "search_result", data: [{ id: "cus_live1" }], has_more: false }), { status: 200 });
+    };
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, ...STRIPE }, undefined, warn, { fetchImpl, allowUrl: async () => true });
+    expect(integrations.billing).toBeInstanceOf(StripeBilling);
+    await expect(integrations.billing.ensureCustomer({ userId: USER, email: "mara@example.test" })).resolves.toEqual({ customerId: "cus_live1", sandbox: false });
+    expect(urls[0]?.startsWith("https://api.stripe.com/v1/customers/search?")).toBe(true);
+    expect(lines).toEqual([]);
+  });
+
+  it("live: the user's Stripe read uses the injected fetch and the connection's account", async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      seen.push(`${new URL(url).pathname} ${(init?.headers as Record<string, string>)["stripe-account"]}`);
+      return new Response(JSON.stringify({ object: "list", data: [], has_more: false }), { status: 200 });
+    };
+    const integrations = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, ...STRIPE }, undefined, () => undefined, { fetchImpl, allowUrl: async () => true });
+    await expect(integrations.payments({ token: "tok_user", scope: "acct_1User" }).read("c1")).resolves.toEqual({ payingCustomers: 0, mrrUsd: 0, revenueUsd: 0, sandbox: false });
+    expect(seen).toEqual(["/v1/subscriptions acct_1User", "/v1/charges acct_1User"]);
   });
 });

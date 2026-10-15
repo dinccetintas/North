@@ -1,6 +1,7 @@
 export * from "./roles/schema";
 export * from "./roles/loader";
 export * from "./runtime/types";
+export * from "./runtime/meta";
 export * from "./runtime/vars";
 export * from "./runtime/mock";
 export * from "./runtime/tool-policy";

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AgentOutputSchema, PlanOutputSchema, TASK_TYPES, outputJsonSchema, resolveModel, type TaskType } from "@north/core";
 import { buildTaskPrompt } from "../prompts/build";
 import type { RoleDefinition } from "../roles/schema";
+import { elapsedMinutes, withRunMeta } from "./meta";
 import { allowedToolsFor, disallowedToolsFor } from "./tool-policy";
 import type { AgentRunInput, AgentRunResult, AgentRunUsage, AgentRuntime } from "./types";
 
@@ -24,6 +25,15 @@ export interface ToolAuditEntry {
   readonly decision: "allow" | "deny";
 }
 
+/** One PreToolUse decision as the worker's tracer sees it (OBS-1): the audit entry plus the call id, the run's trace and why it was denied. */
+export interface ToolCallTrace extends ToolAuditEntry {
+  readonly toolUseId: string;
+  /** `AgentRunInput.traceId`; null when the run is not traced. */
+  readonly traceId: string | null;
+  /** Null when allowed. */
+  readonly reason: string | null;
+}
+
 /** Host callbacks the runtime needs; it never sees credentials. */
 export interface ClaudeAgentSdkDeps {
   readonly roles: ReadonlyMap<string, RoleDefinition>;
@@ -34,6 +44,14 @@ export interface ClaudeAgentSdkDeps {
   readonly isKilled?: (companyId: string) => Promise<boolean>;
   /** Environment handed to the agent subprocess; defaults to `minimalSubprocessEnv(process.env)`. */
   readonly subprocessEnv?: Readonly<Record<string, string>>;
+  /**
+   * OBS-1: called for every PreToolUse decision after the audit, allowed or
+   * denied, so the worker's tracer can add a span. Observability only: a
+   * failure here is swallowed and never changes the decision.
+   */
+  readonly onToolCall?: (call: ToolCallTrace) => void | Promise<void>;
+  /** Monotonic milliseconds for the subprocess wall time (`sandboxMinutes`); defaults to `performance.now`. */
+  readonly monotonicMs?: () => number;
 }
 
 const NORTH_SERVER_VERSION = "0.1.0";
@@ -89,9 +107,20 @@ export function memorySearchTool(input: AgentRunInput, deps: ClaudeAgentSdkDeps)
   );
 }
 
+/** Hands one decision to the tracer; tracing never decides a tool call, so its errors stop here. */
+async function traceToolCall(deps: ClaudeAgentSdkDeps, call: ToolCallTrace): Promise<void> {
+  if (!deps.onToolCall) return;
+  try {
+    await deps.onToolCall(Object.freeze(call));
+  } catch {
+    // a tracer outage must not deny or allow anything
+  }
+}
+
 /**
  * PreToolUse hook: records every call through `deps.audit` and denies tools
  * outside the role's allowed list. An audit failure denies too (fail closed).
+ * The final decision then goes to `deps.onToolCall` (fail open).
  */
 export function auditHook(input: AgentRunInput, allowed: readonly string[], deps: ClaudeAgentSdkDeps): HookCallback {
   return async (hookInput) => {
@@ -113,6 +142,7 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
     } catch (error) {
       reason = `Audit unavailable (${error instanceof Error ? error.message : String(error)}); call denied`;
     }
+    await traceToolCall(deps, { ...entry, decision: reason === undefined ? "allow" : "deny", toolUseId: hookInput.tool_use_id, traceId: input.traceId ?? null, reason: reason ?? null });
     if (reason === undefined) return {};
     return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
   };
@@ -180,16 +210,31 @@ export function mapResult(result: SDKResultMessage, taskType: TaskType, model: s
   return Object.freeze({ status: "succeeded", output: parsed.data, actions, sessionId: result.session_id, usage });
 }
 
-/** Production adapter over `query()` from `@anthropic-ai/claude-agent-sdk` (ADR 0004). */
+/**
+ * Production adapter over `query()` from `@anthropic-ai/claude-agent-sdk`
+ * (ADR 0004). Every result carries `sandboxMinutes`, the wall time from the
+ * start of the subprocess stream to its end or failure (0 when refused
+ * before it), and the input's `traceId`.
+ */
 export class ClaudeAgentSdkRuntime implements AgentRuntime {
   readonly name = "claude-agent-sdk" as const;
 
   constructor(private readonly deps: ClaudeAgentSdkDeps) {}
 
+  private now(): number {
+    return (this.deps.monotonicMs ?? (() => performance.now()))();
+  }
+
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     const role = this.deps.roles.get(input.role);
-    if (!role) return failed(`Unknown role "${input.role}"`, null, zeroUsage("unknown"));
-    if (!isTaskType(input.taskType)) return failed(`Unknown task type "${input.taskType}"`, null, zeroUsage(resolveModel(role.model)));
+    if (!role) return withRunMeta(failed(`Unknown role "${input.role}"`, null, zeroUsage("unknown")), input, 0);
+    if (!isTaskType(input.taskType)) return withRunMeta(failed(`Unknown task type "${input.taskType}"`, null, zeroUsage(resolveModel(role.model))), input, 0);
+    const started = this.now();
+    const result = await this.stream(input, role, input.taskType);
+    return withRunMeta(result, input, elapsedMinutes(this.now() - started));
+  }
+
+  private async stream(input: AgentRunInput, role: RoleDefinition, taskType: TaskType): Promise<AgentRunResult> {
     const model = resolveModel(role.model);
     try {
       await mkdir(taskWorkspace(this.deps.workspaceRoot, input.taskId), { recursive: true });
@@ -200,7 +245,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         if (message.type === "result") last = message;
       }
       if (!last) return failed("Agent SDK stream ended without a result message", null, zeroUsage(model));
-      return mapResult(last, input.taskType, model);
+      return mapResult(last, taskType, model);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return failed(`Agent SDK run failed: ${message}`, input.resume?.sessionId ?? null, zeroUsage(model));

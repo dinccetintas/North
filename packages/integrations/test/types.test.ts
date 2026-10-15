@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { BILLING_LOOKUP_KEYS, CREDIT_PACKS, SUBSCRIPTION_PLANS } from "@north/core";
+import { BillingProviderError } from "../src/errors";
 import {
+  BILLING_CHECKOUT_MODES,
+  CheckoutSessionInputSchema,
+  CreditPackSessionInputSchema,
+  EnsureCustomerInputSchema,
+  PortalSessionInputSchema,
+  isAllowedBillingUrl,
+  packForLookupKey,
+  type BillingProvider,
   CAMPAIGN_PROVIDER_STATUSES,
   CampaignInsightsSchema,
   CampaignSpecSchema,
@@ -62,7 +72,7 @@ describe("B4-1 insights, statuses and reply input (OUT-2)", () => {
   it("lists the provider campaign and message statuses the worker switches on", () => {
     expect(CAMPAIGN_PROVIDER_STATUSES).toEqual(["active", "paused", "ended", "unknown"]);
     expect(MESSAGE_STATUSES).toEqual(["sent", "unknown"]);
-    expect(PROVIDERS).toEqual(["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals"]);
+    expect(PROVIDERS).toEqual(["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals", "billing"]);
   });
 
   it("replies input needs a company and 1-500 message ids", () => {
@@ -156,5 +166,86 @@ describe("B5-1 pull requests and branches (PRO-2, EXP-1)", () => {
       openPullRequest: async () => ({ url: "sandbox://repos/sandbox/site/pull/1", number: 1, sandbox: true }),
     };
     await expect(code.openPullRequest({ companyId: "c1", fullName: "sandbox/site", head: "fix/x", title: "t" })).resolves.toMatchObject({ number: 1 });
+  });
+});
+
+describe("B6-1 billing contracts (BIL-1, BIL-2: the platform is the merchant)", () => {
+  const userId = "8f14e45f-ceea-467f-a0e6-0e1a2b3c4d5e";
+  const checkout = {
+    customerId: "cus_sandbox_1",
+    lookupKey: SUBSCRIPTION_PLANS.pro.lookupKey,
+    clientReferenceId: userId,
+    successUrl: "https://app.north.example/settings/billing?checkout=s1",
+    cancelUrl: "https://app.north.example/settings/billing",
+    idempotencyKey: "2b1f5a8e-4c1d-4e8a-9f3b-7d6c5e4a3b21",
+  };
+
+  it("checkout input takes a plan lookup key from the core config, defaults to subscription mode and refuses any other key", () => {
+    expect(CheckoutSessionInputSchema.parse(checkout)).toEqual({ ...checkout, mode: "subscription" });
+    expect(BILLING_CHECKOUT_MODES).toEqual(["subscription", "payment"]);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, lookupKey: "north_free_forever" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, lookupKey: "price_1Pxyz" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, lookupKey: CREDIT_PACKS[0]!.lookupKey }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, mode: "payment" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, mode: "payment", lookupKey: CREDIT_PACKS[0]!.lookupKey }).success).toBe(true);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, mode: "setup" }).success).toBe(false);
+    for (const key of BILLING_LOOKUP_KEYS) expect(typeof key).toBe("string");
+  });
+
+  it("checkout input needs a uuid user reference, a Stripe-shaped customer id and a safe idempotency key", () => {
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, clientReferenceId: "user-1" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, customerId: "../../etc/passwd" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, customerId: "acct_1" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, idempotencyKey: "" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, idempotencyKey: "a/b" }).success).toBe(false);
+  });
+
+  it("return URLs are https, or http on a loopback origin (the app in development); nothing else", () => {
+    expect(isAllowedBillingUrl("https://app.north.example/settings/billing")).toBe(true);
+    expect(isAllowedBillingUrl("http://localhost:3100/settings/billing")).toBe(true);
+    expect(isAllowedBillingUrl("http://127.0.0.1:3000/settings/billing?checkout={CHECKOUT_SESSION_ID}")).toBe(true);
+    expect(isAllowedBillingUrl("http://evil.example/settings/billing")).toBe(false);
+    expect(isAllowedBillingUrl("javascript:alert(1)")).toBe(false);
+    expect(isAllowedBillingUrl("https://user:pass@app.north.example/")).toBe(false);
+    expect(isAllowedBillingUrl("not a url")).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, successUrl: "http://evil.example/ok" }).success).toBe(false);
+    expect(CheckoutSessionInputSchema.safeParse({ ...checkout, cancelUrl: `https://a.example/${"x".repeat(2100)}` }).success).toBe(false);
+    expect(PortalSessionInputSchema.safeParse({ customerId: "cus_1", returnUrl: "http://localhost:3100/settings/billing" }).success).toBe(true);
+    expect(PortalSessionInputSchema.safeParse({ customerId: "cus_1", returnUrl: "ftp://files.example/" }).success).toBe(false);
+  });
+
+  it("a credit pack session names a pack from the core config; packForLookupKey maps a key back to its pack", () => {
+    const pack = { customerId: "cus_1", packId: "pack_100", clientReferenceId: userId, successUrl: checkout.successUrl, cancelUrl: checkout.cancelUrl, idempotencyKey: "k-1" };
+    expect(CreditPackSessionInputSchema.parse(pack)).toEqual(pack);
+    expect(CreditPackSessionInputSchema.safeParse({ ...pack, packId: "pack_999" }).success).toBe(false);
+    expect(packForLookupKey("north_pack_100")?.id).toBe("pack_100");
+    expect(packForLookupKey(SUBSCRIPTION_PLANS.solo.lookupKey)).toBeNull();
+  });
+
+  it("ensureCustomer input is a uuid user and an email", () => {
+    expect(EnsureCustomerInputSchema.parse({ userId, email: "mara@example.test" })).toEqual({ userId, email: "mara@example.test" });
+    expect(EnsureCustomerInputSchema.safeParse({ userId: "u1", email: "mara@example.test" }).success).toBe(false);
+    expect(EnsureCustomerInputSchema.safeParse({ userId, email: "nope" }).success).toBe(false);
+  });
+
+  it("BillingProviderError carries the provider's code and status only", () => {
+    const error = new BillingProviderError("card_declined", 402, "POST /v1/checkout/sessions");
+    expect(error.code).toBe("card_declined");
+    expect(error.status).toBe(402);
+    expect(error.message).toBe("stripe: POST /v1/checkout/sessions → 402 card_declined");
+    expect(new BillingProviderError("resource_missing").message).toBe("stripe: resource_missing");
+    expect(new BillingProviderError("Bad code with <html>").code).toBe("unknown");
+  });
+
+  it("Integrations.billing is one platform-configured BillingProvider, not a factory", async () => {
+    const billing: BillingProvider = {
+      ensureCustomer: async () => ({ customerId: "cus_1", sandbox: true }),
+      createCheckoutSession: async () => ({ url: "https://checkout.example/c", providerRef: "cs_1", sandbox: true }),
+      createCreditPackSession: async () => ({ url: "https://checkout.example/p", providerRef: "cs_2", sandbox: true }),
+      createPortalSession: async () => ({ url: "https://portal.example/p", providerRef: "bps_1", sandbox: true }),
+      subscription: async () => null,
+    };
+    const integrations: Pick<Integrations, "billing"> = { billing };
+    await expect(integrations.billing.subscription("cus_1")).resolves.toBeNull();
   });
 });

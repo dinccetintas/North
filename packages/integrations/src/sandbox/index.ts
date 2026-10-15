@@ -2,6 +2,7 @@ import type { AdsProvider, OutreachMailProvider } from "../growth-types";
 import type { Integrations, SandboxSink } from "../types";
 import { SandboxAds } from "./ads";
 import { SandboxAnalytics } from "./analytics";
+import { SandboxBilling } from "./billing";
 import { SandboxCodeHost } from "./code";
 import { SandboxDeploy, defaultSiteBaseUrl } from "./deploy";
 import { defaultSandboxRoot } from "./files";
@@ -21,17 +22,19 @@ export interface SandboxOptions {
   readonly clock?: () => Date;
 }
 
-/** The simulation-only surface the worker's sandbox routes and cron use (`deliver`, `pace`, `simulateReply`). */
+/** The simulation-only surface the worker's sandbox routes and cron use (`deliver`, `pace`, `simulateReply`, the billing pages' `completeCheckout` …). */
 export interface SandboxSimulation {
   readonly ads: SandboxAds;
   readonly outreach: SandboxOutreach;
   readonly analytics: SandboxAnalytics;
   readonly payments: SandboxPayments;
+  readonly billing: SandboxBilling;
 }
 
 /** The sandbox bundle: the `Integrations` contract plus typed access to the simulation methods. */
 export interface SandboxIntegrations extends Integrations {
   readonly mode: "sandbox";
+  readonly billing: SandboxBilling;
   readonly sandbox: SandboxSimulation;
 }
 
@@ -49,6 +52,7 @@ export function createSandboxIntegrations(sink?: SandboxSink, options: SandboxOp
   const payments = new SandboxPayments(sink);
   const code = new SandboxCodeHost(sink, root, clock);
   const deploy = new SandboxDeploy(sink, root, baseUrl);
+  const billing = new SandboxBilling(sink, root, clock, { siteBaseUrl: baseUrl });
   return Object.freeze({
     mode: "sandbox" as const,
     ads: () => ads,
@@ -61,7 +65,8 @@ export function createSandboxIntegrations(sink?: SandboxSink, options: SandboxOp
     code: () => code,
     deploy: () => deploy,
     signals: createSandboxSignals(clock),
-    sandbox: Object.freeze({ ads, outreach, analytics, payments }),
+    billing,
+    sandbox: Object.freeze({ ads, outreach, analytics, payments, billing }),
   });
 }
 
@@ -70,6 +75,25 @@ export { AdsStore, SandboxCampaignSchema, DeliveryLineSchema, sumDeliveries, typ
 export { SandboxOutreach, SandboxMessageSchema, OutreachSendInputSchema, type SandboxMessage, type SandboxReply } from "./outreach";
 export { SandboxAnalytics } from "./analytics";
 export { SandboxPayments } from "./payments";
+export {
+  SandboxBilling,
+  isSandboxBilling,
+  signSandboxWebhook,
+  signedSandboxEvent,
+  addMonths,
+  SANDBOX_STRIPE_WEBHOOK_SECRET,
+  SANDBOX_STRIPE_API_VERSION,
+  SANDBOX_BILLING_CHECKOUT_PATH,
+  SANDBOX_BILLING_PORTAL_PATH,
+  SandboxStripeEventSchema,
+  SandboxCheckoutSessionSchema,
+  SandboxSubscriptionSchema,
+  type SandboxBillingOptions,
+  type SandboxStripeEvent,
+  type SandboxCheckoutSession,
+  type SandboxSubscription,
+  type SignedSandboxEvent,
+} from "./billing";
 export { SandboxMail } from "./mail";
 export { SandboxPush } from "./push";
 export { SandboxCodeHost, SandboxPullRequestSchema, BRANCHES_DIR, PULLS_DIR, type SandboxPullRequest } from "./code";

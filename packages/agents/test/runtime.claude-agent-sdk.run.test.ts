@@ -74,3 +74,41 @@ describe("ClaudeAgentSdkRuntime.run", () => {
     expect(run).toMatchObject({ status: "failed", error: expect.stringContaining("without a result") });
   });
 });
+
+describe("B6-5 ClaudeAgentSdkRuntime run facts (BIL-2 sandbox minutes, OBS-1 trace id)", () => {
+  /** A monotonic clock that advances by `steps` on each read. */
+  const ticking = (...steps: number[]) => {
+    let now = 0;
+    return () => {
+      now += steps.shift() ?? 0;
+      return now;
+    };
+  };
+
+  it("sandboxMinutes is the wall time of the subprocess stream, and the trace id is echoed", async () => {
+    const output = { summary: "found", artifacts: [], memory: [], actions: [], confidence: "medium" };
+    queryMock.mockReturnValueOnce(stream(result({ structured_output: output })));
+    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(1_000, 90_000) });
+    const run = await runtime.run(makeInput({ traceId: "trace-9" }));
+    expect(run).toMatchObject({ status: "succeeded", sandboxMinutes: 1.5, traceId: "trace-9" });
+  });
+
+  it("a failed stream still reports the minutes it ran; a refusal before the subprocess reports 0", async () => {
+    queryMock.mockImplementationOnce(() => {
+      throw new Error("subprocess died");
+    });
+    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(5, 30_000) });
+    expect(await runtime.run(makeInput())).toMatchObject({ status: "failed", sandboxMinutes: 0.5 });
+    expect(await runtime.run(makeInput({ role: "nobody", traceId: "t" }))).toMatchObject({ status: "failed", sandboxMinutes: 0, traceId: "t" });
+    queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
+    const empty = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(0, 6_000) });
+    expect(await empty.run(makeInput())).toMatchObject({ status: "failed", sandboxMinutes: 0.1 });
+  });
+
+  it("defaults to the process's monotonic clock", async () => {
+    queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
+    const run = await new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot }).run(makeInput());
+    expect(run.sandboxMinutes).toBeGreaterThanOrEqual(0);
+    expect(run.sandboxMinutes).toBeLessThan(1);
+  });
+});

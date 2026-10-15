@@ -1,3 +1,4 @@
+import { withRunMeta } from "./meta";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types";
 
 export type MockScript = (input: AgentRunInput) => AgentRunResult;
@@ -7,6 +8,7 @@ const zeroUsage = (model = "mock") => Object.freeze({ model, inputTokens: 0, out
 /**
  * Deterministic runtime for tests and the smoke loop (ADR 0004). Scripts are
  * keyed by `${role}:${taskType}`; unknown keys fail loudly so fixtures stay honest.
+ * No subprocess runs, so every result reports `sandboxMinutes: 0` (M6).
  */
 export class MockRuntime implements AgentRuntime {
   readonly name = "mock" as const;
@@ -26,14 +28,9 @@ export class MockRuntime implements AgentRuntime {
     this.calls.push(input);
     const script = this.scripts.get(`${input.role}:${input.taskType}`);
     if (!script) {
-      return Object.freeze({
-        status: "failed",
-        error: `MockRuntime has no script for ${input.role}:${input.taskType}`,
-        sessionId: null,
-        usage: zeroUsage(),
-      });
+      return withRunMeta({ status: "failed", error: `MockRuntime has no script for ${input.role}:${input.taskType}`, sessionId: null, usage: zeroUsage() }, input, 0);
     }
-    return script(input);
+    return withRunMeta(script(input), input, 0);
   }
 }
 

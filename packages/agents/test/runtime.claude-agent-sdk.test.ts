@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { HookInput, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { outputJsonSchema } from "@north/core";
-import { auditHook, buildQueryOptions, mapResult, type ToolAuditEntry } from "../src/runtime/claude-agent-sdk";
+import { auditHook, buildQueryOptions, mapResult, type ToolAuditEntry, type ToolCallTrace } from "../src/runtime/claude-agent-sdk";
 import { MEMORY_SEARCH_TOOL } from "../src/runtime/tool-policy";
 import type { RoleDefinition } from "../src/roles/schema";
 import { loadTestRoles, makeDeps, makeInput, requireRole } from "./helpers";
@@ -134,5 +134,49 @@ describe("mapResult", () => {
     const errored = { ...successResult(undefined), subtype: "error_max_turns", errors: ["too many turns"] } as unknown as SDKResultMessage;
     const result = mapResult(errored, "prd", "m");
     expect(result).toMatchObject({ status: "failed", sessionId: "sess-1", error: expect.stringContaining("too many turns") });
+  });
+});
+
+describe("B6-5 onToolCall (OBS-1): the worker's tracer sees every PreToolUse decision", () => {
+  const signal = () => ({ signal: new AbortController().signal });
+
+  it("receives each call after the audit with the decision, the tool use id and the run's trace id", async () => {
+    const traces: ToolCallTrace[] = [];
+    const deps = { ...makeDeps(roles), onToolCall: (call: ToolCallTrace) => void traces.push(call) };
+    const hook = auditHook(makeInput({ traceId: "trace-1" }), [MEMORY_SEARCH_TOOL], deps);
+    await hook(preToolUse(MEMORY_SEARCH_TOOL), "tu-1", signal());
+    await hook(preToolUse("Bash"), "tu-1", signal());
+    expect(traces).toEqual([
+      { companyId: "company-1", taskId: "task-1", traceId: "trace-1", toolName: MEMORY_SEARCH_TOOL, toolUseId: "tu-1", input: { q: 1 }, decision: "allow", reason: null },
+      { companyId: "company-1", taskId: "task-1", traceId: "trace-1", toolName: "Bash", toolUseId: "tu-1", input: { q: 1 }, decision: "deny", reason: expect.stringContaining("not allowed") },
+    ]);
+  });
+
+  it("reports kill-switch and audit-failure denials, with a null trace id when the run has none", async () => {
+    const traces: ToolCallTrace[] = [];
+    const killed = { ...makeDeps(roles), isKilled: async () => true, onToolCall: async (call: ToolCallTrace) => void traces.push(call) };
+    await auditHook(makeInput(), [MEMORY_SEARCH_TOOL], killed)(preToolUse(MEMORY_SEARCH_TOOL), "tu-1", signal());
+    const broken = { ...makeDeps(roles), audit: async () => Promise.reject(new Error("db down")), onToolCall: (call: ToolCallTrace) => void traces.push(call) };
+    await auditHook(makeInput(), [MEMORY_SEARCH_TOOL], broken)(preToolUse(MEMORY_SEARCH_TOOL), "tu-1", signal());
+    expect(traces.map((t) => [t.decision, t.traceId, t.reason])).toEqual([
+      ["deny", null, expect.stringContaining("Kill switch")],
+      ["deny", null, expect.stringContaining("db down")],
+    ]);
+  });
+
+  it("a failing tracer never changes the decision", async () => {
+    const throwing = { ...makeDeps(roles), onToolCall: () => Promise.reject(new Error("langfuse down")) };
+    expect(await auditHook(makeInput(), [MEMORY_SEARCH_TOOL], throwing)(preToolUse(MEMORY_SEARCH_TOOL), "tu-1", signal())).toEqual({});
+    const syncThrow = { ...makeDeps(roles), onToolCall: () => { throw new Error("boom"); } };
+    expect(await auditHook(makeInput(), [MEMORY_SEARCH_TOOL], syncThrow)(preToolUse("Bash"), "tu-1", signal())).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+  });
+
+  it("buildQueryOptions wires the same hook, so the tracer sees calls of a real run", async () => {
+    const traces: ToolCallTrace[] = [];
+    const deps = { ...makeDeps(roles), onToolCall: (call: ToolCallTrace) => void traces.push(call) };
+    const options = buildQueryOptions(makeInput({ traceId: "trace-2" }), requireRole(roles, "research"), deps);
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    await hook?.(preToolUse("WebSearch"), "tu-1", signal());
+    expect(traces).toMatchObject([{ toolName: "WebSearch", decision: "allow", traceId: "trace-2" }]);
   });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BillingProvider } from "./billing-types";
 import type { AdsProvider, AnalyticsProvider, OutreachMailProvider, PaymentsProvider } from "./growth-types";
 import type { IntegrationMode } from "./mode";
 import type { SignalSource } from "./signals-types";
@@ -9,13 +10,15 @@ import type { SignalSource } from "./signals-types";
  * live code ever sees a malformed request.
  */
 
-export const PROVIDERS = ["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals"] as const;
+export const PROVIDERS = ["ads", "mail", "outreach", "analytics", "payments", "push", "code", "deploy", "images", "signals", "billing"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 /** Ads, outreach, analytics and payments contracts (M4) live in growth-types.ts and are part of this module's surface. */
 export * from "./growth-types";
 /** Signal source contracts (M5, PRO-1) live in signals-types.ts and are part of this module's surface. */
 export * from "./signals-types";
+/** The platform's own billing contracts (M6, BIL-1, BIL-2) live in billing-types.ts and are part of this module's surface. */
+export * from "./billing-types";
 
 export const MAIL_KINDS = ["first_contact", "reply", "notification"] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
@@ -216,7 +219,9 @@ export interface ImageProvider {
  * 0010), not to the platform; sandbox ignores the auth argument. `mail`
  * (platform Resend) and `push` stay platform-configured: they only carry
  * decision notifications to the CEO. `signals` (M5) are keyless public reads
- * the worker's scan runs one by one; each entry is its own step.
+ * the worker's scan runs one by one; each entry is its own step. `billing`
+ * (M6) is the platform's own Stripe account, where North is the merchant
+ * (BIL-1): platform-configured, never the user's keys.
  */
 export interface Integrations {
   readonly mode: IntegrationMode;
@@ -230,6 +235,7 @@ export interface Integrations {
   readonly code: (auth: ProviderAuth | null) => CodeHostProvider;
   readonly deploy: (auth: ProviderAuth | null) => DeployProvider;
   readonly signals: readonly SignalSource[];
+  readonly billing: BillingProvider;
 }
 
 /** What a sandbox adapter records instead of calling a real service. */

@@ -48,6 +48,8 @@ export interface AgentRunInput {
   readonly outputSchema: Record<string, unknown>;
   /** Answer to a decision card when resuming a waiting task. */
   readonly resume?: { readonly sessionId: string; readonly cardId: string; readonly optionId: string };
+  /** OBS-1: the worker tracer's trace for this run; echoed on the result and on every `onToolCall` event. */
+  readonly traceId?: string;
   /**
    * Values for the role prompt placeholders ({{company.name}}, {{thesis}},
    * {{goals}}, {{budgets}}, {{quota}}) plus structured hand-overs encoded as
@@ -74,10 +76,25 @@ export interface AgentRunUsage {
   readonly durationMs: number;
 }
 
-export type AgentRunResult =
+/**
+ * Per-run facts both runtimes report next to the outcome (M6). Optional at the
+ * type level only so results built by hand in tests stay valid: the mock and
+ * the SDK runtime always set `sandboxMinutes`, and set `traceId` whenever the
+ * input carried one. Read the minutes with `sandboxMinutesOf`.
+ */
+export interface AgentRunMeta {
+  /** OBS-1: `AgentRunInput.traceId`, for the record-run step to store on `agent_runs.trace_id`. */
+  readonly traceId?: string;
+  /** BIL-2: wall-clock minutes of the agent subprocess (SDK runtime); 0 for the mock. Feeds `usage.sandbox_minutes`. */
+  readonly sandboxMinutes?: number;
+}
+
+export type AgentRunResult = (
   | { readonly status: "succeeded"; readonly output: unknown; readonly actions: readonly ActionSpec[]; readonly sessionId: string; readonly usage: AgentRunUsage }
   | { readonly status: "waiting_decision"; readonly cardId: string; readonly sessionId: string; readonly usage: AgentRunUsage }
-  | { readonly status: "failed"; readonly error: string; readonly sessionId: string | null; readonly usage: AgentRunUsage };
+  | { readonly status: "failed"; readonly error: string; readonly sessionId: string | null; readonly usage: AgentRunUsage }
+) &
+  AgentRunMeta;
 
 export interface AgentRuntime {
   readonly name: "claude-agent-sdk" | "mock";

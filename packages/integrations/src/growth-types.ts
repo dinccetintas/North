@@ -147,6 +147,8 @@ export interface AnalyticsProvider {
 export interface PaymentsSnapshot {
   readonly payingCustomers: number;
   readonly mrrUsd: number;
+  /** M6 (OUT-2): paid, unrefunded USD of the trailing 30 days (`revenue_usd`); absent when the provider does not read charges. */
+  readonly revenueUsd?: number;
   readonly sandbox: boolean;
 }
 
