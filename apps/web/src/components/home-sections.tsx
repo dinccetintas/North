@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { DispatchBlockReason } from "@north/core/billing/dispatch";
 import { PlanRevisions, type PlanRevisionRow } from "@/components/plan-revisions";
 import { TaskList, TaskStatusBadge, type TaskRowData } from "@/components/task-list";
 
@@ -65,7 +66,7 @@ export interface WeekPlanData {
 }
 
 /** PLN-1/PLN-2: this week's plan, its tasks and, from the second plan on, why task types were cut. */
-export function WeekPlan({ plan, planningStatus, liveUrl }: { plan: WeekPlanData | null; planningStatus: string | null; liveUrl: string | null }) {
+export function WeekPlan({ plan, planningStatus, liveUrl, blockReason = null }: { plan: WeekPlanData | null; planningStatus: string | null; liveUrl: string | null; blockReason?: DispatchBlockReason | null }) {
   return (
     <section className="mt-10">
       <div className="flex items-baseline justify-between gap-4">
@@ -77,7 +78,7 @@ export function WeekPlan({ plan, planningStatus, liveUrl }: { plan: WeekPlanData
           <p className="border border-surface-border bg-surface p-5">{plan.summary}</p>
           <PlanRevisions revisions={plan.revisions} />
           <div className="mt-3">
-            <TaskList tasks={plan.tasks} testId="week-tasks" emptyText="The plan has no tasks yet." liveUrl={liveUrl} />
+            <TaskList tasks={plan.tasks} testId="week-tasks" emptyText="The plan has no tasks yet." liveUrl={liveUrl} blockReason={blockReason} />
           </div>
         </div>
       ) : (

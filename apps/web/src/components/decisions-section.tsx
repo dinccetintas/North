@@ -37,7 +37,7 @@ const FALLBACK_TIMEZONE = "UTC";
  * "n of q" counter, and today's answered cards folded below (DEC-2/3). "Today"
  * is the owner's local day, the same day the database stamps on the card.
  */
-export async function DecisionsSection({ slug, companyId, stopped = false }: { slug: string; companyId: string; stopped?: boolean }) {
+export async function DecisionsSection({ slug, companyId, stopped = false, stoppedMessage = null }: { slug: string; companyId: string; stopped?: boolean; stoppedMessage?: string | null }) {
   const db = await createClient();
   const user = await currentUser();
   const profile = user ? await getProfile(db, user.id) : null;
@@ -66,7 +66,7 @@ export async function DecisionsSection({ slug, companyId, stopped = false }: { s
       ) : (
         <div className="mt-3 flex flex-col gap-3" data-testid="pending-cards">
           {pending.map((card) => (
-            <DecisionCard key={card.id} slug={slug} card={toCardData(card)} stopped={stopped} />
+            <DecisionCard key={card.id} slug={slug} card={toCardData(card)} stopped={stopped} stoppedMessage={stoppedMessage} />
           ))}
         </div>
       )}

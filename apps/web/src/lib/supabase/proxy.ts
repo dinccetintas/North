@@ -1,12 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { publicEnv } from "@/lib/env";
-
-const PUBLIC_PREFIXES = ["/login", "/auth", "/api/", "/p/", "/_next", "/favicon"];
-
-function isPublicPath(pathname: string): boolean {
-  return pathname === "/" || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
-}
+import { isPublicPath } from "@/lib/public-paths";
 
 /**
  * Refreshes the Supabase session cookie on every matched request and redirects

@@ -5,6 +5,13 @@ import { KillSwitch } from "@/components/kill-switch";
 
 type Params = Promise<{ slug: string }>;
 
+/** What the banner under the bar says for each pause (ADR 0014); the M2 wording stays for the owner's own stop. */
+const PAUSE_BANNER: Readonly<Record<string, string>> = Object.freeze({
+  user: "All agents are stopped. Queue frozen, campaigns paused.",
+  subscription_ended: "All agents are stopped: the subscription ended. Queue frozen, campaigns paused; your data is kept for 90 days.",
+  retention: "Archived: the retention period ended. Export what you need from Settings.",
+});
+
 /** Shared chrome for every company screen: name, section nav and the kill switch (visible everywhere). */
 export default async function CompanyLayout({ children, params }: { children: React.ReactNode; params: Params }) {
   const { slug } = await params;
@@ -21,12 +28,12 @@ export default async function CompanyLayout({ children, params }: { children: Re
             </span>
             <CompanyNav slug={slug} />
           </div>
-          <KillSwitch companyId={company.id} active={company.killSwitchActive} />
+          <KillSwitch companyId={company.id} active={company.killSwitchActive} pausedReason={company.pausedReason ?? null} />
         </div>
       </div>
       {company.killSwitchActive ? (
-        <p className="mono-label mx-auto mt-4 w-full max-w-3xl border border-error bg-error-bg px-3 py-3 text-error sm:px-6" role="status">
-          All agents are stopped. Queue frozen, campaigns paused.
+        <p className="mono-label mx-auto mt-4 w-full max-w-3xl border border-error bg-error-bg px-3 py-3 text-error sm:px-6" role="status" data-paused-reason={company.pausedReason ?? "user"}>
+          {PAUSE_BANNER[company.pausedReason ?? "user"] ?? PAUSE_BANNER.user}
         </p>
       ) : null}
       {children}

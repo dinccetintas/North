@@ -3,6 +3,7 @@ import { briefEmptyText, wordsLabel, type BriefView } from "@/lib/brief-view";
 import { roleTitle, tierLabel } from "@/lib/labels";
 import { BriefEscalations, BriefMetrics, BriefSection, BriefSignals, BriefSpend, BriefYesterday, Nothing } from "@/components/brief-sections";
 import { TaskStatusBadge } from "@/components/task-list";
+import { OfflineBriefCache } from "@/components/offline-brief-cache";
 
 function Decisions({ brief, slug }: { brief: BriefView; slug: string }) {
   const { pending, deferred, answeredYesterday } = brief.decisions;
@@ -54,6 +55,8 @@ export interface BriefPanelProps {
   readonly brief: BriefView | null;
   /** The owner's IANA zone: names the hour the first brief arrives. */
   readonly timezone: string;
+  /** The owner's brief hour (BRF-1, 0..23); the empty state names it. */
+  readonly briefHour?: number;
 }
 
 /**
@@ -61,12 +64,12 @@ export interface BriefPanelProps {
  * Composed by core from the ledger (not a model), one row per owner-local day;
  * the sections keep the brief's fixed order and every line is text.
  */
-export function BriefPanel({ slug, brief, timezone }: BriefPanelProps) {
+export function BriefPanel({ slug, brief, timezone, briefHour }: BriefPanelProps) {
   if (!brief) {
     return (
       <section className="mt-10" data-testid="brief-empty">
         <h2 className="mono-label text-faint">Morning brief</h2>
-        <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">{briefEmptyText(timezone)}</p>
+        <p className="mt-3 border border-surface-border bg-surface p-5 text-muted">{briefEmptyText(timezone, briefHour)}</p>
       </section>
     );
   }
@@ -82,6 +85,14 @@ export function BriefPanel({ slug, brief, timezone }: BriefPanelProps) {
         <h3 className="text-2xl" data-testid="brief-headline">
           {brief.headline}
         </h3>
+        {brief.blocked ? (
+          <p className="mono-label text-warning" data-testid="brief-blocked" data-reason={brief.blocked.reason}>
+            {brief.blocked.text}{" "}
+            <Link href="/settings/billing" className="underline">
+              Billing
+            </Link>
+          </p>
+        ) : null}
         {brief.stopped ? (
           <p className="mono-label text-error" data-testid="brief-stopped">
             All agents are stopped (kill switch).
@@ -96,6 +107,7 @@ export function BriefPanel({ slug, brief, timezone }: BriefPanelProps) {
         <BriefEscalations brief={brief} />
         <p className="mono-label text-faint">Written by the {roleTitle("chief_of_staff")} from the ledger, in its name.</p>
       </article>
+      <OfflineBriefCache slug={slug} brief={brief} />
     </section>
   );
 }

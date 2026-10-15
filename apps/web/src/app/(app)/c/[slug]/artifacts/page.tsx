@@ -41,6 +41,12 @@ export default async function ArtifactsPage({ params }: { params: Params }) {
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <p className="mono-label text-faint">{artifacts.length} artifacts</p>
       <h1 className="mt-1 text-4xl">Artifacts</h1>
+      <p className="mono-label mt-2 text-faint" data-testid="artifact-formats">
+        MD here; PDF and PPTX in your{" "}
+        <Link href="/settings/export" className="underline">
+          export
+        </Link>
+      </p>
 
       {groups.length === 0 ? (
         <p className="mt-8 border border-surface-border bg-surface p-5 text-muted">

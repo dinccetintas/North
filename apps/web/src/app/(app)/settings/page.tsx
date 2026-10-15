@@ -1,34 +1,28 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getProfile, listActiveAutoRules, listCompanies } from "@north/db";
-import { MAX_DAILY_QUOTA, MIN_DAILY_QUOTA } from "@north/core/decisions/types";
+import { listActiveAutoRules } from "@north/db";
+import { BRIEF_HOUR } from "@north/core/time";
 import { createClient, currentUser } from "@/lib/supabase/server";
+import { ownerCompanies, ownerProfile } from "@/lib/account";
+import { loadPlanSnapshot } from "@/lib/billing-data";
 import { loadCostRows } from "@/lib/cost-data";
 import { COST_WINDOW_DAYS } from "@/lib/cost-view";
+import { ENTITLEMENT_STATUS_LABELS, SUBSCRIPTION_PLAN_LABELS } from "@/lib/labels";
 import { AutoRulesList, type AutoRuleRow } from "@/components/auto-rules-list";
 import { CostDashboard } from "@/components/cost-dashboard";
+import { ProfileForm } from "@/components/profile-form";
 import { PushEnable } from "@/components/push-enable";
-import { updateProfileAction } from "./actions";
 
 export const metadata = { title: "Settings" };
 
 type SearchParams = Promise<{ saved?: string; error?: string }>;
 
-const inputClass = "hairline bg-bg px-3 py-3 outline-none focus:border-deep";
-const QUOTAS = Array.from({ length: MAX_DAILY_QUOTA - MIN_DAILY_QUOTA + 1 }, (_, i) => MIN_DAILY_QUOTA + i);
-
-/** IANA zones the runtime knows; the profile's zone is always included so the select never loses it. */
-function timezoneOptions(current: string): readonly string[] {
-  const known = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : ["UTC"];
-  return known.includes(current) ? known : [current, ...known];
-}
-
-/** Settings: decision quota, time zone, push notifications, the standing auto rules and the usage per company (DEC-2/3, OBS-1). */
+/** Settings: plan and credits (BIL-1/2), decision quota, time zone and brief hour, push, connections, export, the standing auto rules and the usage per company (DEC-2/3, BRF-1, OBS-1). */
 export default async function SettingsPage({ searchParams }: { searchParams: SearchParams }) {
   const [user, { saved, error }] = await Promise.all([currentUser(), searchParams]);
   if (!user) redirect("/login");
   const db = await createClient();
-  const [profile, companies] = await Promise.all([getProfile(db, user.id), listCompanies(db)]);
+  const [profile, companies, plan] = await Promise.all([ownerProfile(user.id), ownerCompanies(), loadPlanSnapshot(db, user.id)]);
   if (!profile) redirect("/login");
   const costs = await loadCostRows(db, companies, profile.timezone);
 
@@ -64,42 +58,26 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
       ) : null}
 
       <section className="mt-10">
-        <h2 className="mono-label text-faint">Decisions</h2>
-        <form action={updateProfileAction} className="mt-3 flex flex-col gap-5 border border-surface-border bg-surface p-5">
-          <div className="grid gap-5 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <label htmlFor="dailyDecisionQuota" className="mono-label">
-                Cards per day
-              </label>
-              <select id="dailyDecisionQuota" name="dailyDecisionQuota" defaultValue={profile.dailyDecisionQuota} className={inputClass} data-testid="settings-quota">
-                {QUOTAS.map((q) => (
-                  <option key={q} value={q}>
-                    {q}
-                  </option>
-                ))}
-              </select>
-              <p className="mono-label text-faint">Agents never open more than this many cards a day. Extra decisions wait for tomorrow.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              <label htmlFor="timezone" className="mono-label">
-                Time zone
-              </label>
-              <select id="timezone" name="timezone" defaultValue={profile.timezone} className={inputClass} data-testid="settings-timezone">
-                {timezoneOptions(profile.timezone).map((zone) => (
-                  <option key={zone} value={zone}>
-                    {zone}
-                  </option>
-                ))}
-              </select>
-              <p className="mono-label text-faint">The morning brief and the daily card quota follow this clock.</p>
-            </div>
-          </div>
-          <div>
-            <button type="submit" className="retro-button retro-button-primary" data-testid="settings-save">
-              Save
-            </button>
-          </div>
-        </form>
+        <h2 className="mono-label text-faint">Plan and credits</h2>
+        <div className="mt-3 flex flex-wrap items-baseline justify-between gap-4 border border-surface-border bg-surface p-5" data-testid="settings-plan">
+          <p>
+            <span className="font-display text-2xl" data-testid="settings-plan-name">
+              {plan.entitlement ? SUBSCRIPTION_PLAN_LABELS[plan.entitlement.planId] : "No plan"}
+            </span>
+            {plan.entitlement ? <span className="mono-label ml-3 text-faint">{ENTITLEMENT_STATUS_LABELS[plan.entitlement.status]}</span> : null}
+            <span className="mono-label ml-3 text-muted">
+              <span data-testid="settings-credits">{plan.balance}</span> credits
+            </span>
+          </p>
+          <Link href="/settings/billing" className="retro-button inline-block" data-testid="settings-billing">
+            Plan and credits
+          </Link>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">Decisions and brief</h2>
+        <ProfileForm dailyDecisionQuota={profile.dailyDecisionQuota} timezone={profile.timezone} briefHour={profile.briefHour ?? BRIEF_HOUR} />
       </section>
 
       <section className="mt-10">
@@ -118,6 +96,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Sea
           <p className="text-muted">GitHub and Vercel accounts the engineering agent builds and deploys with. Yours, connected by you.</p>
           <Link href="/settings/connections" className="retro-button inline-block" data-testid="settings-connections">
             Manage connections
+          </Link>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mono-label text-faint">Export</h2>
+        <div className="mt-3 flex flex-wrap items-baseline justify-between gap-4 border border-surface-border bg-surface p-5">
+          <p className="text-muted">Artifacts as MD, PDF and PPTX, your data as JSON and CSV. The code is already in your GitHub.</p>
+          <Link href="/settings/export" className="retro-button inline-block" data-testid="settings-export">
+            Export
           </Link>
         </div>
       </section>

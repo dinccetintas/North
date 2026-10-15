@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SiteFooter } from "@/components/site-footer";
 import { TerminalStrip } from "@/components/terminal-strip";
 
 const PROMISES = [
@@ -54,13 +55,7 @@ export default function LandingPage() {
         </ul>
       </section>
 
-      <footer className="mono-label flex flex-wrap gap-6 border-t border-gray-55 px-6 py-6 text-gray-88">
-        <span>About</span>
-        <span>Terms</span>
-        <span>Acceptable use</span>
-        <span>Privacy</span>
-        <span className="ml-auto">support@north.local</span>
-      </footer>
+      <SiteFooter tone="ink" />
     </main>
   );
 }

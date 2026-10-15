@@ -76,6 +76,25 @@ export async function approveWizard(page: Page, slug: string): Promise<void> {
 export const countOnboardingRows = (page: Page, status?: string) =>
   page.locator(`[data-testid="onboarding-tasks"] [data-testid="task-row"]${status ? `[data-status="${status}"]` : ""}`).count();
 
+/**
+ * M6: a second company for the signed-in owner, onboarded to its home. The
+ * owner's plan must allow it first (the trial is Solo, one company): call
+ * `grantPlan(userId, "pro")` or complete a sandbox checkout before this.
+ */
+export async function secondCompany(page: Page, project: string, name: string): Promise<string> {
+  await page.goto("/new");
+  await expect(page.getByTestId("plan-limit")).toHaveCount(0);
+  await page.getByLabel("Company name").fill(name);
+  await page.getByLabel("Thesis").fill(THESIS);
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(page).toHaveURL(/\/c\/[^/]+\/onboarding$/);
+  const slug = new URL(page.url()).pathname.split("/")[2];
+  if (!slug) throw new Error(`No slug in ${page.url()}`);
+  await fillWizard(page, `${project}-2`);
+  await approveWizard(page, slug);
+  return slug;
+}
+
 /** Sign in, create a company and run the wizard to the home screen. Returns the slug. */
 export async function onboardedCompany(page: Page, project: string, stamp: string, name: string): Promise<string> {
   await signIn(page, `founder-${stamp}-${project}@north.test`);

@@ -1,6 +1,9 @@
+import Link from "next/link";
 import type { TaskStatus } from "@north/core/tasks/lifecycle";
+import type { DispatchBlockReason } from "@north/core/billing/dispatch";
 import { isHttpUrl } from "@north/core/url";
-import { formatUsd, roleTitle, TASK_STATUS_CLASS, TASK_STATUS_LABEL } from "@/lib/labels";
+import { queuedBlockReason } from "@/lib/billing-view";
+import { dispatchBlockLabel, formatUsd, roleTitle, TASK_STATUS_CLASS, TASK_STATUS_LABEL } from "@/lib/labels";
 
 export interface TaskRowData {
   readonly id: string;
@@ -38,15 +41,34 @@ export function TaskStatusBadge({ status }: { status: string }) {
   );
 }
 
+/** BIL-1 / BIL-2: why a queued task is not running although nobody pressed the kill switch, with the way out. */
+function TaskBlocked({ reason }: { reason: DispatchBlockReason }) {
+  return (
+    <span className="col-span-3 mono-label text-warning sm:col-span-4" data-testid="task-blocked" data-reason={reason}>
+      {dispatchBlockLabel(reason)}
+      {reason === "credits_exhausted" || reason === "subscription_ended" ? (
+        <>
+          {" · "}
+          <Link href="/settings/billing" className="underline">
+            {reason === "credits_exhausted" ? "add credits" : "subscribe"}
+          </Link>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
 export interface TaskListProps {
   readonly tasks: readonly TaskRowData[];
   readonly testId: string;
   readonly emptyText: string;
   /** The company's live site URL; a done task whose evidence is this URL links as "live", any other URL as "preview". */
   readonly liveUrl?: string | null;
+  /** The company's dispatch refusal right now (core `dispatchDecision`); shown on queued rows. */
+  readonly blockReason?: DispatchBlockReason | null;
 }
 
-export function TaskList({ tasks, testId, emptyText, liveUrl = null }: TaskListProps) {
+export function TaskList({ tasks, testId, emptyText, liveUrl = null, blockReason = null }: TaskListProps) {
   if (tasks.length === 0) {
     return (
       <p className="border border-surface-border bg-surface p-5 text-muted" data-testid={testId}>
@@ -56,32 +78,36 @@ export function TaskList({ tasks, testId, emptyText, liveUrl = null }: TaskListP
   }
   return (
     <ul className="divide-y divide-surface-border border border-surface-border" data-testid={testId}>
-      {tasks.map((task) => (
-        <li
-          key={task.id}
-          data-testid="task-row"
-          data-task-id={task.id}
-          data-task-type={task.taskType}
-          data-status={task.status}
-          className="grid grid-cols-[5rem_1fr_auto] items-baseline gap-x-3 gap-y-1 px-4 py-3 sm:grid-cols-[5rem_11rem_1fr_auto]"
-        >
-          <TaskStatusBadge status={task.status} />
-          <span className="mono-label truncate text-muted">{roleTitle(task.role)}</span>
-          <span className="col-span-3 sm:col-span-1">
-            {task.title}
-            {task.status === "done" && task.evidence ? (
-              <>
-                {" "}
-                <EvidenceLink evidence={task.evidence} liveUrl={liveUrl} />
-              </>
+      {tasks.map((task) => {
+        const blocked = queuedBlockReason(task.status, blockReason);
+        return (
+          <li
+            key={task.id}
+            data-testid="task-row"
+            data-task-id={task.id}
+            data-task-type={task.taskType}
+            data-status={task.status}
+            className="grid grid-cols-[5rem_1fr_auto] items-baseline gap-x-3 gap-y-1 px-4 py-3 sm:grid-cols-[5rem_11rem_1fr_auto]"
+          >
+            <TaskStatusBadge status={task.status} />
+            <span className="mono-label truncate text-muted">{roleTitle(task.role)}</span>
+            <span className="col-span-3 sm:col-span-1">
+              {task.title}
+              {task.status === "done" && task.evidence ? (
+                <>
+                  {" "}
+                  <EvidenceLink evidence={task.evidence} liveUrl={liveUrl} />
+                </>
+              ) : null}
+            </span>
+            <span className="col-start-3 row-start-1 mono-label text-faint sm:col-start-4">{formatUsd(task.costUsd)}</span>
+            {task.status === "failed" && task.lastError ? (
+              <span className="col-span-3 mono-label text-error sm:col-span-4">{task.lastError}</span>
             ) : null}
-          </span>
-          <span className="col-start-3 row-start-1 mono-label text-faint sm:col-start-4">{formatUsd(task.costUsd)}</span>
-          {task.status === "failed" && task.lastError ? (
-            <span className="col-span-3 mono-label text-error sm:col-span-4">{task.lastError}</span>
-          ) : null}
-        </li>
-      ))}
+            {blocked ? <TaskBlocked reason={blocked} /> : null}
+          </li>
+        );
+      })}
     </ul>
   );
 }

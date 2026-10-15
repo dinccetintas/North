@@ -32,6 +32,8 @@ export interface DecisionCardProps {
   readonly compact?: boolean;
   /** The company's kill switch is on: no answer is taken until the CEO resumes (M4 review H4). */
   readonly stopped?: boolean;
+  /** Why (M6): the owner's stop or billing's pause, from `answerRefusal`; defaults to the M4 wording. */
+  readonly stoppedMessage?: string | null;
 }
 
 /**
@@ -39,7 +41,7 @@ export interface DecisionCardProps {
  * option is a button. After the tap the card shows the answer at once and the
  * server action tells the worker.
  */
-export function DecisionCard({ slug, card, compact = true, stopped = false }: DecisionCardProps) {
+export function DecisionCard({ slug, card, compact = true, stopped = false, stoppedMessage = null }: DecisionCardProps) {
   const [pending, startTransition] = useTransition();
   const [answered, setAnswered] = useState<string | null>(card.answeredOptionId);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +120,7 @@ export function DecisionCard({ slug, card, compact = true, stopped = false }: De
 
       {!answered && stopped ? (
         <p className="mono-label mt-3 text-error" data-testid="card-stopped" role="status">
-          {STOPPED_MESSAGE}
+          {stoppedMessage ?? STOPPED_MESSAGE}
         </p>
       ) : null}
       {!answered ? (

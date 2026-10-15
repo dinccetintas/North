@@ -16,6 +16,17 @@ export function integrationsMode(env: Readonly<Record<string, string | undefined
   return parsed.data;
 }
 
+const SentryDsnSchema = z.string().url().refine((value) => value.startsWith("https://"), { message: "https DSN" });
+
+/**
+ * OBS-1: the web's Sentry DSN (`NEXT_PUBLIC_SENTRY_DSN`, a public value by
+ * design; the worker's own DSN never reaches the web). Null turns Sentry off.
+ */
+export function sentryDsn(value: string | undefined = process.env.NEXT_PUBLIC_SENTRY_DSN): string | null {
+  const parsed = SentryDsnSchema.safeParse(value || undefined);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Validated public environment. Values are read explicitly so Next.js can
  * inline them for the browser bundle.

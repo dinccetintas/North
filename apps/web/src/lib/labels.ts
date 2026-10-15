@@ -4,8 +4,50 @@ import type { ArtifactKind, MetricKey, TaskType } from "@north/core/tasks/types"
 import type { TaskStatus } from "@north/core/tasks/lifecycle";
 import type { CampaignStatus, Channel } from "@north/core/metrics";
 import type { SignalSource, SignalStatus } from "@north/core/signals/types";
+import type { PausedReason } from "@north/core/companies";
+import type { DispatchBlockReason } from "@north/core/billing/dispatch";
+import type { EntitlementStatus } from "@north/core/billing/entitlements";
+import { SUBSCRIPTION_PLANS, type SubscriptionPlanId } from "@north/core/billing/plans";
 
 /** Human labels for everything the UI shows as a key. Extend here, never inline strings in pages. */
+
+/** M6 (ADR 0014): who set the kill switch. `user` resumes on a click; billing and retention do not. */
+export const PAUSED_REASON_LABELS: Readonly<Record<PausedReason, string>> = Object.freeze({
+  user: "Stopped by you",
+  subscription_ended: "Paused: subscription ended",
+  retention: "Archived",
+});
+
+/** Why a queued task did not run; the same words as the brief's blocked line and the portfolio headline. */
+export const DISPATCH_BLOCK_LABELS: Readonly<Record<DispatchBlockReason, string>> = Object.freeze({
+  kill_switch: "stopped (kill switch)",
+  subscription_ended: "paused: subscription ended",
+  retention: "archived",
+  credits_exhausted: "waiting for credits",
+});
+
+export const ENTITLEMENT_STATUS_LABELS: Readonly<Record<EntitlementStatus, string>> = Object.freeze({
+  trialing: "Trial",
+  active: "Active",
+  past_due: "Payment failed",
+  canceled: "Canceled",
+  ended: "Ended",
+});
+
+export const SUBSCRIPTION_PLAN_LABELS: Readonly<Record<SubscriptionPlanId, string>> = Object.freeze({
+  solo: SUBSCRIPTION_PLANS.solo.name,
+  pro: SUBSCRIPTION_PLANS.pro.name,
+  scale: SUBSCRIPTION_PLANS.scale.name,
+});
+
+export function pausedReasonLabel(reason: string | null): string | null {
+  if (reason === null) return null;
+  return reason in PAUSED_REASON_LABELS ? PAUSED_REASON_LABELS[reason as PausedReason] : reason.replace(/_/g, " ");
+}
+
+export function dispatchBlockLabel(reason: string): string {
+  return reason in DISPATCH_BLOCK_LABELS ? DISPATCH_BLOCK_LABELS[reason as DispatchBlockReason] : reason.replace(/_/g, " ");
+}
 
 export const METRIC_LABELS: Readonly<Record<MetricKey, string>> = Object.freeze({
   paying_customers: "Paying customers",

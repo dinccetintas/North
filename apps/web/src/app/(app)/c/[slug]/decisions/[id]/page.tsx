@@ -11,6 +11,7 @@ import { incidentForTask, signalForCard } from "@/lib/brief-data";
 import { formatDue, formatUsd, roleTitle, tierLabel } from "@/lib/labels";
 import { capCardCampaign, pendingCardActions } from "@/lib/ledger-data";
 import { DecisionCard } from "@/components/decision-card";
+import { answerRefusal } from "@/lib/kill-switch-guard";
 import { DecisionCampaign } from "@/components/decision-campaign";
 import { DecisionIncident } from "@/components/decision-incident";
 import { DecisionRecipients, type RecipientRowData } from "@/components/decision-recipients";
@@ -114,7 +115,7 @@ export default async function DecisionPage({ params }: { params: Params }) {
       </h1>
 
       <div className="mt-8">
-        <DecisionCard slug={slug} card={cardData} compact={false} stopped={company.killSwitchActive} />
+        <DecisionCard slug={slug} card={cardData} compact={false} stopped={company.killSwitchActive} stoppedMessage={answerRefusal(company)} />
       </div>
 
       {previewUrl ? (

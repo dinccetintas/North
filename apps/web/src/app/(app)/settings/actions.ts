@@ -16,18 +16,24 @@ const message = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-/** Quota (1-5) and time zone, validated by the repository before any write (DEC-3). */
+/** The brief hour arrives as a select value; anything but a whole hour 0..23 is refused before the repository (which checks again). */
+const BriefHourSchema = z.coerce.number().int().min(0).max(23);
+
+/** Quota (1-5), time zone and brief hour (0-23), validated by the repository before any write (DEC-3, BRF-1). */
 export async function updateProfileAction(formData: FormData): Promise<void> {
   const user = await currentUser();
   if (!user) redirect("/login");
   const quota = Number(String(formData.get("dailyDecisionQuota") ?? ""));
   const timezone = String(formData.get("timezone") ?? "").trim();
+  const rawHour = formData.get("briefHour");
+  const briefHour = rawHour === null ? undefined : BriefHourSchema.safeParse(String(rawHour));
   const db = await createClient();
   let error: string | null = null;
   try {
-    await updateProfile(db, user.id, { dailyDecisionQuota: quota, timezone });
+    if (briefHour !== undefined && !briefHour.success) throw new Error("brief hour out of range");
+    await updateProfile(db, user.id, { dailyDecisionQuota: quota, timezone, ...(briefHour?.success ? { briefHour: briefHour.data } : {}) });
   } catch (cause) {
-    error = message(cause, "Could not save: the quota must be 1 to 5 and the time zone a known IANA name.");
+    error = message(cause, "Could not save: the quota must be 1 to 5, the time zone a known IANA name and the brief hour 0 to 23.");
   }
   revalidatePath("/settings");
   redirect(settingsUrl(error ? { error } : { saved: true }));

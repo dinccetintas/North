@@ -7,6 +7,7 @@ const input: BriefInput = {
   day: "2026-10-20",
   companyName: "Acme",
   stopped: false,
+  blocked: null,
   yesterday: {
     outcomes: [{ what: "Launch test", metricKey: "signups", delta: 1, costUsd: 4, channel: "meta_ads" }],
     actions: [
@@ -43,8 +44,17 @@ describe("BRF-1 brief view", () => {
     expect(view.day).toBe("2026-10-20");
     expect(view.companyName).toBe("Acme");
     expect(view.stopped).toBe(false);
+    expect(view.blocked).toBeNull();
     expect(view.wordCount).toBe(brief.wordCount);
     expect(view.wordCount).toBeLessThanOrEqual(BRIEF_MAX_WORDS);
+  });
+
+  it("BIL-1/BIL-2: carries the blocked line with the brief's own words", () => {
+    const ended = briefView(composeBrief({ ...input, blocked: { reason: "subscription_ended" } }));
+    expect(ended.blocked).toEqual({ reason: "subscription_ended", text: "Agents paused: subscription ended. Subscribe to resume." });
+    const credits = briefView(composeBrief({ ...input, blocked: { reason: "credits_exhausted" } }));
+    expect(credits.blocked?.reason).toBe("credits_exhausted");
+    expect(credits.headline).toBe("Morning brief: Acme, 2026-10-20");
   });
 
   it("renders the sections in the brief's fixed order with the ledger's numbers", () => {
@@ -77,6 +87,8 @@ describe("BRF-1 brief view", () => {
     expect(wordsLabel(142)).toBe("142 words");
     expect(wordsLabel(1)).toBe("1 word");
     expect(briefEmptyText("Europe/Istanbul")).toBe("Your first brief arrives at 07:00 Europe/Istanbul");
+    expect(briefEmptyText("Europe/Istanbul", 9)).toBe("Your first brief arrives at 09:00 Europe/Istanbul");
+    expect(briefEmptyText("UTC", 24)).toBe("Your first brief arrives at 07:00 UTC");
     expect(signedDelta(3)).toBe("+3");
     expect(signedDelta(-2)).toBe("−2");
     expect(signedDelta(0)).toBe("0");

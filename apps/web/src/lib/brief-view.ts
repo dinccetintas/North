@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { briefMarkdown, SIGNAL_STATUS_WORDS } from "@north/core/brief/compose";
-import type { Brief } from "@north/core/brief/types";
+import { BLOCKED_WORDS, briefMarkdown, SIGNAL_STATUS_WORDS } from "@north/core/brief/compose";
+import type { Brief, BriefBlockReason } from "@north/core/brief/types";
 import { BRIEF_HOUR } from "@north/core/time";
 import { isHttpUrl } from "@north/core/url";
 
@@ -31,6 +31,8 @@ export interface BriefView {
   readonly day: string;
   readonly companyName: string;
   readonly stopped: boolean;
+  /** BIL-1 / BIL-2: why agents wait although nobody pressed the kill switch; the first line after the headline. */
+  readonly blocked: { readonly reason: BriefBlockReason; readonly text: string } | null;
   /** The first line of the markdown without its heading marker. */
   readonly headline: string;
   readonly wordCount: number;
@@ -65,6 +67,7 @@ export function briefView(brief: Brief): BriefView {
     day: brief.day,
     companyName: brief.companyName,
     stopped: brief.stopped,
+    blocked: brief.blocked ? Object.freeze({ reason: brief.blocked.reason, text: BLOCKED_WORDS[brief.blocked.reason] }) : null,
     headline,
     wordCount: brief.wordCount,
     yesterday: markdownSection(markdown, "Yesterday"),
@@ -83,9 +86,10 @@ export function wordsLabel(count: number): string {
   return `${count} ${count === 1 ? "word" : "words"}`;
 }
 
-/** The empty state: when the first brief lands, in the owner's zone. */
-export function briefEmptyText(timezone: string): string {
-  return `Your first brief arrives at ${String(BRIEF_HOUR).padStart(2, "0")}:00 ${timezone}`;
+/** The empty state: when the first brief lands, at the owner's brief hour (BRF-1, default 07:00) in their zone. */
+export function briefEmptyText(timezone: string, hour: number = BRIEF_HOUR): string {
+  const safe = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : BRIEF_HOUR;
+  return `Your first brief arrives at ${String(safe).padStart(2, "0")}:00 ${timezone}`;
 }
 
 /** "+3" / "−2" / "0" for a metric's change since the previous reading. */

@@ -1,11 +1,20 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { currentUser } from "@/lib/supabase/server";
+import { ownerCompanies, ownerEntitlement } from "@/lib/account";
+import { activeCompanyCount, newCompanyGate } from "@/lib/portfolio-view";
 import { createCompanyAction } from "./actions";
 
 export const metadata = { title: "New company" };
 
 type SearchParams = Promise<{ error?: string }>;
 
+/** ONB-1 with the plan's company limit (BIL-1): the core message first; the database trigger is the authority. */
 export default async function NewCompanyPage({ searchParams }: { searchParams: SearchParams }) {
-  const { error } = await searchParams;
+  const [user, { error }] = await Promise.all([currentUser(), searchParams]);
+  if (!user) redirect("/login");
+  const [entitlement, companies] = await Promise.all([ownerEntitlement(user.id), ownerCompanies()]);
+  const gate = newCompanyGate(entitlement, activeCompanyCount(companies));
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6">
@@ -16,11 +25,19 @@ export default async function NewCompanyPage({ searchParams }: { searchParams: S
         connections come next.
       </p>
 
-      {error ? (
+      {error && error !== gate.reason ? (
         <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert">
           {error}
         </p>
       ) : null}
+      {gate.allowed ? null : (
+        <p className="mono-label mt-6 flex flex-wrap items-baseline justify-between gap-3 border border-deep px-3 py-3 text-deep" data-testid="plan-limit">
+          <span>{gate.reason}</span>
+          <Link href="/settings/billing" className="retro-button" data-testid="plan-limit-billing">
+            See plans
+          </Link>
+        </p>
+      )}
 
       <form action={createCompanyAction} className="mt-8 flex flex-col gap-5">
         <div className="flex flex-col gap-2">
@@ -58,7 +75,7 @@ export default async function NewCompanyPage({ searchParams }: { searchParams: S
             <input id="whyNow" name="whyNow" maxLength={500} className="hairline bg-bg px-3 py-3 outline-none focus:border-deep" />
           </div>
         </div>
-        <button type="submit" className="retro-button retro-button-primary self-start">
+        <button type="submit" className="retro-button retro-button-primary self-start disabled:cursor-not-allowed disabled:opacity-50" disabled={!gate.allowed} data-testid="create-company">
           Create company
         </button>
       </form>

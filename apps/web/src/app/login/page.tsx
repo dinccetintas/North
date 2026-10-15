@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SiteFooter } from "@/components/site-footer";
 import { sendMagicLink, signInWithGoogle } from "./actions";
 
 type SearchParams = Promise<{ sent?: string; error?: string; next?: string }>;
@@ -10,7 +11,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
   const next = params.next && params.next.startsWith("/") ? params.next : "/companies";
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
+    <main className="flex min-h-screen flex-col bg-bg text-fg">
       <header className="flex items-center justify-between px-6 py-5">
         <Link href="/" className="font-display text-3xl">
           North
@@ -64,9 +65,20 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
         </form>
 
         <p className="mono-label mt-6 text-faint">
-          By continuing you agree to the terms of service and privacy notice.
+          By continuing you agree to the{" "}
+          <Link href="/legal/terms" className="underline">
+            terms of service
+          </Link>{" "}
+          and{" "}
+          <Link href="/legal/privacy" className="underline">
+            privacy notice
+          </Link>
+          .
         </p>
       </section>
+      <div className="mt-auto pt-16">
+        <SiteFooter />
+      </div>
     </main>
   );
 }
