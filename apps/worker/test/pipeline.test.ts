@@ -1,4 +1,8 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SentryIssueSchema, fixTaskInput } from "@north/core";
 import type { SandboxEvent } from "@north/integrations";
 import type { FetchLike } from "../src/services/verifier";
 import { directSteps, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState } from "./fake-db";
@@ -136,6 +140,66 @@ describe("runBuildPipeline (M3: repo → push → preview → go-live card)", ()
     const outcome = await runBuildPipeline(fakeDeps(state, events), directSteps, task.id, files);
     expect(outcome.status).toBe("failed");
     expect(events).toEqual([]);
+  });
+});
+
+describe("fix pipeline (PRO-2: push on fix/<shortId> → pull request → preview → go-live card)", () => {
+  const issue = SentryIssueSchema.parse({ id: "4501-id", shortId: "NORTH-7", title: "TypeError: x is undefined", culprit: "app/page.tsx", level: "error", permalink: "https://sentry.io/organizations/north/issues/4501/", firstSeen: null, project: { slug: "lumen-web" } });
+  const fixed = [
+    { path: "index.html", content: "<!-- fix: NORTH-7 --><h1>Lumen</h1><p>Fixed: TypeError</p>" },
+    { path: "styles.css", content: "h1{}" },
+  ];
+
+  it("pushes the fix on its branch, opens the PR (K1, notified, ref = the PR page), verifies the preview and opens the go-live card; approve → live evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "north-fix-"));
+    const deps = fakeDeps(state, events, 200, "sandbox", root);
+    const task = seedTask(state, { role: "engineering", taskType: "fix_error", title: "Fix NORTH-7: TypeError: x is undefined", input: fixTaskInput(issue), result: { artifactIds: ["art-1"], costUsd: 0, summary: "fixed" } });
+    const outcome = await runBuildPipeline(deps, directSteps, task.id, fixed);
+    expect(outcome).toMatchObject({ status: "live_card_opened", repoUrl: "sandbox://repos/sandbox/lumen-ledger-site", prUrl: "sandbox://repos/sandbox/lumen-ledger-site/pull/1" });
+    const heads = state.actions.filter((a) => !state.actions.some((b) => b.supersedes === a.id));
+    expect(heads.map((a) => [a.kind, a.tier, a.status])).toEqual([
+      ["repo.create", "K1", "notified"],
+      ["repo.push", "K1", "notified"],
+      ["repo.pull_request", "K1", "notified"],
+      ["deploy.preview", "K1", "notified"],
+      ["deploy.production", "K2", "pending"],
+    ]);
+    // The original (pending) rows carry the spec; the notified heads supersede them with the reference.
+    expect(state.actions.find((a) => a.kind === "repo.push")?.payload).toMatchObject({ branch: "fix/north-7" });
+    expect(state.actions.find((a) => a.kind === "repo.pull_request")?.payload).toMatchObject({ head: "fix/north-7", base: "main" });
+    expect(heads[2]).toMatchObject({ externalRef: "sandbox://repos/sandbox/lumen-ledger-site/pull/1" });
+    expect(events.map((e) => `${e.provider}:${e.op}`)).toEqual(["code:ensureRepo", "code:pushTree", "code:openPullRequest", "deploy:create"]);
+    expect(events[1]?.payload).toMatchObject({ branch: "fix/north-7" });
+    const card = state.cards.get(outcome.cardId!)!;
+    expect(card).toMatchObject({ tier: "K2", actionKind: "deploy.production", taskId: task.id });
+    expect(state.tasks.get(task.id)?.status).toBe("waiting_decision");
+
+    Object.assign(card, { answeredOptionId: "approve", answeredAt: new Date().toISOString(), answeredBy: "user" });
+    const settlement = await settleDecision(deps, card.id);
+    if (settlement.kind !== "perform") throw new Error(settlement.kind);
+    const performed = await performPending(deps, settlement.actionIds[0]!);
+    await completeAction(deps, { actionId: settlement.actionIds[0]!, tier: settlement.tier, outcome: performed });
+    expect(performed).toMatchObject({ ok: true, externalRef: "http://127.0.0.1:3101/sandbox/sites/live-lumen-ledger-site/" });
+    expect(await finishTaskIfIdle(deps, task.id)).toEqual({ status: "done" });
+    expect(state.tasks.get(task.id)?.evidence).toMatchObject({ kind: "url", ref: "http://127.0.0.1:3101/sandbox/sites/live-lumen-ledger-site/", verified: true });
+    // Running the pipeline again for the same fix reuses the open PR (same number) instead of opening a second one.
+    const again = seedTask(state, { role: "engineering", taskType: "fix_error", title: "Fix NORTH-7 again", input: fixTaskInput(issue) });
+    expect((await runBuildPipeline(deps, directSteps, again.id, fixed)).prUrl).toBe("sandbox://repos/sandbox/lumen-ledger-site/pull/1");
+  });
+
+  it("a build_site run still pushes to main and opens no pull request; explicit options win", async () => {
+    const root = await mkdtemp(join(tmpdir(), "north-fix-"));
+    const task = seedTask(state, { role: "engineering", taskType: "build_site" });
+    const outcome = await runBuildPipeline(fakeDeps(state, events, 200, "sandbox", root), directSteps, task.id, files, { branch: "release/1", openPr: true });
+    expect(outcome.prUrl).toMatch(/\/pull\/1$/);
+    expect(state.actions.find((a) => a.kind === "repo.push")?.payload).toMatchObject({ branch: "release/1" });
+    Object.assign(state, emptyState());
+    state.companies.set("company-1", { id: "company-1", slug: "lumen-ledger", name: "Lumen Ledger", ownerId: "user-1" });
+    const plain = seedTask(state, { role: "engineering", taskType: "build_site" });
+    const main = await runBuildPipeline(fakeDeps(state, events, 200, "sandbox", root), directSteps, plain.id, files);
+    expect(main.prUrl).toBeNull();
+    expect(state.actions.some((a) => a.kind === "repo.pull_request")).toBe(false);
+    expect(state.actions.find((a) => a.kind === "repo.push")?.payload).toMatchObject({ branch: "main" });
   });
 });
 

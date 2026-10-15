@@ -24,6 +24,12 @@ const EnvSchema = z
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     AGENTS_DIR: z.string().default(resolve(process.cwd(), "../../agents")),
+    /** The Sentry internal integration's client secret: the issue webhook is signed with it (PRO-2, ADR 0013). Sandbox mode defaults it; live mode mounts the route only when set. */
+    SENTRY_CLIENT_SECRET: z.string().min(8).optional(),
+    /** The worker's own Sentry project (OBS-1); `@sentry/node` initialises only when set. */
+    SENTRY_DSN: z.string().url().optional(),
+    /** The dev worker's initial simulated instant (ISO, sandbox only): the harness moves it further through `POST /sandbox/clock`. */
+    NORTH_CLOCK_START: z.iso.datetime({ offset: true }).optional(),
   })
   .refine((env) => env.NODE_ENV !== "production" || Boolean(env.INNGEST_SIGNING_KEY), {
     message: "INNGEST_SIGNING_KEY is required in production",
@@ -32,8 +38,21 @@ const EnvSchema = z
   .refine((env) => env.INTEGRATIONS_MODE !== "live" || Boolean(env.CONNECTIONS_ENCRYPTION_KEY), {
     message: "CONNECTIONS_ENCRYPTION_KEY is required when INTEGRATIONS_MODE=live",
     path: ["CONNECTIONS_ENCRYPTION_KEY"],
+  })
+  .refine((env) => env.INTEGRATIONS_MODE === "sandbox" || env.NORTH_CLOCK_START === undefined, {
+    message: "NORTH_CLOCK_START is a sandbox-only setting; the live worker runs on the wall clock",
+    path: ["NORTH_CLOCK_START"],
   });
 export type WorkerEnv = z.infer<typeof EnvSchema>;
+
+/** The secret the smoke and the e2e sign Sentry webhooks with when no real one is configured (sandbox only). */
+export const SANDBOX_SENTRY_SECRET = "sandbox-sentry-secret";
+
+/** The secret `POST /webhooks/sentry` verifies against, or null when the route must not be mounted (live mode without a secret). */
+export function sentrySecretFor(env: Pick<WorkerEnv, "SENTRY_CLIENT_SECRET" | "INTEGRATIONS_MODE">): string | null {
+  if (env.SENTRY_CLIENT_SECRET) return env.SENTRY_CLIENT_SECRET;
+  return env.INTEGRATIONS_MODE === "sandbox" ? SANDBOX_SENTRY_SECRET : null;
+}
 
 /** Validated worker environment; fails fast with the missing keys named. */
 export function workerEnv(source: NodeJS.ProcessEnv = process.env): WorkerEnv {

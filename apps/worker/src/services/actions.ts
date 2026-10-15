@@ -30,10 +30,10 @@ const DEFAULT_CARD_WINDOW_MS = 24 * 3600 * 1000;
 export const INTERNAL_KINDS: ReadonlySet<ActionKind> = new Set(["research", "draft", "artifact.write", "memory.write"]);
 
 /** Kinds an adapter exists for. Anything else external is recorded `blocked` (`no_adapter`), never faked as executed. `support.reply.*` wait for a support inbox (M4 review H2). */
-export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.pause", "ads.resume", "budget.cap.raise", "email.send.first_contact", "email.send.reply", "repo.create", "repo.push", "deploy.preview", "deploy.production"]);
+export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads.pause", "ads.resume", "budget.cap.raise", "email.send.first_contact", "email.send.reply", "repo.create", "repo.push", "repo.pull_request", "deploy.preview", "deploy.production", "signal.pursue"]);
 
-/** Kinds only the worker itself may request (M4 review H1): a resume carries the worker's reason or a card; a cap raise is the collector's card. An agent asking for them is blocked. */
-export const WORKER_ONLY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.resume", "budget.cap.raise"]);
+/** Kinds only the worker itself may request (M4 review H1, ADR 0012): a resume carries the worker's reason or a card; a cap raise is the collector's card; a signal card is the scan's. An agent asking for them is blocked. */
+export const WORKER_ONLY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.resume", "budget.cap.raise", "signal.pursue"]);
 
 const specKey = (spec: ActionSpec): string => JSON.stringify({ kind: spec.kind, description: spec.description, amountUsd: spec.amountUsd ?? null, category: spec.category ?? null, payload: spec.payload ?? null });
 const storedSpec = (a: ActionRecord): ActionSpec | null => {
@@ -121,7 +121,9 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
   const { db } = deps;
   const action = ActionSpecSchema.parse({ ...raw, companyId: ctx.companyId, agentRole: ctx.agentRole });
   const [budgets, autoRules, killSwitchActive] = await Promise.all([listBudgets(db, ctx.companyId), listActiveAutoRules(db, ctx.companyId), getKillSwitch(db, ctx.companyId)]);
-  const decision: GateDecision = gate(action, { killSwitchActive, budgets, autoRules, cardDueAt: new Date(Date.now() + DEFAULT_CARD_WINDOW_MS).toISOString() });
+  // The card's deadline and `opened_at` come from the worker's clock (ADR 0011); the database derives the quota day from `opened_at` in the owner's zone.
+  const openedAt = deps.clock().toISOString();
+  const decision: GateDecision = gate(action, { killSwitchActive, budgets, autoRules, cardDueAt: new Date(deps.clock().getTime() + DEFAULT_CARD_WINDOW_MS).toISOString() });
   const base = { companyId: ctx.companyId, taskId: ctx.taskId, agentRole: ctx.agentRole, kind: action.kind, tier: decision.tier, description: action.description, sandbox: deps.integrations.mode === "sandbox" };
   const payload = { ...(action.payload ?? {}), spec: action, gate: decision.kind, reasons: [...decision.reasons] };
 
@@ -149,7 +151,7 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
   const refusal = action.kind === "email.send.first_contact" ? await batchOpenRefusal(deps, ctx.companyId, action) : null;
   if (refusal) return blockWith(db, base, payload, BATCH_MISMATCH, refusal);
   try {
-    const card = await openCard(db, { ...decision.card, taskId: ctx.taskId });
+    const card = await openCard(db, { ...decision.card, taskId: ctx.taskId, openedAt });
     const actionId = await recordAction(db, { ...base, payload, status: "pending", decisionCardId: card.id });
     await parkTask(db, ctx.task);
     return { kind: "card", actionId, cardId: card.id, dueAt: card.dueAt };

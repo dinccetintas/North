@@ -1,4 +1,4 @@
-import { ActionSpecSchema, AgentOutputSchema, PlanOutputSchema, outputJsonSchema, type ActionSpec, type AgentOutput, type OutputFile } from "@north/core";
+import { ActionSpecSchema, AgentOutputSchema, OutputFilesSchema, PlanOutputSchema, outputJsonSchema, type ActionSpec, type AgentOutput, type OutputFile } from "@north/core";
 import { workspaceFiles } from "@north/agents";
 import { writeTree } from "@north/integrations";
 import { retryInstructions } from "./escalate";
@@ -8,6 +8,7 @@ import {
   getTask,
   headActionsForTask,
   importLeads,
+  listActionsByKind,
   listPendingCardsForTask,
   markTaskFailed,
   markTaskRunning,
@@ -41,9 +42,28 @@ export interface ExecuteTaskResult {
 const noActions = (status: ExecuteTaskResult["status"], taskId: string, extra: Partial<ExecuteTaskResult> = {}): ExecuteTaskResult =>
   Object.freeze({ status, taskId, artifactIds: [], costUsd: 0, summary: "", pendingActions: [], files: [], attempt: 0, ...extra });
 
+/** Task types whose run ends in the build pipeline (push, preview, go-live card). */
+const PIPELINE_TASKS: ReadonlySet<string> = new Set(["build_site", "fix_error"]);
+
+/** The site as last pushed (PRO-2): the files of the newest executed or notified `repo.push` of the company, or none. */
+async function latestPushedFiles(db: DbClient, companyId: string): Promise<readonly OutputFile[]> {
+  const pushes = await listActionsByKind(db, companyId, "repo.push", 365);
+  const head = pushes.find((a) => a.status === "executed" || a.status === "notified");
+  const files = OutputFilesSchema.safeParse(head?.payload.files);
+  return files.success ? files.data : [];
+}
+
+/** A fix edits the real site: before the run the workspace is seeded from the latest push when it is empty (the SDK runtime edits files in place). */
+async function seedWorkspace(deps: WorkerDeps, task: TaskRecord, workspaceDir: string): Promise<void> {
+  if (task.taskType !== "fix_error") return;
+  if ((await workspaceFiles(workspaceDir)).length > 0) return;
+  const files = await latestPushedFiles(deps.db, task.companyId);
+  if (files.length > 0) await writeTree(workspaceDir, files);
+}
+
 /** Mock runs return files in the output; SDK runs leave them in the workspace. Either way the pipeline gets one list. */
 async function collectFiles(task: TaskRecord, workspaceDir: string, output: AgentOutput | null): Promise<readonly OutputFile[]> {
-  if (task.taskType !== "build_site") return [];
+  if (!PIPELINE_TASKS.has(task.taskType)) return [];
   if (output?.files && output.files.length > 0) {
     await writeTree(workspaceDir, output.files);
     return output.files;
@@ -70,6 +90,7 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   const running = await markTaskRunning(db, taskId);
   const context = await companyContext(db, task.companyId, task.taskType);
   const workspaceDir = `${deps.env.WORKSPACE_ROOT}/${task.id}`;
+  await seedWorkspace(deps, task, workspaceDir);
   const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
   const result = await runtime.run({
     companyId: task.companyId,
@@ -124,7 +145,7 @@ async function resumeParkedTask(deps: WorkerDeps, task: TaskRecord): Promise<Exe
   const openCards = await listPendingCardsForTask(db, task.id);
   if (openCards.length > 0) return noActions("blocked", task.id, { error: "waiting on an open decision card" });
   const heads = await headActionsForTask(db, task.id);
-  const pipelineStarted = task.taskType === "build_site" && heads.some((a) => PIPELINE_KINDS.has(a.kind));
+  const pipelineStarted = PIPELINE_TASKS.has(task.taskType) && heads.some((a) => PIPELINE_KINDS.has(a.kind));
   if (!pipelineStarted) {
     if (deferred.length > 0) return noActions("ran", task.id, { ...carried, pendingActions: deferred });
     return noActions("blocked", task.id, { error: "nothing to resume" });

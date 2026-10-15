@@ -1,8 +1,12 @@
+import { briefMarkdown, type Brief } from "@north/core";
 import { companyOwnerId, getCard, getCompanyById, getProfile, listPushSubscriptions, recordNotification, type CardRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 
 /** Deep link to the card detail screen (WP-C2); the web app resolves the slug under RLS. */
 export const cardUrl = (appUrl: string, slug: string, cardId: string): string => `${appUrl.replace(/\/$/, "")}/c/${slug}/decisions/${cardId}`;
+
+/** The company's home screen, where the brief panel lives (BRF-1). */
+export const homeUrl = (appUrl: string, slug: string): string => `${appUrl.replace(/\/$/, "")}/c/${slug}`;
 
 interface Target {
   readonly card: CardRecord;
@@ -52,5 +56,51 @@ export async function notifyByEmail(deps: WorkerDeps, companyId: string, cardId:
 export async function notifyDecision(deps: WorkerDeps, companyId: string, cardId: string, appUrl: string): Promise<{ readonly push: number; readonly email: boolean }> {
   const push = await notifyByPush(deps, companyId, cardId, appUrl);
   const email = await notifyByEmail(deps, companyId, cardId, appUrl);
+  return { push, email };
+}
+
+/** The brief's subject line: "North: <company> morning brief <day>". */
+export const briefSubject = (brief: Pick<Brief, "companyName" | "day">): string => `North: ${brief.companyName} morning brief ${brief.day}`;
+
+const PUSH_BODY_MAX = 500;
+
+/** BRF-1 by push (`kind: brief`): the brief's first line to every subscription of the owner, linking to the home screen. */
+export async function notifyBriefPush(deps: WorkerDeps, companyId: string, brief: Brief, appUrl: string): Promise<number> {
+  const { db, integrations } = deps;
+  const company = await getCompanyById(db, companyId);
+  if (!company) throw new Error(`company ${companyId} not found`);
+  const ownerId = await companyOwnerId(db, companyId);
+  const headline = briefMarkdown(brief).split("\n")[0] ?? briefSubject(brief);
+  let delivered = 0;
+  for (const subscription of await listPushSubscriptions(db, ownerId)) {
+    const sent = await integrations.push.send(subscription, { title: briefSubject(brief).slice(0, 120), body: headline.slice(0, PUSH_BODY_MAX), url: homeUrl(appUrl, company.slug) });
+    await recordNotification(db, { companyId, userId: ownerId, channel: "push", kind: "brief", payload: { day: brief.day, endpoint: subscription.endpoint, error: sent.error ?? null }, status: sent.sandbox ? "sandbox" : sent.ok ? "sent" : "failed" });
+    if (sent.ok) delivered += 1;
+  }
+  return delivered;
+}
+
+/** BRF-1 by email (`kind: brief`): subject "North: <company> morning brief <day>", body = `briefMarkdown` (text, never HTML). */
+export async function notifyBriefEmail(deps: WorkerDeps, companyId: string, brief: Brief, appUrl: string): Promise<boolean> {
+  const { db, integrations } = deps;
+  const company = await getCompanyById(db, companyId);
+  if (!company) throw new Error(`company ${companyId} not found`);
+  const ownerId = await companyOwnerId(db, companyId);
+  const profile = await getProfile(db, ownerId);
+  if (!profile?.email) return false;
+  try {
+    const sent = await integrations.mail.send({ companyId, to: profile.email, subject: briefSubject(brief), text: `${briefMarkdown(brief)}\n\nOpen North: ${homeUrl(appUrl, company.slug)}`, kind: "notification" });
+    await recordNotification(db, { companyId, userId: ownerId, channel: "email", kind: "brief", payload: { day: brief.day, messageId: sent.messageId }, status: sent.sandbox ? "sandbox" : "sent" });
+    return true;
+  } catch (error) {
+    await recordNotification(db, { companyId, userId: ownerId, channel: "email", kind: "brief", payload: { day: brief.day, error: error instanceof Error ? error.message : String(error) }, status: "failed" });
+    return false;
+  }
+}
+
+/** Push and email for one brief (tests and scripts); the Inngest function runs them as separate steps. */
+export async function notifyBrief(deps: WorkerDeps, companyId: string, brief: Brief, appUrl: string): Promise<{ readonly push: number; readonly email: boolean }> {
+  const push = await notifyBriefPush(deps, companyId, brief, appUrl);
+  const email = await notifyBriefEmail(deps, companyId, brief, appUrl);
   return { push, email };
 }

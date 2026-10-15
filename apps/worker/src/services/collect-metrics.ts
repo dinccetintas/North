@@ -63,7 +63,7 @@ const attributedValue = (campaign: CampaignRecord, insights: CampaignInsights): 
  * samples, the ledger delta and the spend applied, in one RPC. A window whose
  * figures did not move writes nothing; a replayed window is a duplicate.
  */
-export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord, insights: CampaignInsights, today: string = todayIsoDate(), now: Date = new Date()): Promise<AttributedWindow> {
+export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord, insights: CampaignInsights, today: string = todayIsoDate(deps.clock()), now: Date = deps.clock()): Promise<AttributedWindow> {
   const key = `${campaign.channel}:${campaign.providerCampaignId}`;
   const [prevSpend, prevMetric] = await Promise.all([latestChannelSample(deps.db, campaign.companyId, "ad_spend_usd", key), latestChannelSample(deps.db, campaign.companyId, campaign.metricKey, key)]);
   const value = attributedValue(campaign, insights);
@@ -206,7 +206,7 @@ async function retryCapCards(deps: WorkerDeps, step: StepRunner, companyId: stri
  * and card → day roll → cap cards still owed → outreach replies → analytics
  * and payments samples.
  */
-export async function collectCompanyMetrics(deps: WorkerDeps, step: StepRunner, companyId: string, reason: MetricCollectEvent["reason"], now: () => Date = () => new Date()): Promise<CollectResult> {
+export async function collectCompanyMetrics(deps: WorkerDeps, step: StepRunner, companyId: string, reason: MetricCollectEvent["reason"], now: () => Date = deps.clock): Promise<CollectResult> {
   const today = todayIsoDate(now());
   const campaigns = await step.run("campaigns", () => listCampaigns(deps.db, companyId, { status: ["active", "paused_cap"] }));
   if (reason === "cron" && deps.integrations.mode === "sandbox") await step.run("pace", () => paceSandbox(deps, campaigns));

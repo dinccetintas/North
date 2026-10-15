@@ -36,7 +36,7 @@ export const collectCompanyMetricsFn = inngest.createFunction(
     const deps = await buildDeps();
     // Inngest types step results as Jsonify<T>; the collector's results are plain JSON, so the narrowing is sound.
     const runner: StepRunner = { run: (id, fn) => step.run(id, fn) as unknown as ReturnType<typeof fn> };
-    const result = await collectCompanyMetrics(deps, runner, companyId, reason);
+    const result = await collectCompanyMetrics(deps, runner, companyId, reason, deps.clock);
     if (result.cardsOpened.length > 0) {
       await step.sendEvent("cards-opened", result.cardsOpened.map((cardId) => ({ name: EVENT.decisionOpened, data: { companyId, cardId, taskId: null } })));
     }

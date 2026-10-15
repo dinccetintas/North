@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import { AdDeliverySchema } from "@north/core";
 import { isSandboxAds, isSandboxOutreach, type Integrations } from "@north/integrations";
 import { z } from "zod";
+import type { SimClock } from "./services/clock";
 
 /** Sandbox and live refs are short identifiers; anything else is refused before it reaches the adapters' path checks. */
 const RefSchema = z.string().regex(/^[A-Za-z0-9:._-]{1,120}$/);
 const ReplySchema = z.object({ at: z.iso.datetime({ offset: true }).optional() }).default({});
+const ClockSchema = z.object({ now: z.iso.datetime({ offset: true }) });
 
 const parseJson = (text: string): unknown => {
   try {
@@ -21,13 +23,14 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "
 export const isLoopbackHost = (host: string): boolean => LOOPBACK_HOSTS.has(host.trim().toLowerCase());
 
 /**
- * Simulation routes for the sandbox adapters (M4): the e2e flow, the smoke
- * script and a developer "report" a delivery window or a reply through the
- * worker's loopback server. Mounted in sandbox mode on a loopback host only;
- * in live mode, or on a worker bound to any other address, these paths do
- * not exist (404), so nothing can inject figures into a real ledger.
+ * Simulation routes for the sandbox adapters (M4) and the worker's clock
+ * (M5): the e2e flow, the smoke script and a developer "report" a delivery
+ * window or a reply, or move the clock, through the worker's loopback server.
+ * Mounted in sandbox mode on a loopback host only; in live mode, or on a
+ * worker bound to any other address, these paths do not exist (404), so
+ * nothing can inject figures into a real ledger or move a real day.
  */
-export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1"): Hono {
+export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1", simClock: SimClock | null = null): Hono {
   const app = new Hono();
   const ads = integrations.ads(null);
   const outreach = integrations.outreach(null);
@@ -55,5 +58,15 @@ export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1"): H
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
+
+  if (simClock) {
+    app.post("/sandbox/clock", async (c) => {
+      const body = ClockSchema.safeParse(parseJson(await c.req.text()));
+      if (!body.success) return c.json({ error: "expected { now: <ISO datetime> }" }, 400);
+      const now = simClock.set(body.data.now);
+      return c.json({ ok: true, now: now.toISOString(), offsetMs: simClock.offsetMs });
+    });
+    app.get("/sandbox/clock", (c) => c.json({ ok: true, now: simClock.now().toISOString(), offsetMs: simClock.offsetMs }));
+  }
   return app;
 }

@@ -116,7 +116,10 @@ export const settleDecisionFn = inngest.createFunction(
       for (const [i, actionId] of settlement.actionIds.entries()) {
         const outcome = await step.run(`perform-${i}`, () => performPending(deps, actionId));
         const done = await step.run(`record-${i}`, () => completeAction(deps, { actionId, tier: settlement.tier, outcome }));
-        if (done.status === "executed") await followUp(deps, runner, actionId, i);
+        if (done.status !== "executed") continue;
+        const next = await followUp(deps, runner, actionId, i);
+        // PRO-1: an approved signal card created a research task; it is dispatched here, outside the agent run.
+        if (next.kind === "dispatch") await step.sendEvent(`dispatch-${i}`, { name: EVENT.taskDispatch, data: { companyId: next.companyId, taskId: next.taskId } });
       }
     }
     if (settlement.kind === "resume") {
@@ -189,6 +192,8 @@ export const planWeekFn = inngest.createFunction(
     const killed = await step.run("check-kill-switch", () => getKillSwitch(deps.db, companyId));
     if (killed) return { skipped: "kill_switch", companyId };
     const plan = await step.run("plan", () => planWeek(deps, companyId));
+    // PLN-2: a plan rejected twice fails its planning task; the brief shows it, no event is sent.
+    if (plan.kind !== "created") return plan;
     await step.sendEvent("plan-created", { name: EVENT.planCreated, data: { companyId, planId: plan.planId } });
     await step.sendEvent(
       "dispatch-tasks",

@@ -49,7 +49,7 @@ async function priorCards(db: DbClient, rows: readonly ActionRecord[], key: CapK
  * already paused, so waiting costs nothing). Approving raises the cap for
  * the day and resumes the campaign (settle's follow-up).
  */
-export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate()): Promise<CapCardOutcome> {
+export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate(deps.clock())): Promise<CapCardOutcome> {
   const budget = await getBudget(deps.db, campaign.companyId, "ads");
   if (!budget) return { kind: "none", reason: "no ads budget" };
   const spec: ActionSpec = capCardSpec({ campaign, budget, cap, day });

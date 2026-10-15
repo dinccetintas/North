@@ -19,7 +19,7 @@ function gateCampaignAction(deps: WorkerDeps, campaign: CampaignRecord, spec: Ac
 }
 
 /** BUD-3, first half: pause the campaign at the provider (K1 `ads.pause` through the gate, `notified`) and mark the row `paused_cap` for the day. */
-export function pauseForCap(deps: WorkerDeps, step: StepRunner, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate(), stepId = `cap-pause-${campaign.id}`): Promise<GatedRun> {
+export function pauseForCap(deps: WorkerDeps, step: StepRunner, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate(deps.clock()), stepId = `cap-pause-${campaign.id}`): Promise<GatedRun> {
   const spec: ActionSpec = {
     kind: "ads.pause",
     companyId: campaign.companyId,
@@ -50,7 +50,7 @@ export function resumeCampaign(deps: WorkerDeps, step: StepRunner, campaign: Cam
  * themselves (K1); a total-cap pause never resumes without a card. Returns
  * the ids resumed.
  */
-export async function resumeAfterDayRoll(deps: WorkerDeps, step: StepRunner, companyId: string, today: string = todayIsoDate()): Promise<readonly string[]> {
+export async function resumeAfterDayRoll(deps: WorkerDeps, step: StepRunner, companyId: string, today: string = todayIsoDate(deps.clock())): Promise<readonly string[]> {
   const paused = (await listCampaigns(deps.db, companyId, { status: ["paused_cap"] })).filter((c) => c.pausedDay !== null && isBefore(c.pausedDay, today));
   if (paused.length === 0) return Object.freeze([]);
   const budget = await getBudget(deps.db, companyId, "ads");

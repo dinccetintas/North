@@ -189,6 +189,20 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
     expect(state.actions[0]?.payload.reasons).toContain("budget_cap");
   });
 
+  it("PRO-1 / ADR 0012: an agent-origin signal.pursue is blocked worker_only; the worker's own opens a K2 card with the evidence in its facts", async () => {
+    const task = seedTask(state, { role: "research", taskType: "market_report" });
+    const spec = { kind: "signal.pursue" as const, companyId: "x", agentRole: "research", requestedTier: "K2" as const, description: 'Look into "A post" (reddit, score 0.85)', payload: { signalId: "sig-1", kind: "opportunity", source: "reddit", title: "A post", url: "https://www.reddit.com/r/x/1/", score: 0.85, taskType: "signal_research" } };
+    const agent = await gateAction(fakeDeps(state, events), task.id, spec);
+    expect(agent).toMatchObject({ kind: "blocked", reason: "worker_only" });
+    expect(state.actions[0]).toMatchObject({ status: "blocked", payload: { worker_only: true } });
+    expect(state.cards.size).toBe(0);
+    const worker = await gateAction(fakeDeps(state, events), task.id, spec, { origin: "worker" });
+    if (worker.kind !== "card") throw new Error(worker.kind);
+    expect(state.cards.get(worker.cardId)).toMatchObject({ tier: "K2", actionKind: "signal.pursue", defaultOptionId: "decline", question: 'Look into "A post"? (reddit, score 0.85)' });
+    expect(state.cards.get(worker.cardId)?.rationale).toContain("evidence: https://www.reddit.com/r/x/1/");
+    expect(events).toEqual([]);
+  });
+
   it("H2: a payload that would spend more than the gated amount is rejected before gating", async () => {
     const task = seedTask(state);
     await expect(gateAction(fakeDeps(state, events), task.id, adsStart({ amountUsd: 10, payload: { dailyBudgetUsd: 1000 } }))).rejects.toThrow(/amountUsd/);

@@ -1,5 +1,5 @@
-import { ActionSpecSchema, type ActionKind, type ActionSpec } from "@north/core";
-import { markLeads, type DbClient } from "@north/db";
+import { ActionSpecSchema, signalPayload, type ActionKind, type ActionSpec } from "@north/core";
+import { markLeads, updateSignal, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { resolveCampaigns } from "./campaign-lookup";
 import { markCampaignActive, markCampaignPaused, registerCampaignFor, type PauseReason } from "./campaign-rows";
@@ -31,12 +31,19 @@ export interface ExecutedOutcome {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TASK_ID = /^[A-Za-z0-9-]{1,64}$/;
+/** The reference a performed `signal.pursue` carries: the research task it created. */
+export const TASK_REF_PREFIX = "task:";
+
+/** The task id behind a `task:<id>` reference, or null (the repositories validate the id itself). */
+export const taskIdFromRef = (ref: string): string | null => (ref.startsWith(TASK_REF_PREFIX) && TASK_ID.test(ref.slice(TASK_REF_PREFIX.length)) ? ref.slice(TASK_REF_PREFIX.length) : null);
 
 /**
  * What an executed action leaves behind besides its audit row: the campaign
  * row for a start, the status for a pause or resume, the lead's status for a
- * first contact. Runs inside the same durable step as the `executed`
- * transition; every write here is idempotent, so a retried step is harmless.
+ * first contact, the signal's status for a pursued signal. Runs inside the
+ * same durable step as the `executed` transition; every write here is
+ * idempotent, so a retried step is harmless.
  */
 export async function applyOutcome(deps: WorkerDeps, row: PendingRow, outcome: ExecutedOutcome): Promise<void> {
   const spec = row.spec;
@@ -62,7 +69,21 @@ export async function applyOutcome(deps: WorkerDeps, row: PendingRow, outcome: E
       if (leadId && UUID.test(leadId)) await markLeads(deps.db, row.companyId, [leadId], "contacted", { messageId: outcome.externalRef, ...(batchId ? { batchId } : {}) });
       return;
     }
+    case "signal.pursue": {
+      // PRO-1: the signal is approved and points at the research task the perform step created (ref `task:<id>`).
+      const signal = signalPayload(spec.payload);
+      const taskId = taskIdFromRef(outcome.externalRef);
+      if (signal && taskId) await updateSignal(deps.db, row.companyId, signal.signalId, { status: "approved", convertedTaskId: taskId });
+      return;
+    }
     default:
       return;
   }
+}
+
+/** What a declined action leaves behind: a `signal.pursue` card declined marks its signal `declined` (the default answer, ADR 0012). Idempotent. */
+export async function applyDeclined(deps: WorkerDeps, row: PendingRow): Promise<void> {
+  if (row.kind !== "signal.pursue" || !row.spec) return;
+  const signal = signalPayload(row.spec.payload);
+  if (signal) await updateSignal(deps.db, row.companyId, signal.signalId, { status: "declined" });
 }

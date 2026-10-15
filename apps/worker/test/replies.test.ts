@@ -64,7 +64,7 @@ describe("collectReplies (SLS-K2, OUT-2)", () => {
     // No replies yet: a 0 → 0 window would say nothing and is not written; the company series still gets its first sample.
     expect(await collectReplies(deps, "company-1")).toEqual({ batches: 1, entries: 0, totalReplies: 0 });
     expect(state.ledger).toHaveLength(0);
-    expect(state.metrics.filter((m) => m.metricKey === "email_replies")).toEqual([{ companyId: "company-1", metricKey: "email_replies", value: 0, source: "outreach" }]);
+    expect(state.metrics.filter((m) => m.metricKey === "email_replies")).toEqual([expect.objectContaining({ companyId: "company-1", metricKey: "email_replies", value: 0, source: "outreach" })]);
 
     const outreach = (deps.integrations as SandboxIntegrations).sandbox.outreach;
     await outreach.simulateReply(messageIds[0]!);

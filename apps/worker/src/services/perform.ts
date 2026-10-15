@@ -1,11 +1,12 @@
-import { isHttpUrl, type ActionSpec } from "@north/core";
-import { getBudget, getLead, raiseDailyCap, raiseTotalCap, siteUrls, type CampaignRecord, type LeadRecord } from "@north/db";
+import { isHttpUrl, signalPayload, signalTaskInput, type ActionSpec } from "@north/core";
+import { createTask, getBudget, getLead, getSignal, raiseDailyCap, raiseTotalCap, siteUrls, type CampaignRecord, type LeadRecord } from "@north/db";
 import { parseGmailRef, RepoFileSchema, type InReplyTo, type ProviderAuth } from "@north/integrations";
 import { z } from "zod";
 import type { WorkerDeps } from "../deps";
 import { activationRefusal, BudgetCapReachedError } from "./budget-check";
 import { resolveCampaigns } from "./campaign-lookup";
 import { todayIsoDate } from "./dates";
+import { TASK_REF_PREFIX } from "./outcomes";
 import { providerAuthFor } from "./provider-auth";
 
 /** What the action row knows that the spec does not: the card that approved it (null for K1 and auto-rule runs). */
@@ -136,7 +137,7 @@ async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload):
 async function raiseCap(deps: WorkerDeps, action: ActionSpec, payload: Payload): Promise<PerformResult> {
   const category = action.category ?? "ads";
   const amountUsd = action.amountUsd ?? 0;
-  const day = str(payload, "day", todayIsoDate());
+  const day = str(payload, "day", todayIsoDate(deps.clock()));
   if (payload.cap === "total") await raiseTotalCap(deps.db, { companyId: action.companyId, category, amountUsd });
   else {
     const result = await raiseDailyCap(deps.db, { companyId: action.companyId, category, amountUsd, day });
@@ -153,14 +154,38 @@ async function codeAndDeploy(deps: WorkerDeps, action: ActionSpec, payload: Payl
       return { externalRef: repo.url, sandbox: repo.sandbox, meta: { fullName: repo.fullName } };
     }
     case "repo.push": {
-      const pushed = await integrations.code(auth).pushTree({ companyId: action.companyId, fullName: str(payload, "fullName"), message: str(payload, "message", action.description), files: FilesSchema.parse(payload.files) });
+      const branch = str(payload, "branch");
+      const pushed = await integrations.code(auth).pushTree({ companyId: action.companyId, fullName: str(payload, "fullName"), message: str(payload, "message", action.description), files: FilesSchema.parse(payload.files), ...(branch ? { branch } : {}) });
       return { externalRef: pushed.url, sandbox: pushed.sandbox };
+    }
+    case "repo.pull_request": {
+      // PRO-2: the fix branch becomes a pull request in the user's repository; they merge it (EXP-1). The reference is the PR page.
+      const base = str(payload, "base");
+      const pr = await integrations.code(auth).openPullRequest({ companyId: action.companyId, fullName: str(payload, "fullName"), head: str(payload, "head"), ...(base ? { base } : {}), title: str(payload, "title", action.description), body: str(payload, "body") });
+      return { externalRef: pr.url, sandbox: pr.sandbox, meta: { number: String(pr.number) } };
     }
     default: {
       const deployment = await integrations.deploy(auth).create({ companyId: action.companyId, name: str(payload, "name"), target: action.kind === "deploy.production" ? "production" : "preview", files: FilesSchema.parse(payload.files) });
       return { externalRef: deployment.url, sandbox: deployment.sandbox };
     }
   }
+}
+
+/**
+ * `signal.pursue` (PRO-1, ADR 0012): no external effect; the approved card
+ * creates the `signal_research` task (research, K0) with the signal's facts
+ * as data, dispatched by settlement's follow-up. Idempotent: a signal that
+ * already has its task returns the same reference.
+ */
+async function pursueSignal(deps: WorkerDeps, action: ActionSpec): Promise<PerformResult> {
+  const signal = signalPayload(action.payload);
+  if (!signal) throw new Error("signal.pursue refused: the payload is not a signal");
+  const row = await getSignal(deps.db, action.companyId, signal.signalId);
+  if (!row) throw new Error(`signal.pursue refused: signal ${signal.signalId} is not this company's`);
+  const sandbox = deps.integrations.mode === "sandbox";
+  if (row.convertedTaskId) return { externalRef: `${TASK_REF_PREFIX}${row.convertedTaskId}`, sandbox };
+  const task = await createTask(deps.db, { companyId: action.companyId, role: "research", taskType: "signal_research", title: `Signal research: ${row.title}`.slice(0, 200), input: signalTaskInput(row), metricKey: "artifacts" });
+  return { externalRef: `${TASK_REF_PREFIX}${task.id}`, sandbox };
 }
 
 /**
@@ -184,9 +209,12 @@ export async function performAction(deps: WorkerDeps, action: ActionSpec, ctx: P
       return raiseCap(deps, action, payload);
     case "repo.create":
     case "repo.push":
+    case "repo.pull_request":
     case "deploy.preview":
     case "deploy.production":
       return codeAndDeploy(deps, action, payload, await providerAuthFor(deps, action.companyId, action.kind));
+    case "signal.pursue":
+      return pursueSignal(deps, action);
     default:
       throw new Error(`No adapter for action kind ${action.kind}`);
   }

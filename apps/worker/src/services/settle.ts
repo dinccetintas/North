@@ -6,6 +6,7 @@ import {
   getTask,
   headActionsForTask,
   latestMetric,
+  listActionsByKind,
   listOverdueCards,
   listPendingCardsForTask,
   markTaskDone,
@@ -23,7 +24,7 @@ import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./actions";
 import { resumeCampaign, type ResumeReason } from "./campaigns";
 import { CONNECT_OPTION, isConnectCard } from "./connect-card";
-import { loadActionRow } from "./outcomes";
+import { applyDeclined, loadActionRow, taskIdFromRef } from "./outcomes";
 import type { StepRunner } from "./steps";
 import { providerChecks, verifyEvidence } from "./verifier";
 
@@ -65,22 +66,35 @@ export async function settleDecision(deps: WorkerDeps, cardId: string): Promise<
   if (card.answeredOptionId !== "approve") {
     for (const action of actions) {
       await recordActionTransition(db, { actionId: action.id, status: "declined", note: `option ${card.answeredOptionId} by ${card.answeredBy ?? "user"}` });
+      const row = await loadActionRow(db, action.id);
+      if (row) await applyDeclined(deps, row);
     }
     return { kind: "declined", cardId, actionIds, taskId: first.taskId };
   }
   return { kind: "perform", cardId, actionIds, taskId: first.taskId, tier: first.tier };
 }
 
-export type FollowUp = { readonly kind: "none" } | { readonly kind: "resumed" | "resume_failed"; readonly campaignId: string };
+export type FollowUp =
+  | { readonly kind: "none" }
+  | { readonly kind: "resumed" | "resume_failed"; readonly campaignId: string }
+  /** A pursued signal created a research task; the Inngest function sends `task/dispatch` for it (PRO-1). */
+  | { readonly kind: "dispatch"; readonly companyId: string; readonly taskId: string };
 
 /**
  * What an executed action asks for next (the caller passes only actions it
  * just recorded `executed`): an approved cap raise resumes the campaign it
- * named (K1 `ads.resume` through the gate, its own steps). A resume that the
+ * named (K1 `ads.resume` through the gate, its own steps); an approved
+ * signal card hands back the research task to dispatch. A resume that the
  * caps refuse leaves the campaign paused.
  */
 export async function followUp(deps: WorkerDeps, step: StepRunner, actionId: string, index: number): Promise<FollowUp> {
   const row = await step.run(`follow-up-${index}-load`, () => loadActionRow(deps.db, actionId));
+  if (row?.kind === "signal.pursue") {
+    // The executed transition row (the chain head that supersedes the pending one) carries the `task:<id>` reference.
+    const ref = await step.run(`follow-up-${index}-ref`, async () => (await listActionsByKind(deps.db, row.companyId, "signal.pursue")).find((a) => a.supersedes === actionId)?.externalRef ?? null);
+    const taskId = ref ? taskIdFromRef(ref) : null;
+    return taskId ? { kind: "dispatch", companyId: row.companyId, taskId } : { kind: "none" };
+  }
   if (!row || row.kind !== "budget.cap.raise") return { kind: "none" };
   const campaignId = row.spec?.payload?.resumeCampaignId;
   if (typeof campaignId !== "string") return { kind: "none" };
@@ -103,7 +117,7 @@ export interface DefaultedCard {
  * K3 cards have none and stay open. Returns what was answered so the caller
  * can emit `decision/answered` for settlement.
  */
-export async function applyOverdueDefaults(deps: WorkerDeps, now: Date = new Date()): Promise<readonly DefaultedCard[]> {
+export async function applyOverdueDefaults(deps: WorkerDeps, now: Date = deps.clock()): Promise<readonly DefaultedCard[]> {
   const out: DefaultedCard[] = [];
   for (const card of await listOverdueCards(deps.db, now)) {
     const optionId = applyDefault(card);

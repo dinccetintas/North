@@ -51,7 +51,7 @@ export async function registerCampaignFor(deps: WorkerDeps, input: RegisterCampa
     if (!(error instanceof BudgetCapError)) throw error;
     console.error(`[campaigns] ${input.providerCampaignId} registered paused: ${error.message}`);
     const row = await registerCampaign(deps.db, { ...base, status: "paused_cap" });
-    return setCampaignStatus(deps.db, row.id, "paused_cap", { pausedDay: todayIsoDate(), lastError: error.message.slice(0, 2000) });
+    return setCampaignStatus(deps.db, row.id, "paused_cap", { pausedDay: todayIsoDate(deps.clock()), lastError: error.message.slice(0, 2000) });
   }
 }
 
@@ -62,7 +62,7 @@ export async function markCampaignActive(deps: WorkerDeps, campaignId: string): 
   } catch (error) {
     if (!(error instanceof BudgetCapError)) throw error;
     console.error(`[campaigns] ${campaignId} stays paused: ${error.message}`);
-    return setCampaignStatus(deps.db, campaignId, "paused_cap", { pausedDay: todayIsoDate(), lastError: error.message.slice(0, 2000) });
+    return setCampaignStatus(deps.db, campaignId, "paused_cap", { pausedDay: todayIsoDate(deps.clock()), lastError: error.message.slice(0, 2000) });
   }
 }
 
@@ -71,6 +71,6 @@ export type PauseReason = "cap" | "kill_switch" | "user";
 const PAUSED_STATUS = { cap: "paused_cap", kill_switch: "paused_kill", user: "paused_user" } as const;
 
 /** The row reflects a pause the provider confirmed; a cap pause remembers its day so the day roll can resume it. */
-export function markCampaignPaused(deps: WorkerDeps, campaignId: string, reason: PauseReason, day: string = todayIsoDate()): Promise<CampaignRecord> {
+export function markCampaignPaused(deps: WorkerDeps, campaignId: string, reason: PauseReason, day: string = todayIsoDate(deps.clock())): Promise<CampaignRecord> {
   return setCampaignStatus(deps.db, campaignId, PAUSED_STATUS[reason], { pausedDay: reason === "cap" ? day : null, lastError: null });
 }
