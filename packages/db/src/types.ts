@@ -116,6 +116,7 @@ export type Database = {
           session_id: string | null;
           status: string;
           task_id: string | null;
+          trace_id: string | null;
         };
         ComputedFields: never;
         Insert: {
@@ -133,6 +134,7 @@ export type Database = {
           session_id?: string | null;
           status: string;
           task_id?: string | null;
+          trace_id?: string | null;
         };
         Update: {
           company_id?: string;
@@ -149,6 +151,7 @@ export type Database = {
           session_id?: string | null;
           status?: string;
           task_id?: string | null;
+          trace_id?: string | null;
         };
         Relationships: [
           {
@@ -350,6 +353,96 @@ export type Database = {
           },
         ];
       };
+      billing_events: {
+        Row: {
+          applied_at: string | null;
+          event_id: string;
+          id: string;
+          payload: NonNullable<Json>;
+          received_at: string;
+          type: string;
+          user_id: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          applied_at?: string | null;
+          event_id: string;
+          id?: string;
+          payload: NonNullable<Json>;
+          received_at?: string;
+          type: string;
+          user_id?: string | null;
+        };
+        Update: {
+          applied_at?: string | null;
+          event_id?: string;
+          id?: string;
+          payload?: NonNullable<Json>;
+          received_at?: string;
+          type?: string;
+          user_id?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "billing_events_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      billing_sessions: {
+        Row: {
+          created_at: string;
+          error: string | null;
+          id: string;
+          kind: string;
+          pack_id: string | null;
+          plan_id: string | null;
+          provider_ref: string | null;
+          status: string;
+          updated_at: string;
+          url: string | null;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          error?: string | null;
+          id?: string;
+          kind: string;
+          pack_id?: string | null;
+          plan_id?: string | null;
+          provider_ref?: string | null;
+          status?: string;
+          updated_at?: string;
+          url?: string | null;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          error?: string | null;
+          id?: string;
+          kind?: string;
+          pack_id?: string | null;
+          plan_id?: string | null;
+          provider_ref?: string | null;
+          status?: string;
+          updated_at?: string;
+          url?: string | null;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "billing_sessions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       briefs: {
         Row: {
           brief_date: string;
@@ -543,12 +636,14 @@ export type Database = {
       };
       companies: {
         Row: {
+          archived_at: string | null;
           created_at: string;
           id: string;
           kill_switch_active: boolean;
           name: string;
           onboarding_step: string;
           owner_id: string;
+          paused_reason: string | null;
           public_page_enabled: boolean;
           sentry_project_slug: string | null;
           slug: string;
@@ -557,12 +652,14 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          archived_at?: string | null;
           created_at?: string;
           id?: string;
           kill_switch_active?: boolean;
           name: string;
           onboarding_step?: string;
           owner_id: string;
+          paused_reason?: string | null;
           public_page_enabled?: boolean;
           sentry_project_slug?: string | null;
           slug: string;
@@ -570,12 +667,14 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          archived_at?: string | null;
           created_at?: string;
           id?: string;
           kill_switch_active?: boolean;
           name?: string;
           onboarding_step?: string;
           owner_id?: string;
+          paused_reason?: string | null;
           public_page_enabled?: boolean;
           sentry_project_slug?: string | null;
           slug?: string;
@@ -666,6 +765,45 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "connections_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      credit_entries: {
+        Row: {
+          amount: number;
+          created_at: string;
+          id: string;
+          kind: string;
+          note: string;
+          ref: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          amount: number;
+          created_at?: string;
+          id?: string;
+          kind: string;
+          note?: string;
+          ref: string;
+          user_id: string;
+        };
+        Update: {
+          amount?: number;
+          created_at?: string;
+          id?: string;
+          kind?: string;
+          note?: string;
+          ref?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "credit_entries_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
             referencedRelation: "users";
@@ -767,6 +905,139 @@ export type Database = {
             columns: ["task_id"];
             isOneToOne: false;
             referencedRelation: "tasks";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      entitlements: {
+        Row: {
+          cancel_at: string | null;
+          company_limit: number;
+          created_at: string;
+          ended_at: string | null;
+          last_event_created: number | null;
+          monthly_credits: number;
+          period_end: string;
+          period_start: string;
+          plan_id: string;
+          price_usd: number;
+          purge_due: boolean;
+          retention_until: string | null;
+          status: string;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          cancel_at?: string | null;
+          company_limit: number;
+          created_at?: string;
+          ended_at?: string | null;
+          last_event_created?: number | null;
+          monthly_credits: number;
+          period_end: string;
+          period_start: string;
+          plan_id: string;
+          price_usd?: number;
+          purge_due?: boolean;
+          retention_until?: string | null;
+          status: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          cancel_at?: string | null;
+          company_limit?: number;
+          created_at?: string;
+          ended_at?: string | null;
+          last_event_created?: number | null;
+          monthly_credits?: number;
+          period_end?: string;
+          period_start?: string;
+          plan_id?: string;
+          price_usd?: number;
+          purge_due?: boolean;
+          retention_until?: string | null;
+          status?: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "entitlements_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      exports: {
+        Row: {
+          bytes: number | null;
+          company_id: string | null;
+          created_at: string;
+          error: string | null;
+          expires_at: string | null;
+          id: string;
+          include_archived: boolean;
+          kind: string;
+          manifest: Json | null;
+          status: string;
+          storage_path: string | null;
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          bytes?: number | null;
+          company_id?: string | null;
+          created_at?: string;
+          error?: string | null;
+          expires_at?: string | null;
+          id?: string;
+          include_archived?: boolean;
+          kind: string;
+          manifest?: Json | null;
+          status?: string;
+          storage_path?: string | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          bytes?: number | null;
+          company_id?: string | null;
+          created_at?: string;
+          error?: string | null;
+          expires_at?: string | null;
+          id?: string;
+          include_archived?: boolean;
+          kind?: string;
+          manifest?: Json | null;
+          status?: string;
+          storage_path?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "exports_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "exports_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];
@@ -1146,6 +1417,76 @@ export type Database = {
           },
         ];
       };
+      public_pages: {
+        Row: {
+          blurb: string;
+          company_id: string;
+          created_at: string;
+          headline: string;
+          listed: boolean;
+          metric_keys: string[];
+          show_goal: boolean;
+          show_site_link: boolean;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          blurb?: string;
+          company_id: string;
+          created_at?: string;
+          headline?: string;
+          listed?: boolean;
+          metric_keys?: string[];
+          show_goal?: boolean;
+          show_site_link?: boolean;
+          updated_at?: string;
+        };
+        Update: {
+          blurb?: string;
+          company_id?: string;
+          created_at?: string;
+          headline?: string;
+          listed?: boolean;
+          metric_keys?: string[];
+          show_goal?: boolean;
+          show_site_link?: boolean;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "public_pages_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: true;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      purge_log: {
+        Row: {
+          counts: NonNullable<Json>;
+          id: string;
+          purged_at: string;
+          reason: string;
+          user_hash: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          counts: NonNullable<Json>;
+          id?: string;
+          purged_at?: string;
+          reason: string;
+          user_hash: string;
+        };
+        Update: {
+          counts?: NonNullable<Json>;
+          id?: string;
+          purged_at?: string;
+          reason?: string;
+          user_hash?: string;
+        };
+        Relationships: [];
+      };
       push_subscriptions: {
         Row: {
           auth: string;
@@ -1410,28 +1751,34 @@ export type Database = {
       };
       usage: {
         Row: {
+          alerted_at: string | null;
           credits_used: number;
           id: string;
           llm_cost_usd: number;
           period: string;
           sandbox_minutes: number;
+          updated_at: string;
           user_id: string;
         };
         ComputedFields: never;
         Insert: {
+          alerted_at?: string | null;
           credits_used?: number;
           id?: string;
           llm_cost_usd?: number;
           period: string;
           sandbox_minutes?: number;
+          updated_at?: string;
           user_id: string;
         };
         Update: {
+          alerted_at?: string | null;
           credits_used?: number;
           id?: string;
           llm_cost_usd?: number;
           period?: string;
           sandbox_minutes?: number;
+          updated_at?: string;
           user_id?: string;
         };
         Relationships: [
@@ -1446,6 +1793,7 @@ export type Database = {
       };
       users: {
         Row: {
+          brief_hour: number;
           created_at: string;
           daily_decision_quota: number;
           email: string;
@@ -1456,6 +1804,7 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          brief_hour?: number;
           created_at?: string;
           daily_decision_quota?: number;
           email: string;
@@ -1465,6 +1814,7 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          brief_hour?: number;
           created_at?: string;
           daily_decision_quota?: number;
           email?: string;
@@ -1500,9 +1850,20 @@ export type Database = {
         };
         Returns: Json;
       };
+      credit_balance: { Args: { p_user_id: string }; Returns: number };
+      grant_trial_entitlement: {
+        Args: { p_user_id: string };
+        Returns: undefined;
+      };
       is_company_owner: {
         Args: { target_company_id: string };
         Returns: boolean;
+      };
+      owner_local_date: { Args: { p_company_id: string }; Returns: string };
+      public_page_view: { Args: { p_slug: string }; Returns: Json };
+      purge_owner: {
+        Args: { p_reason: string; p_user_id: string };
+        Returns: Json;
       };
       raise_daily_cap: {
         Args: {
@@ -1527,6 +1888,16 @@ export type Database = {
           rank: number;
           title: string;
         }[];
+      };
+      usage_apply: {
+        Args: {
+          p_cost_usd: number;
+          p_credits: number;
+          p_period: string;
+          p_sandbox_minutes: number;
+          p_user_id: string;
+        };
+        Returns: Json;
       };
     };
     Enums: {

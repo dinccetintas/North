@@ -3,7 +3,7 @@ import { companyOwnerId } from "../src/companies";
 import { openCard, QuotaExceededError } from "../src/decisions";
 import { DbError } from "../src/errors";
 import { getProfile, updateProfile } from "../src/users";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("users repository (settings: timezone and decision quota)", () => {
   let owned: OwnedCompany;
@@ -12,6 +12,8 @@ describe("users repository (settings: timezone and decision quota)", () => {
   beforeAll(async () => {
     owned = await createOwnerWithCompany("users");
     stranger = await createTestUser("users-stranger");
+    // A second company for the quota test: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
   });
 
   afterAll(async () => {
@@ -19,9 +21,9 @@ describe("users repository (settings: timezone and decision quota)", () => {
     await deleteTestUser(stranger);
   });
 
-  it("getProfile returns the auto-created profile with its defaults, or null when unknown", async () => {
+  it("getProfile returns the auto-created profile with its defaults (the plan mirrors the entitlement, the brief hour is 7), or null when unknown", async () => {
     const profile = await getProfile(owned.owner.client, owned.owner.id);
-    expect(profile).toEqual({ id: owned.owner.id, email: owned.owner.email, timezone: "UTC", dailyDecisionQuota: 3, plan: "free" });
+    expect(profile).toEqual({ id: owned.owner.id, email: owned.owner.email, timezone: "UTC", dailyDecisionQuota: 3, briefHour: 7, plan: "pro" });
     expect(Object.isFrozen(profile)).toBe(true);
     expect(await getProfile(service, "00000000-0000-0000-0000-000000000000")).toBeNull();
   });
@@ -34,13 +36,24 @@ describe("users repository (settings: timezone and decision quota)", () => {
     expect(await getProfile(service, owned.owner.id)).toEqual(tz);
   });
 
+  it("BRF-1: updateProfile sets the brief hour within 0..23; 24, -1 and 7.5 are refused before any write", async () => {
+    expect(await updateProfile(owned.owner.client, owned.owner.id, { briefHour: 9 })).toMatchObject({ briefHour: 9, timezone: "Europe/Istanbul" });
+    expect(await updateProfile(owned.owner.client, owned.owner.id, { briefHour: 0 })).toMatchObject({ briefHour: 0 });
+    await expect(updateProfile(owned.owner.client, owned.owner.id, { briefHour: 24 })).rejects.toThrow();
+    await expect(updateProfile(owned.owner.client, owned.owner.id, { briefHour: -1 })).rejects.toThrow();
+    await expect(updateProfile(owned.owner.client, owned.owner.id, { briefHour: 7.5 })).rejects.toThrow();
+    const direct = await owned.owner.client.from("users").update({ brief_hour: 24 }).eq("id", owned.owner.id);
+    expect(direct.error?.code).toBe("23514");
+    expect((await updateProfile(owned.owner.client, owned.owner.id, { briefHour: 9 })).briefHour).toBe(9);
+  });
+
   it("rejects quotas outside 1..5, unknown timezones and empty patches without writing", async () => {
     await expect(updateProfile(owned.owner.client, owned.owner.id, { dailyDecisionQuota: 0 })).rejects.toThrow();
     await expect(updateProfile(owned.owner.client, owned.owner.id, { dailyDecisionQuota: 6 })).rejects.toThrow();
     await expect(updateProfile(owned.owner.client, owned.owner.id, { dailyDecisionQuota: 2.5 })).rejects.toThrow();
     await expect(updateProfile(owned.owner.client, owned.owner.id, { timezone: "Mars/Olympus" })).rejects.toThrow();
     await expect(updateProfile(owned.owner.client, owned.owner.id, {})).rejects.toThrow();
-    expect(await getProfile(service, owned.owner.id)).toMatchObject({ dailyDecisionQuota: 5, timezone: "Europe/Istanbul" });
+    expect(await getProfile(service, owned.owner.id)).toMatchObject({ dailyDecisionQuota: 5, timezone: "Europe/Istanbul", briefHour: 9 });
   });
 
   it("profiles are private: another user reads null and cannot update", async () => {

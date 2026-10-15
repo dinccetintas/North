@@ -2,7 +2,7 @@ import type { SignalCandidate } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
 import { getSignal, insertSignals, knownSourceRefs, listSignals, SignalCapError, signalByRef, updateSignal } from "../src/signals";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, raw, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, raw, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 const candidate = (sourceRef: string, overrides: Partial<SignalCandidate> = {}): SignalCandidate =>
   Object.freeze({
@@ -22,6 +22,8 @@ describe("signals repository (PRO-1, PRO-3-CAP)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("signals");
+    // 3 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
     stranger = await createTestUser("signals-stranger");
   });
 

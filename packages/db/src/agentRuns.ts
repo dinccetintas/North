@@ -23,6 +23,8 @@ export const RecordAgentRunInputSchema = z.object({
   durationMs: z.number().int().nonnegative(),
   status: z.enum(AGENT_RUN_STATUSES),
   error: z.string().max(4000).optional(),
+  /** OBS-1 (M6): the Langfuse trace of the run, when a tracer is configured. */
+  traceId: z.string().min(1).max(200).nullable().default(null),
 });
 export type RecordAgentRunInput = z.input<typeof RecordAgentRunInputSchema>;
 
@@ -41,6 +43,7 @@ export interface AgentRunRecord {
   readonly durationMs: number;
   readonly status: AgentRunStatus;
   readonly error: string | null;
+  readonly traceId: string | null;
   readonly createdAt: string;
 }
 
@@ -76,7 +79,7 @@ export interface CostSummaryOptions {
   readonly timezone?: string;
 }
 
-const RUN_COLUMNS = "id, company_id, task_id, role, model, runtime, session_id, input_tokens, output_tokens, cost_usd, duration_ms, status, error, created_at";
+const RUN_COLUMNS = "id, company_id, task_id, role, model, runtime, session_id, input_tokens, output_tokens, cost_usd, duration_ms, status, error, trace_id, created_at";
 const COST_ROW_LIMIT = 5000;
 
 const RunRowSchema = z.object({
@@ -93,6 +96,7 @@ const RunRowSchema = z.object({
   duration_ms: z.number(),
   status: z.enum(AGENT_RUN_STATUSES),
   error: z.string().nullable(),
+  trace_id: z.string().nullable(),
   created_at: z.string(),
 });
 
@@ -116,6 +120,7 @@ export function toAgentRunRecord(row: unknown): AgentRunRecord {
     durationMs: r.duration_ms,
     status: r.status,
     error: r.error,
+    traceId: r.trace_id,
     createdAt: r.created_at,
   });
 }
@@ -138,6 +143,7 @@ export async function recordAgentRun(db: DbClient, input: RecordAgentRunInput): 
       duration_ms: r.durationMs,
       status: r.status,
       error: r.error ?? null,
+      trace_id: r.traceId,
     })
     .select("id")
     .single();

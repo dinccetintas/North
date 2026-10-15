@@ -88,3 +88,15 @@ export async function listBriefs(db: DbClient, companyId: string, limit = 30): P
   if (error) throw dbError("Could not list briefs", error);
   return Object.freeze((data ?? []).map(toBriefRecord));
 }
+
+/**
+ * MULTI-1: every brief of one owner-local day the caller can read, ordered by
+ * company. With the owner's client that is exactly the owner's companies
+ * (RLS); the portfolio brief is composed from these rows and nothing else.
+ */
+export async function listBriefsForDay(db: DbClient, day: string): Promise<readonly BriefRecord[]> {
+  const date = DAY_SCHEMA.parse(day);
+  const { data, error } = await db.from("briefs").select(BRIEF_COLUMNS).eq("brief_date", date).order("company_id", { ascending: true }).limit(500);
+  if (error) throw dbError("Could not list the day's briefs", error);
+  return Object.freeze((data ?? []).map(toBriefRecord));
+}

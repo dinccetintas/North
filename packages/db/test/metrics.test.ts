@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
 import { latestChannelSample, latestMetric, listChannelSamples, metricSeries, recordMetric } from "../src/metrics";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("metrics repository (OUT-2)", () => {
   let owned: OwnedCompany;
@@ -9,6 +9,8 @@ describe("metrics repository (OUT-2)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("metrics");
+    // 2 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
     stranger = await createTestUser("metrics-stranger");
   });
 

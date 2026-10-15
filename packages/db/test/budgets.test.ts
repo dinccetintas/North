@@ -1,7 +1,11 @@
+import { localDay } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { applyBudgetSpend, getBudget, listBudgets, raiseDailyCap, raiseTotalCap, toBudgetState, upsertBudgets } from "../src/budgets";
+import { applyBudgetSpend, getBudget, listBudgets, ownerLocalDate, raiseDailyCap, raiseTotalCap, toBudgetState, upsertBudgets, type BudgetSpendInput } from "../src/budgets";
 import { DbError } from "../src/errors";
 import { createOwnerWithCompany, deleteTestUser, service, type OwnedCompany } from "./fixtures";
+
+/** The owner of these tests is on UTC, so their local day is the UTC date (M6: callers pass the owner's local day). */
+const today = () => localDay("UTC", new Date());
 
 describe("budgets repository (ONB-2, BUD)", () => {
   let owned: OwnedCompany;
@@ -54,19 +58,19 @@ describe("budgets repository (ONB-2, BUD)", () => {
   it("BUD-1: applyBudgetSpend adds to today and the total and reports the effective daily limit and caps", async () => {
     await upsertBudgets(service, owned.companyId, [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10 }]);
     await service.from("budgets").update({ spent_total_usd: 0, spent_today_usd: 0, daily_extra_usd: 0 }).eq("company_id", owned.companyId).eq("category", "ads");
-    const first = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 4 });
+    const first = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 4, day: today() });
     expect(first).toEqual({ spentTodayUsd: 4, spentTotalUsd: 4, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10, totalLimitUsd: 100, capDaily: false, capTotal: false, applied: true });
     expect(Object.isFrozen(first)).toBe(true);
-    const second = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 7 });
+    const second = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 7, day: today() });
     expect(second).toMatchObject({ spentTodayUsd: 11, spentTotalUsd: 11, capDaily: true, capTotal: false });
     expect(await getBudget(owned.owner.client, owned.companyId, "ads")).toMatchObject({ spentTodayUsd: 11, dailyExtraUsd: 0 });
-    await expect(applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: -1 })).rejects.toThrow();
-    await expect(applyBudgetSpend(service, { companyId: owned.companyId, category: "domain", amountUsd: 1 })).rejects.toBeInstanceOf(DbError);
-    await expect(applyBudgetSpend(owned.owner.client, { companyId: owned.companyId, category: "ads", amountUsd: 1 })).rejects.toBeInstanceOf(DbError);
+    await expect(applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: -1, day: today() })).rejects.toThrow();
+    await expect(applyBudgetSpend(service, { companyId: owned.companyId, category: "domain", amountUsd: 1, day: today() })).rejects.toBeInstanceOf(DbError);
+    await expect(applyBudgetSpend(owned.owner.client, { companyId: owned.companyId, category: "ads", amountUsd: 1, day: today() })).rejects.toBeInstanceOf(DbError);
   });
 
   it("BUD-3: raiseDailyCap raises today's effective limit; raiseTotalCap raises the total; the day roll resets the extra", async () => {
-    const raised = await raiseDailyCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 10 });
+    const raised = await raiseDailyCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 10, day: today() });
     expect(raised).toMatchObject({ dailyExtraUsd: 10, dailyLimitEffectiveUsd: 20, capDaily: false });
     expect(await getBudget(owned.owner.client, owned.companyId, "ads")).toMatchObject({ dailyExtraUsd: 10, dailyLimitUsd: 10, spentTodayUsd: 11 });
     const total = await raiseTotalCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 50 });
@@ -74,7 +78,7 @@ describe("budgets repository (ONB-2, BUD)", () => {
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
     const rolled = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 2, day: tomorrow });
     expect(rolled).toMatchObject({ spentTodayUsd: 2, spentTotalUsd: 13, dailyExtraUsd: 0, dailyLimitEffectiveUsd: 10 });
-    await expect(raiseDailyCap(owned.owner.client, { companyId: owned.companyId, category: "ads", amountUsd: 1 })).rejects.toBeInstanceOf(DbError);
+    await expect(raiseDailyCap(owned.owner.client, { companyId: owned.companyId, category: "ads", amountUsd: 1, day: today() })).rejects.toBeInstanceOf(DbError);
     expect(await getBudget(owned.owner.client, owned.companyId, "other")).toBeNull();
   });
 
@@ -89,5 +93,21 @@ describe("budgets repository (ONB-2, BUD)", () => {
     expect(fresh).toMatchObject({ applied: true, dailyExtraUsd: 10, dailyLimitEffectiveUsd: 20 });
     const late = await applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 1, day: today });
     expect(late).toMatchObject({ applied: false, spentTodayUsd: 2, spentTotalUsd: 14 });
+  });
+
+  it("A6-6: the spend functions require the day; listBudgets and getBudget read today on the owner's local date", async () => {
+    await expect(applyBudgetSpend(service, { companyId: owned.companyId, category: "ads", amountUsd: 1 } as unknown as BudgetSpendInput)).rejects.toThrow();
+    await expect(raiseDailyCap(service, { companyId: owned.companyId, category: "ads", amountUsd: 1, day: "tomorrow" })).rejects.toThrow();
+    const now = new Date();
+    const zone = ["Pacific/Kiritimati", "Pacific/Pago_Pago"].find((tz) => localDay(tz, now) !== localDay("UTC", now))!;
+    await service.from("users").update({ timezone: zone }).eq("id", owned.owner.id);
+    expect(await ownerLocalDate(owned.owner.client, owned.companyId)).toBe(localDay(zone, now));
+    await upsertBudgets(service, owned.companyId, [{ category: "other", totalLimitUsd: 100, dailyLimitUsd: 20 }]);
+    await applyBudgetSpend(service, { companyId: owned.companyId, category: "other", amountUsd: 3, day: localDay(zone, now) });
+    expect((await getBudget(owned.owner.client, owned.companyId, "other"))?.spentTodayUsd).toBe(3);
+    expect((await listBudgets(owned.owner.client, owned.companyId)).find((b) => b.category === "other")?.spentTodayUsd).toBe(3);
+    expect((await getBudget(owned.owner.client, owned.companyId, "other", localDay("UTC", now)))?.spentTodayUsd).toBe(0);
+    expect((await listBudgets(service, owned.companyId, localDay("UTC", now))).find((b) => b.category === "other")?.spentTodayUsd).toBe(0);
+    await service.from("users").update({ timezone: "UTC" }).eq("id", owned.owner.id);
   });
 });

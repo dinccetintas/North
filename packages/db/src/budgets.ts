@@ -52,22 +52,41 @@ export async function upsertBudgets(db: DbClient, companyId: string, lines: Budg
   if (error) throw dbError("Could not upsert budgets", error);
 }
 
-/** Budget state per category, ordered by category name, as the authority engine expects it. */
-export async function listBudgets(db: DbClient, companyId: string): Promise<readonly BudgetState[]> {
+/**
+ * A6-6 (ADR 0011 follow-up): the company owner's date now, as the database
+ * computes it (`owner_local_date`, the owner's zone, UTC fallback). Budgets
+ * roll on this day.
+ */
+export async function ownerLocalDate(db: DbClient, companyId: string): Promise<string> {
+  const id = UuidSchema.parse(companyId);
+  const { data, error } = await db.rpc("owner_local_date", { p_company_id: id });
+  if (error) throw dbError("Could not read the owner's local date", error);
+  return IsoDateSchema.parse(data);
+}
+
+const dayOrOwnerLocal = async (db: DbClient, companyId: string, today: string | undefined): Promise<string> =>
+  today === undefined ? ownerLocalDate(db, companyId) : IsoDateSchema.parse(today);
+
+/**
+ * Budget state per category, ordered by category name, as the authority engine
+ * expects it. "Today" is the owner's local day: pass `localDay(tz, clock())`
+ * when the caller has it (the worker), else the database computes it.
+ */
+export async function listBudgets(db: DbClient, companyId: string, today?: string): Promise<readonly BudgetState[]> {
   const id = UuidSchema.parse(companyId);
   const { data, error } = await db.from("budgets").select(BUDGET_COLUMNS).eq("company_id", id).order("category", { ascending: true });
   if (error) throw dbError("Could not list budgets", error);
-  const today = todayIsoDate();
-  return Object.freeze((data ?? []).map((row) => toBudgetState(row, today)));
+  const day = await dayOrOwnerLocal(db, id, today);
+  return Object.freeze((data ?? []).map((row) => toBudgetState(row, day)));
 }
 
-/** One category's budget state, or null when the company has no line for it. */
-export async function getBudget(db: DbClient, companyId: string, category: BudgetCategory): Promise<BudgetState | null> {
+/** One category's budget state on the owner's local day (as `listBudgets`), or null when the company has no line for it. */
+export async function getBudget(db: DbClient, companyId: string, category: BudgetCategory, today?: string): Promise<BudgetState | null> {
   const id = UuidSchema.parse(companyId);
   const cat = z.enum(BUDGET_CATEGORIES).parse(category);
   const { data, error } = await db.from("budgets").select(BUDGET_COLUMNS).eq("company_id", id).eq("category", cat).maybeSingle();
   if (error) throw dbError("Could not load budget", error);
-  return data ? toBudgetState(data) : null;
+  return data ? toBudgetState(data, await dayOrOwnerLocal(db, id, today)) : null;
 }
 
 /** What the spend functions return: the budget after the write, with both cap flags (BUD-1). */
@@ -87,8 +106,8 @@ export const BudgetSpendInputSchema = z.object({
   companyId: UuidSchema,
   category: z.enum(BUDGET_CATEGORIES),
   amountUsd: z.number().nonnegative(),
-  /** The day the amount belongs to (UTC); a later day than the row's rolls today's spend and extra. */
-  day: IsoDateSchema.default(() => todayIsoDate()),
+  /** The owner-local day the amount belongs to (`localDay(tz, clock())`, required since M6); a later day than the row's rolls today's spend and extra. */
+  day: IsoDateSchema,
 });
 export type BudgetSpendInput = z.input<typeof BudgetSpendInputSchema>;
 
@@ -118,9 +137,9 @@ const toSpendResult = (data: unknown): BudgetSpendResult => {
 };
 
 /**
- * BUD-1 in the database: adds the amount to today's and the total spend in one
- * locked write (`apply_budget_spend`, service role only) and reports whether a
- * cap is now reached. Owners never write spend columns.
+ * BUD-1 in the database: adds the amount to the given owner-local day's and the
+ * total spend in one locked write (`apply_budget_spend`, service role only) and
+ * reports whether a cap is now reached. Owners never write spend columns.
  */
 export async function applyBudgetSpend(db: DbClient, input: BudgetSpendInput): Promise<BudgetSpendResult> {
   const s = BudgetSpendInputSchema.parse(input);
@@ -129,7 +148,7 @@ export async function applyBudgetSpend(db: DbClient, input: BudgetSpendInput): P
   return toSpendResult(data);
 }
 
-/** BUD-3: raises today's effective daily cap by the amount a cap card approved; it resets with the day roll. */
+/** BUD-3: raises the given owner-local day's effective daily cap by the amount a cap card approved; it resets with the day roll. */
 export async function raiseDailyCap(db: DbClient, input: BudgetSpendInput): Promise<BudgetSpendResult> {
   const s = BudgetSpendInputSchema.parse(input);
   const { data, error } = await db.rpc("raise_daily_cap", { p_company_id: s.companyId, p_category: s.category, p_amount: s.amountUsd, p_day: s.day });

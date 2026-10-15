@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
 import { countLeads, getLead, importLeads, listLeads, markLeads, nextUnsentLeads } from "../src/leads";
 import { LeadsCsvError, MAX_LEADS_PER_IMPORT, parseLeadsCsv } from "../src/leads-csv";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("parseLeadsCsv (pure)", () => {
   it("parses the four columns with RFC 4180 quoting, trims, lowercases emails and tolerates a BOM and CRLF", () => {
@@ -33,6 +33,8 @@ describe("leads repository (SLS-K2 input)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("leads");
+    // 2 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
     stranger = await createTestUser("leads-stranger");
   });
 

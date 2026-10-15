@@ -61,7 +61,8 @@ describe("RLS isolation between owners", () => {
 
   it("the kill switch flips only the owner's company", async () => {
     await setKillSwitch(alice.client, aliceCompanyId, true);
-    expect((await getCompanyBySlug(alice.client, "alice-co"))?.killSwitchActive).toBe(true);
+    const aliceSlug = (await listCompanies(alice.client))[0]!.slug;
+    expect((await getCompanyBySlug(alice.client, aliceSlug))?.killSwitchActive).toBe(true);
     await expect(setKillSwitch(alice.client, bobCompanyId, true)).resolves.toBeUndefined();
     const bobs = await service.from("companies").select("kill_switch_active").eq("id", bobCompanyId).single();
     expect(bobs.data?.kill_switch_active).toBe(false);

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGoal } from "../src/goals";
 import { createPlanWithTasks, latestPlan } from "../src/plans";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("plans repository (PLN-1)", () => {
   let owned: OwnedCompany;
@@ -14,6 +14,8 @@ describe("plans repository (PLN-1)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("plans");
+    // 2 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
     stranger = await createTestUser("plans-stranger");
   });
 

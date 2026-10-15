@@ -2,7 +2,7 @@ import { localDay } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cardsOpenedToday, listCardsOpenedOn, openCard, QuotaExceededError } from "../src/decisions";
 import { createTask } from "../src/tasks";
-import { createCompanyFor, createOwnerWithCompany, deleteTestUser, raw, sampleCardDraft, service, type OwnedCompany, type RawClient } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, deleteTestUser, grantPlan, raw, sampleCardDraft, service, type OwnedCompany, type RawClient } from "./fixtures";
 
 const ref = () => `ref-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -13,6 +13,8 @@ describe("M5 schema", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("schema-m5");
+    // 4 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "scale");
     ownerRaw = owned.owner.client as unknown as RawClient;
   });
 

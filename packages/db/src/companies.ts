@@ -1,6 +1,8 @@
+import { PAUSED_REASONS, type PausedReason } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
-import { DbError } from "./errors";
+import { entitlementErrorFrom } from "./entitlements";
+import { DbError, dbError } from "./errors";
 import { slugify, uniqueSlug } from "./slug";
 
 export const CreateCompanyInputSchema = z.object({
@@ -18,16 +20,23 @@ export interface CompanySummary {
   readonly slug: string;
   readonly status: string;
   readonly killSwitchActive: boolean;
+  /** Who set the kill switch (M6): `user`, `subscription_ended` (billing; the owner cannot lift it) or `retention` (archived). Null while running. */
+  readonly pausedReason: PausedReason | null;
 }
 
-type CompanyRow = { id: string; name: string; slug: string; status: string; kill_switch_active: boolean };
+const PausedReasonSchema = z.enum(PAUSED_REASONS);
+const SUMMARY_COLUMNS = "id, name, slug, status, kill_switch_active, paused_reason";
+
+type CompanyRow = { id: string; name: string; slug: string; status: string; kill_switch_active: boolean; paused_reason: string | null };
 
 const toSummary = (row: CompanyRow): CompanySummary =>
-  Object.freeze({ id: row.id, name: row.name, slug: row.slug, status: row.status, killSwitchActive: row.kill_switch_active });
+  Object.freeze({ id: row.id, name: row.name, slug: row.slug, status: row.status, killSwitchActive: row.kill_switch_active, pausedReason: PausedReasonSchema.nullable().parse(row.paused_reason) });
 
 /**
  * Creates a company with its first thesis version. Works under RLS (owner
- * client) or with the service client. Retries once on a slug collision.
+ * client) or with the service client. Retries once on a slug collision. The
+ * database refuses a company over the owner's plan or after the subscription
+ * ended (`companies_within_entitlement`, M6): that is an `EntitlementError`.
  */
 export async function createCompany(db: DbClient, raw: CreateCompanyInput): Promise<CompanySummary> {
   const input = CreateCompanyInputSchema.parse(raw);
@@ -35,7 +44,7 @@ export async function createCompany(db: DbClient, raw: CreateCompanyInput): Prom
     db
       .from("companies")
       .insert({ owner_id: input.ownerId, name: input.name, slug })
-      .select("id, name, slug, status, kill_switch_active")
+      .select(SUMMARY_COLUMNS)
       .single();
 
   let result = await attempt(slugify(input.name));
@@ -43,7 +52,7 @@ export async function createCompany(db: DbClient, raw: CreateCompanyInput): Prom
     result = await attempt(uniqueSlug(input.name));
   }
   if (result.error || !result.data) {
-    throw new DbError(`Could not create company: ${result.error?.message ?? "no row returned"}`, result.error);
+    throw entitlementErrorFrom(result.error) ?? new DbError(`Could not create company: ${result.error?.message ?? "no row returned"}`, result.error);
   }
 
   const thesis = await db.from("theses").insert({
@@ -63,7 +72,7 @@ export async function createCompany(db: DbClient, raw: CreateCompanyInput): Prom
 export async function getCompanyBySlug(db: DbClient, slug: string): Promise<CompanySummary | null> {
   const { data, error } = await db
     .from("companies")
-    .select("id, name, slug, status, kill_switch_active")
+    .select(SUMMARY_COLUMNS)
     .eq("slug", slug)
     .maybeSingle();
   if (error) throw new DbError(`Could not load company: ${error.message}`, error);
@@ -73,7 +82,7 @@ export async function getCompanyBySlug(db: DbClient, slug: string): Promise<Comp
 /** Company by id (worker and deep links), or null when missing or not visible under RLS. */
 export async function getCompanyById(db: DbClient, companyId: string): Promise<CompanySummary | null> {
   const id = z.string().uuid().parse(companyId);
-  const { data, error } = await db.from("companies").select("id, name, slug, status, kill_switch_active").eq("id", id).maybeSingle();
+  const { data, error } = await db.from("companies").select(SUMMARY_COLUMNS).eq("id", id).maybeSingle();
   if (error) throw new DbError(`Could not load company: ${error.message}`, error);
   return data ? toSummary(data) : null;
 }
@@ -88,10 +97,7 @@ export async function companyOwnerId(db: DbClient, companyId: string): Promise<s
 }
 
 export async function listCompanies(db: DbClient): Promise<readonly CompanySummary[]> {
-  const { data, error } = await db
-    .from("companies")
-    .select("id, name, slug, status, kill_switch_active")
-    .order("created_at", { ascending: false });
+  const { data, error } = await db.from("companies").select(SUMMARY_COLUMNS).order("created_at", { ascending: false });
   if (error) throw new DbError(`Could not list companies: ${error.message}`, error);
   return Object.freeze((data ?? []).map(toSummary));
 }
@@ -103,15 +109,18 @@ export async function getKillSwitch(db: DbClient, companyId: string): Promise<bo
   return data?.kill_switch_active ?? true;
 }
 
-/** A company the proactive crons serve: active, onboarded, with its owner's zone (the brief hour and the quota day follow it). */
+/** A company the proactive crons serve: onboarded and not archived, with its owner's zone and brief hour (the brief, the quota day and the week follow them). */
 export interface ActiveCompany {
   readonly companyId: string;
   readonly ownerId: string;
   readonly timezone: string;
+  /** The owner's `BriefHour` (0-23, default 7): `briefTick` compares the owner-local hour with it (BRF-1, M6). */
+  readonly briefHour: number;
   readonly name: string;
   readonly slug: string;
-  /** A stopped company still gets its brief (which says so); the scans skip it. */
+  /** A stopped company still gets its brief (which says so); the scans and the weekly plan skip it. */
   readonly killSwitchActive: boolean;
+  readonly pausedReason: PausedReason | null;
 }
 
 const ActiveCompanyRowSchema = z.object({
@@ -120,22 +129,37 @@ const ActiveCompanyRowSchema = z.object({
   name: z.string(),
   slug: z.string(),
   kill_switch_active: z.boolean(),
-  owner: z.object({ timezone: z.string() }),
+  paused_reason: PausedReasonSchema.nullable(),
+  owner: z.object({ timezone: z.string(), brief_hour: z.number().int() }),
 });
 
-/** Service role (the hourly crons): every `active` company whose onboarding is `done`, oldest first, with the owner's time zone. */
+/**
+ * Service role (the hourly crons): every onboarded company that is `active` or
+ * `paused` (kill switch on, by the owner or by billing), oldest first, with
+ * the owner's zone and brief hour. Archived companies are left out (M6: a
+ * paused company still gets its brief, which says why).
+ */
 export async function listActiveCompanies(db: DbClient): Promise<readonly ActiveCompany[]> {
   const { data, error } = await db
     .from("companies")
-    .select("id, owner_id, name, slug, kill_switch_active, owner:users!inner(timezone)")
-    .eq("status", "active")
+    .select("id, owner_id, name, slug, kill_switch_active, paused_reason, owner:users!inner(timezone, brief_hour)")
+    .in("status", ["active", "paused"])
     .eq("onboarding_step", "done")
     .order("created_at", { ascending: true });
   if (error) throw new DbError(`Could not list active companies: ${error.message}`, error);
   return Object.freeze(
     (data ?? []).map((row) => {
       const r = ActiveCompanyRowSchema.parse(row);
-      return Object.freeze({ companyId: r.id, ownerId: r.owner_id, timezone: r.owner.timezone, name: r.name, slug: r.slug, killSwitchActive: r.kill_switch_active });
+      return Object.freeze({
+        companyId: r.id,
+        ownerId: r.owner_id,
+        timezone: r.owner.timezone,
+        briefHour: r.owner.brief_hour,
+        name: r.name,
+        slug: r.slug,
+        killSwitchActive: r.kill_switch_active,
+        pausedReason: r.paused_reason,
+      });
     }),
   );
 }
@@ -147,7 +171,7 @@ export const SentryProjectSlugSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9
 export async function companyBySentryProject(db: DbClient, slug: string): Promise<CompanySummary | null> {
   const s = SentryProjectSlugSchema.safeParse(slug);
   if (!s.success) return null;
-  const { data, error } = await db.from("companies").select("id, name, slug, status, kill_switch_active").eq("sentry_project_slug", s.data).maybeSingle();
+  const { data, error } = await db.from("companies").select(SUMMARY_COLUMNS).eq("sentry_project_slug", s.data).maybeSingle();
   if (error) throw new DbError(`Could not load company by Sentry project: ${error.message}`, error);
   return data ? toSummary(data) : null;
 }
@@ -166,11 +190,49 @@ export async function setSentryProject(db: DbClient, companyId: string, slug: st
   if (!data) throw new DbError(`Company ${id} not found or not yours to change`);
 }
 
-/** Kill switch: flips the flag; the worker reacts to the `company/killswitch` event. */
-export async function setKillSwitch(db: DbClient, companyId: string, active: boolean): Promise<void> {
-  const { error } = await db
+/**
+ * Kill switch: flips the flag (and `status` between `active` and `paused`);
+ * the worker reacts to `company/killswitch` / `company/resume`. The owner's
+ * client records the reason `user` (the trigger does; the column is not
+ * granted to owners) and cannot lift a `subscription_ended` pause. The worker
+ * passes `subscription_ended` when billing ends; turning the switch off clears
+ * the reason. A company the user already paused keeps `user` (billing never
+ * touches it). An archived company is left as it is (see `unarchiveCompany`).
+ */
+export async function setKillSwitch(db: DbClient, companyId: string, active: boolean, reason?: PausedReason): Promise<void> {
+  const r = reason === undefined ? undefined : PausedReasonSchema.parse(reason);
+  const update = db
     .from("companies")
-    .update({ kill_switch_active: active, status: active ? "paused" : "active" })
-    .eq("id", companyId);
+    .update({ kill_switch_active: active, status: active ? "paused" : "active", ...(active && r !== undefined ? { paused_reason: r } : {}) })
+    .eq("id", companyId)
+    .neq("status", "archived");
+  // ADR 0014: billing never touches a pause the user set; only a running company takes the billing reason.
+  const { error } = await (active && r === "subscription_ended" ? update.eq("kill_switch_active", false) : update);
   if (error) throw new DbError(`Could not update kill switch: ${error.message}`, error);
+}
+
+/** Worker only: every company of one owner (billing's effects, the retention sweep), oldest first, archived included. */
+export async function listCompaniesByOwner(db: DbClient, ownerId: string): Promise<readonly CompanySummary[]> {
+  const id = z.uuid().parse(ownerId);
+  const { data, error } = await db.from("companies").select(SUMMARY_COLUMNS).eq("owner_id", id).order("created_at", { ascending: true });
+  if (error) throw dbError("Could not list the owner's companies", error);
+  return Object.freeze((data ?? []).map(toSummary));
+}
+
+async function updateCompanyState(db: DbClient, companyId: string, patch: { status: string; kill_switch_active: boolean; paused_reason?: PausedReason }, what: string): Promise<CompanySummary> {
+  const id = z.uuid().parse(companyId);
+  const { data, error } = await db.from("companies").update(patch).eq("id", id).select(SUMMARY_COLUMNS).maybeSingle();
+  if (error) throw dbError(`Could not ${what} company`, error);
+  if (!data) throw new DbError(`Company ${id} not found or not yours to change`);
+  return toSummary(data);
+}
+
+/** RET-1, worker only: the retention sweep archives a company (`archived`, switch on, reason `retention`, `archived_at` set by the database). */
+export function archiveCompany(db: DbClient, companyId: string): Promise<CompanySummary> {
+  return updateCompanyState(db, companyId, { status: "archived", kill_switch_active: true, paused_reason: "retention" }, "archive");
+}
+
+/** RET-1, worker only: a new subscription before the purge reverses the archive (`active`, switch off, reason and `archived_at` cleared). */
+export function unarchiveCompany(db: DbClient, companyId: string): Promise<CompanySummary> {
+  return updateCompanyState(db, companyId, { status: "active", kill_switch_active: false }, "restore");
 }

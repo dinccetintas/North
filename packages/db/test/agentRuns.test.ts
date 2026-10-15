@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { costSummary, listRecentRuns, recordAgentRun, type RecordAgentRunInput } from "../src/agentRuns";
 import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 const run = (companyId: string, overrides: Partial<RecordAgentRunInput> = {}): RecordAgentRunInput => ({
   companyId,
@@ -26,6 +26,8 @@ describe("agent runs repository (OBS-1)", () => {
   beforeAll(async () => {
     owned = await createOwnerWithCompany("agentruns");
     stranger = await createTestUser("agentruns-stranger");
+    // A second company for the cost test: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
   });
 
   afterAll(async () => {
@@ -91,5 +93,14 @@ describe("agent runs repository (OBS-1)", () => {
     expect((await costSummary(service, companyId, 60)).costUsd).toBe(102.75);
     expect(await costSummary(stranger.client, companyId, 30)).toMatchObject({ runs: 0, costUsd: 0 });
     await expect(costSummary(service, companyId, 0)).rejects.toThrow();
+  });
+
+  it("OBS-1 (M6): a run carries its Langfuse trace id, null without a tracer", async () => {
+    const traced = await recordAgentRun(service, run(owned.companyId, { traceId: "trace-abc123" }));
+    const plain = await recordAgentRun(service, run(owned.companyId));
+    const runs = await listRecentRuns(owned.owner.client, owned.companyId, 10);
+    expect(runs.find((r) => r.id === traced)?.traceId).toBe("trace-abc123");
+    expect(runs.find((r) => r.id === plain)?.traceId).toBeNull();
+    await expect(recordAgentRun(service, run(owned.companyId, { traceId: "x".repeat(201) }))).rejects.toThrow();
   });
 });

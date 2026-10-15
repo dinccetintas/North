@@ -1,14 +1,15 @@
 import type { Brief } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createBrief, getBrief, latestBrief, listBriefs } from "../src/briefs";
+import { createBrief, getBrief, latestBrief, listBriefs, listBriefsForDay } from "../src/briefs";
 import { DbError } from "../src/errors";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 const briefFor = (day: string, overrides: Partial<Brief> = {}): Brief => {
   const base: Brief = {
     day,
     companyName: "Briefs Co",
     stopped: false,
+    blocked: null,
     yesterday: { outcomes: [], actions: [{ kind: "deploy.production", status: "executed", description: "Site went live" }] },
     metrics: [{ key: "signups", value: 5, previous: 3, measuredAt: "2026-10-18T06:00:00.000Z" }],
     goal: { metricKey: "signups", target: 50, current: 5, dueDate: "2026-12-31" },
@@ -83,5 +84,23 @@ describe("briefs repository (BRF-1)", () => {
     await expect(createBrief(service, { companyId: owned.companyId, day: "2026-10-22", content: { ...briefFor("2026-10-22"), stopped: "no" } as unknown as Brief, wordCount: 1 })).rejects.toThrow();
     await expect(createBrief(service, { companyId: owned.companyId, day: "2026-10-22", content: briefFor("2026-10-22"), wordCount: -1 })).rejects.toThrow();
     expect(await getBrief(service, owned.companyId, "2026-10-22")).toBeNull();
+  });
+
+  it("MULTI-1: listBriefsForDay gives the owner every company's brief of the day and nothing of another owner's", async () => {
+    const day = "2026-11-02";
+    await grantPlan(owned.owner.id, "pro");
+    const second = await createCompanyFor(owned.owner, "briefs-second");
+    const other = await createOwnerWithCompany("briefs-other");
+    for (const companyId of [owned.companyId, second, other.companyId]) await createBrief(service, { companyId, day, content: briefFor(day), wordCount: 48 });
+    await createBrief(service, { companyId: second, day: "2026-11-01", content: briefFor("2026-11-01"), wordCount: 48 });
+    const mine = await listBriefsForDay(owned.owner.client, day);
+    expect(new Set(mine.map((b) => b.companyId))).toEqual(new Set([owned.companyId, second]));
+    expect(mine.every((b) => b.day === day)).toBe(true);
+    expect(Object.isFrozen(mine)).toBe(true);
+    expect((await listBriefsForDay(other.owner.client, day)).map((b) => b.companyId)).toEqual([other.companyId]);
+    expect(await listBriefsForDay(stranger.client, day)).toEqual([]);
+    await expect(listBriefsForDay(owned.owner.client, "02/11/2026")).rejects.toThrow();
+    expect((await listBriefsForDay(owned.owner.client, "2026-11-01")).map((b) => b.companyId)).toEqual([second]);
+    await deleteTestUser(other.owner);
   });
 });

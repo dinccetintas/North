@@ -3,7 +3,7 @@ import { listRecentActions, recordAction, recordActionTransition } from "../src/
 import { openCard } from "../src/decisions";
 import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("action state chains (audit NFR: actions stay append-only)", () => {
   let owned: OwnedCompany;
@@ -11,6 +11,8 @@ describe("action state chains (audit NFR: actions stay append-only)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("transitions");
+    // 5 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "scale");
     stranger = await createTestUser("transitions-stranger");
   });
 

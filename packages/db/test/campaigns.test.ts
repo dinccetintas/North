@@ -3,7 +3,7 @@ import { recordAction } from "../src/actions";
 import { BudgetCapError, getCampaign, getCampaignByProviderId, listCampaigns, listCompaniesWithCollectables, registerCampaign, setCampaignStatus, updateCampaignTotals } from "../src/campaigns";
 import { setKillSwitch } from "../src/companies";
 import { DbError } from "../src/errors";
-import { adsBudgetAndAction, createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCampaignInput, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { adsBudgetAndAction, createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, sampleCampaignInput, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
   let owned: OwnedCompany;
@@ -12,6 +12,8 @@ describe("campaigns repository (OUT-2, BUD-1, BUD-4)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("campaigns");
+    // 2 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "pro");
     stranger = await createTestUser("campaigns-stranger");
     actionId = await adsBudgetAndAction(owned.companyId, { daily: 10, total: 100 });
   });

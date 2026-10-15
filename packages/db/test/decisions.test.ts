@@ -4,7 +4,7 @@ import { recordAction } from "../src/actions";
 import { AlreadyAnsweredError, answerCard, cardsOpenedToday, getCard, listAnsweredCards, listCards, listCardsOpenedOn, listPendingCards, openCard, QuotaExceededError } from "../src/decisions";
 import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
-import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
+import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, sampleCardDraft, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 /** Test owners stay at the default zone, so their quota day is the UTC day. */
 const today = (): string => localDay("UTC", new Date());
@@ -15,6 +15,8 @@ describe("decisions repository (DEC-2, DEC-3)", () => {
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("decisions");
+    // 8 companies for one owner: over the Solo trial's limit (M6).
+    await grantPlan(owned.owner.id, "scale");
     stranger = await createTestUser("decisions-stranger");
   });
 
