@@ -5,12 +5,17 @@
  * JWT because `verify_jwt = true`; this function then requires the
  * `service_role` claim, since the anon key is a valid JWT too):
  *
- *   { ids, schema, table, contentFunction, embeddingColumn }
+ *   { ids, msgIds, schema, table, contentFunction, embeddingColumn }
  *       A batch from the `embedding_jobs` queue, sent by
  *       util.process_embeddings() through pg_net. Each row's text is the
  *       output of `contentFunction` (a PostgREST computed column such as
  *       memory_embedding_input), embedded with gte-small and written to
- *       `embeddingColumn`. Answers { completed, skipped, failed }.
+ *       `embeddingColumn`. `msgIds` (optional) are the queue message ids, side
+ *       by side with `ids`: the function acknowledges them through
+ *       public.embedding_jobs_ack, but only those whose row is done (embedded,
+ *       or gone or empty, where a retry cannot help). A failed row's job stays
+ *       on the queue and returns after the visibility timeout, up to five
+ *       reads. Answers { completed, skipped, failed, acked }.
  *   { text }
  *       A query to embed for search_memory_hybrid. Answers { embedding }.
  *
@@ -25,17 +30,21 @@ import { z } from "npm:zod@4.6.7";
 const MODEL = "gte-small";
 const DIMENSIONS = 384;
 const MAX_TEXT_CHARS = 8000;
-const MAX_IDS = 50;
+const MAX_IDS = 200;
 
 const IdentifierSchema = z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/);
 const IdSchema = z.union([z.number().int().nonnegative(), z.string().min(1).max(64)]);
-const JobSchema = z.strictObject({
-  ids: z.array(IdSchema).min(1).max(MAX_IDS),
-  schema: IdentifierSchema,
-  table: IdentifierSchema,
-  contentFunction: IdentifierSchema,
-  embeddingColumn: IdentifierSchema,
-});
+const MsgIdSchema = z.number().int().positive();
+const JobSchema = z
+  .strictObject({
+    ids: z.array(IdSchema).min(1).max(MAX_IDS),
+    msgIds: z.array(MsgIdSchema).max(MAX_IDS).optional(),
+    schema: IdentifierSchema,
+    table: IdentifierSchema,
+    contentFunction: IdentifierSchema,
+    embeddingColumn: IdentifierSchema,
+  })
+  .refine((job) => job.msgIds === undefined || job.msgIds.length === job.ids.length, { message: "msgIds must run side by side with ids" });
 const QuerySchema = z.strictObject({ text: z.string().trim().min(1).max(MAX_TEXT_CHARS) });
 const RowSchema = z.object({ id: IdSchema, content: z.string().nullable() });
 const ClaimsSchema = z.object({ role: z.string() });
@@ -46,6 +55,10 @@ interface Outcome {
   readonly completed: readonly RowId[];
   readonly skipped: readonly RowId[];
   readonly failed: readonly { readonly id: RowId; readonly error: string }[];
+}
+interface Acknowledgement {
+  readonly acked: number;
+  readonly ackError?: string;
 }
 
 const session = new Supabase.ai.Session(MODEL);
@@ -114,6 +127,15 @@ async function embedRows(db: SupabaseClient, job: Job): Promise<Outcome> {
   return { completed, skipped, failed };
 }
 
+/** Acknowledges the jobs of finished rows; the jobs of failed rows stay on the queue and return after the visibility timeout. */
+async function ackFinished(db: SupabaseClient, job: Job, finishedIds: readonly RowId[]): Promise<Acknowledgement> {
+  const finished = new Set(finishedIds.map(String));
+  const msgIds = (job.msgIds ?? []).filter((_, i) => finished.has(String(job.ids[i])));
+  if (msgIds.length === 0) return { acked: 0 };
+  const { data, error } = await db.rpc("embedding_jobs_ack", { p_msg_ids: msgIds });
+  return error ? { acked: 0, ackError: error.message } : { acked: Number(data) };
+}
+
 async function handle(req: Request): Promise<Response> {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
   if (callerRole(req) !== "service_role") return json({ error: "a service role key is required" }, 403);
@@ -126,8 +148,12 @@ async function handle(req: Request): Promise<Response> {
   const query = QuerySchema.safeParse(body);
   if (query.success) return json({ embedding: await embedText(query.data.text) });
   const job = JobSchema.safeParse(body);
-  if (job.success) return json(await embedRows(serviceClient(), job.data));
-  return json({ error: "expected { text } or { ids, schema, table, contentFunction, embeddingColumn }" }, 400);
+  if (job.success) {
+    const db = serviceClient();
+    const outcome = await embedRows(db, job.data);
+    return json({ ...outcome, ...(await ackFinished(db, job.data, [...outcome.completed, ...outcome.skipped])) });
+  }
+  return json({ error: "expected { text } or { ids, msgIds?, schema, table, contentFunction, embeddingColumn }" }, 400);
 }
 
 Deno.serve(async (req) => {

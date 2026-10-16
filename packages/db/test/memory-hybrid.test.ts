@@ -1,6 +1,7 @@
 import type { MemoryDraft } from "@north/core";
 import { MemoryDraftSchema } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { listMemoryItems, searchMemory, searchMemoryHybrid, writeMemoryItems } from "../src/memory";
 import { anon, createOwnerWithCompany, createTestUser, deleteTestUser, raw, service, type OwnedCompany, type TestUser } from "./fixtures";
 
@@ -37,6 +38,44 @@ async function queueDepth(): Promise<number> {
 }
 
 const ids = (hits: readonly { readonly id: string }[]): string[] => hits.map((h) => h.id);
+
+/** What `util.process_embeddings` POSTs to the `embed` Edge Function: `ids` and `msgIds` side by side. */
+const RequestBodySchema = z.object({
+  ids: z.array(z.string()),
+  msgIds: z.array(z.number()),
+  schema: z.string(),
+  table: z.string(),
+  contentFunction: z.string(),
+  embeddingColumn: z.string(),
+});
+type RequestBody = z.infer<typeof RequestBodySchema>;
+
+/** A job read with a one second visibility timeout is invisible for one second, so wait a little longer. */
+const VISIBILITY_WAIT_MS = 1200;
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** One pass of the processor's reader (`util.next_embedding_batches`) without the HTTP call, hiding what it reads for one second. */
+async function claimBatches(batchSize = 100, requests = 1): Promise<RequestBody[]> {
+  const { data, error } = await service.rpc("embedding_jobs_claim", { p_batch_size: batchSize, p_requests: requests, p_vt_seconds: 1 });
+  if (error) throw new Error(`embedding_jobs_claim failed: ${error.message}`);
+  return (data ?? []).map((row) => RequestBodySchema.parse((row as { body: unknown }).body));
+}
+
+async function ackJobs(msgIds: readonly number[]): Promise<number> {
+  const { data, error } = await service.rpc("embedding_jobs_ack", { p_msg_ids: [...msgIds] });
+  if (error) throw new Error(`embedding_jobs_ack failed: ${error.message}`);
+  return Number(data);
+}
+
+/** Removes what earlier tests left on the queue, so a test reads only its own jobs. */
+async function drainQueue(): Promise<void> {
+  for (let pass = 0; pass < 100; pass++) {
+    const bodies = await claimBatches();
+    if (bodies.length === 0) return;
+    await ackJobs(bodies.flatMap((body) => body.msgIds));
+  }
+  throw new Error("the embedding queue did not drain");
+}
 
 describe("LRN-7 hybrid memory search", () => {
   const owners: TestUser[] = [];
@@ -172,13 +211,15 @@ describe("LRN-7 hybrid memory search", () => {
     await expect(searchMemoryHybrid(owner.client, "not-a-uuid", "ok", axis(0))).rejects.toThrow();
   });
 
-  it("a signed-out caller cannot run search_memory_hybrid or read the queue", async () => {
+  it("a signed-out caller cannot run search_memory_hybrid, read the queue, acknowledge jobs or claim them", async () => {
     const { companyId } = await freshCompany("hybrid-anon");
     const hybrid = await anon.rpc("search_memory_hybrid", { p_company_id: companyId, p_query: "anything", p_embedding: JSON.stringify(axis(0)) });
     expect(hybrid.error?.code).toBe("42501");
     const plain = await anon.rpc("search_memory", { p_company_id: companyId, p_query: "anything" });
     expect(plain.error?.code).toBe("42501");
     expect((await anon.rpc("embedding_queue_depth")).error?.code).toBe("42501");
+    expect((await anon.rpc("embedding_jobs_ack", { p_msg_ids: [1] })).error?.code).toBe("42501");
+    expect((await anon.rpc("embedding_jobs_claim")).error?.code).toBe("42501");
   });
 
   it("the preference kind is a memory kind in the schema, the draft schema and the repository", async () => {
@@ -225,5 +266,77 @@ describe("LRN-7 hybrid memory search", () => {
 
     const viaOwner = await (owner.client as unknown as typeof raw).from("memory_items").select("id, input:memory_embedding_input").eq("id", id!);
     expect(viaOwner.error?.code).toBe("42501");
+  });
+
+  it("a job that was read stays on the queue until it is acknowledged, and comes back after the visibility timeout", async () => {
+    const { companyId } = await freshCompany("hybrid-ack");
+    await drainQueue();
+    const start = await queueDepth();
+    const [id] = await seed(companyId, [{ kind: "doc", title: "Ack me", content: "Waiting for an embedding." }]);
+    expect(await queueDepth()).toBe(start + 1);
+
+    const [first, ...others] = await claimBatches();
+    expect(others).toEqual([]);
+    expect(first).toMatchObject({ ids: [id], schema: "public", table: "memory_items", contentFunction: "memory_embedding_input", embeddingColumn: "embedding" });
+    const msgIds = first!.msgIds;
+    expect(msgIds).toHaveLength(1);
+    expect(await queueDepth()).toBe(start + 1);
+    expect(await claimBatches()).toEqual([]);
+
+    await wait(VISIBILITY_WAIT_MS);
+    const [again] = await claimBatches();
+    expect(again?.msgIds).toEqual(msgIds);
+    expect(await queueDepth()).toBe(start + 1);
+
+    expect(await ackJobs(msgIds)).toBe(1);
+    expect(await queueDepth()).toBe(start);
+    await wait(VISIBILITY_WAIT_MS);
+    expect(await claimBatches()).toEqual([]);
+    expect(await ackJobs(msgIds)).toBe(0);
+    expect(await ackJobs([])).toBe(0);
+  });
+
+  it("a job read more than five times is archived instead of sent again", async () => {
+    const { companyId } = await freshCompany("hybrid-poison");
+    await drainQueue();
+    const start = await queueDepth();
+    const [id] = await seed(companyId, [{ kind: "doc", title: "Poison", content: "An embedding that never succeeds." }]);
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const bodies = await claimBatches();
+      expect(bodies.flatMap((body) => body.ids)).toEqual([id]);
+      expect(await queueDepth()).toBe(start + 1);
+      await wait(VISIBILITY_WAIT_MS);
+    }
+    expect(await claimBatches()).toEqual([]);
+    expect(await queueDepth()).toBe(start);
+  }, 30_000);
+
+  it("a row with two waiting jobs (an insert and an edit) is one entry per job, side by side, in one body", async () => {
+    const { companyId } = await freshCompany("hybrid-twice");
+    await drainQueue();
+    const [id] = await seed(companyId, [{ kind: "doc", title: "Edited twice", content: "First text." }]);
+    await setColumns(id!, { content: "Second text." });
+
+    const [body, ...others] = await claimBatches();
+    expect(others).toEqual([]);
+    expect(body!.ids).toEqual([id, id]);
+    expect(body!.msgIds).toHaveLength(2);
+    expect(body!.msgIds[0]).toBeLessThan(body!.msgIds[1]!);
+    expect(await ackJobs(body!.msgIds)).toBe(2);
+  });
+
+  it("a body carries at most the batch size of rows, and every job lands in exactly one body", async () => {
+    const { companyId } = await freshCompany("hybrid-batches");
+    await drainQueue();
+    const created = await seed(
+      companyId,
+      Array.from({ length: 3 }, (_, i): MemoryDraft => ({ kind: "doc", title: `Batch ${i}`, content: `Batched note ${i}.` })),
+    );
+
+    const bodies = await claimBatches(2, 2);
+    expect(bodies.map((body) => body.ids.length).sort()).toEqual([1, 2]);
+    expect(bodies.flatMap((body) => body.ids).sort()).toEqual([...created].sort());
+    expect(await ackJobs(bodies.flatMap((body) => body.msgIds))).toBe(3);
   });
 });

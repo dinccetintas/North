@@ -13,11 +13,12 @@
 --     (writing the embedding itself does not enqueue, so there is no loop).
 --   * util.process_embeddings() reads the queue (util.next_embedding_batches:
 --     batches of 10 rows, at most 10 requests per run, one row once per run),
---     and POSTs { ids, schema, table, contentFunction, embeddingColumn } to the
---     `embed` Edge Function (supabase/functions/embed) through pg_net, with the
---     service key. The Edge Function embeds `memory_embedding_input(row)` with
---     Supabase.ai.Session('gte-small') and writes the vector. pg_cron runs it
---     every 10 seconds.
+--     and POSTs { ids, msgIds, schema, table, contentFunction, embeddingColumn }
+--     to the `embed` Edge Function (supabase/functions/embed) through pg_net,
+--     with the service key. The Edge Function embeds
+--     `memory_embedding_input(row)` with Supabase.ai.Session('gte-small'),
+--     writes the vector and acknowledges the jobs (embedding_jobs_ack).
+--     pg_cron runs process_embeddings every 10 seconds.
 --   * search_memory_hybrid fuses the full-text rank and the cosine rank with
 --     Reciprocal Rank Fusion; search_memory (full text only) returns the same
 --     row shape. Both see active, unexpired items only.
@@ -52,10 +53,22 @@
 -- only: a database setting is readable by every role, so staging and
 -- production use Vault.
 --
--- Delivery is at most once: process_embeddings deletes a job when it has
--- handed it to pg_net. A request that fails leaves the row without an
--- embedding (`embedding is null`); the full-text leg still finds it, and its
--- next title or content update enqueues it again.
+-- Retry. Delivery is at least once, through the pgmq visibility timeout (the
+-- recipe's shape). A job is read with vt = 300 s and is NOT deleted when it is
+-- handed to pg_net (that call is asynchronous). The request carries the job ids
+-- (`msgIds`, side by side with `ids`); the Edge Function calls
+-- public.embedding_jobs_ack(msgIds) only for the rows it embedded, or whose row
+-- no longer exists or has no text (retrying cannot help those). A cold start, a
+-- model error, a failed write or a 5xx therefore leaves the job on the queue and
+-- it is read again after 300 s. A job read more than 5 times
+-- (util.next_embedding_batches) is moved to the archive (pgmq.a_embedding_jobs)
+-- instead of being sent again, so a poison row cannot loop. That row keeps
+-- `embedding is null`; the full-text leg still finds it. To repair rows whose
+-- jobs were archived, enqueue them again (service role or SQL):
+--     update public.memory_items set title = title where embedding is null;
+-- (the trigger fires on every update that names title or content).
+-- public.embedding_jobs_claim() runs the same reader without the HTTP call, for
+-- tests and for an operator without pg_net.
 --
 -- 0020 follow-up: the identity sequence of agent_session_entries is revoked
 -- from the Data API roles (a review finding from Task 7).
@@ -172,6 +185,15 @@ $$;
 revoke execute on function public.embedding_queue_depth() from public, anon, authenticated;
 grant execute on function public.embedding_queue_depth() to service_role;
 
+-- The Edge Function's acknowledgement: deletes the jobs it finished. Returns how
+-- many existed (a job already acknowledged, or archived, counts 0).
+create or replace function public.embedding_jobs_ack(p_msg_ids bigint[]) returns int
+language sql security definer set search_path = '' as $$
+  select count(*)::int from pgmq.delete('embedding_jobs', coalesce(p_msg_ids, '{}'::bigint[]));
+$$;
+revoke execute on function public.embedding_jobs_ack(bigint[]) from public, anon, authenticated;
+grant execute on function public.embedding_jobs_ack(bigint[]) to service_role;
+
 -- ---------------------------------------------------------------------------
 -- util.project_url() / util.service_role_key(): Vault first, then the database setting
 -- ---------------------------------------------------------------------------
@@ -201,46 +223,72 @@ revoke execute on function util.service_role_key() from public, anon, authentica
 
 -- ---------------------------------------------------------------------------
 -- util.next_embedding_batches(): reads up to p_requests x p_size jobs (they stay
--- invisible to other readers for p_vt_seconds) and groups them into request
--- bodies { ids, schema, table, contentFunction, embeddingColumn }, at most
--- p_size rows per body. A row with several waiting jobs (an insert and an
--- edit) goes into one body once; `msg_ids` lists every job the body covers.
+-- invisible to other readers for p_vt_seconds, and are NOT deleted) and groups
+-- them into request bodies
+--   { ids, msgIds, schema, table, contentFunction, embeddingColumn }
+-- with at most p_size rows per body. `ids` and `msgIds` run side by side (one
+-- entry per job, ascending by message id); a row with several waiting jobs (an
+-- insert and an edit) goes into one body. A job read more than p_max_reads
+-- times has failed that often: it is archived and not sent again.
 -- ---------------------------------------------------------------------------
-create or replace function util.next_embedding_batches(p_size int, p_requests int, p_vt_seconds int)
-returns table (body jsonb, msg_ids bigint[])
-language sql security definer set search_path = '' as $$
+drop function if exists util.next_embedding_batches(int, int, int);
+create or replace function util.next_embedding_batches(p_size int, p_requests int, p_vt_seconds int, p_max_reads int default 5)
+returns table (body jsonb)
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_size int := greatest(coalesce(p_size, 10), 1);
+  v_jobs jsonb;
+begin
+  select coalesce(jsonb_agg(to_jsonb(m)), '[]'::jsonb) into v_jobs
+    from pgmq.read('embedding_jobs', greatest(coalesce(p_vt_seconds, 300), 1), greatest(coalesce(p_requests, 10), 1) * v_size) m;
+  perform pgmq.archive('embedding_jobs', array(
+    select (j ->> 'msg_id')::bigint from jsonb_array_elements(v_jobs) j where (j ->> 'read_ct')::int > p_max_reads));
+
+  return query
   with jobs as (
-    select m.msg_id,
-           m.message -> 'id' as row_id,
-           m.message ->> 'schema' as schema_name,
-           m.message ->> 'table' as table_name,
-           m.message ->> 'contentFunction' as content_function,
-           m.message ->> 'embeddingColumn' as embedding_column
-      from pgmq.read('embedding_jobs', p_vt_seconds, p_requests * p_size) m
+    select j.msg_id,
+           j.message -> 'id' as row_id,
+           j.message ->> 'schema' as schema_name,
+           j.message ->> 'table' as table_name,
+           j.message ->> 'contentFunction' as content_function,
+           j.message ->> 'embeddingColumn' as embedding_column
+      from jsonb_to_recordset(v_jobs) as j(msg_id bigint, read_ct int, message jsonb)
+     where j.read_ct <= p_max_reads
   ), numbered as (
     select j.*,
            (dense_rank() over (
               partition by j.schema_name, j.table_name, j.content_function, j.embedding_column
-              order by j.row_id) - 1) / p_size as batch_no
+              order by j.row_id) - 1) / v_size as batch_no
       from jobs j
   )
   select jsonb_build_object(
-           'ids', jsonb_agg(distinct n.row_id),
+           'ids', jsonb_agg(n.row_id order by n.msg_id),
+           'msgIds', jsonb_agg(n.msg_id order by n.msg_id),
            'schema', n.schema_name,
            'table', n.table_name,
            'contentFunction', n.content_function,
            'embeddingColumn', n.embedding_column
-         ),
-         array_agg(n.msg_id)
+         )
     from numbered n
    group by n.schema_name, n.table_name, n.content_function, n.embedding_column, n.batch_no;
+end $$;
+revoke execute on function util.next_embedding_batches(int, int, int, int) from public, anon, authenticated;
+
+-- The same reader for the service role over the Data API (tests; an operator
+-- without pg_net who sends the bodies to `embed` by hand).
+create or replace function public.embedding_jobs_claim(p_batch_size int default 10, p_requests int default 10, p_vt_seconds int default 300)
+returns table (body jsonb)
+language sql security definer set search_path = '' as $$
+  select b.body from util.next_embedding_batches(p_batch_size, p_requests, p_vt_seconds) b;
 $$;
-revoke execute on function util.next_embedding_batches(int, int, int) from public, anon, authenticated;
+revoke execute on function public.embedding_jobs_claim(int, int, int) from public, anon, authenticated;
+grant execute on function public.embedding_jobs_claim(int, int, int) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- util.process_embeddings(): queue -> embed Edge Function. Returns the number
 -- of jobs handed to pg_net; 0 when pg_net or the project settings are absent,
--- in which case the queue is left untouched.
+-- in which case the queue is left untouched. It deletes nothing: the Edge
+-- Function acknowledges what it embedded, the rest returns after p_timeout_ms.
 -- ---------------------------------------------------------------------------
 create or replace function util.process_embeddings(
   p_batch_size int default 10,
@@ -265,8 +313,7 @@ begin
   end if;
 
   for v_batch in
-    select * from util.next_embedding_batches(
-      greatest(coalesce(p_batch_size, 10), 1), greatest(coalesce(p_max_requests, 10), 1), v_timeout / 1000)
+    select b.body from util.next_embedding_batches(p_batch_size, p_max_requests, v_timeout / 1000) b
   loop
     perform net.http_post(
       url => v_url || '/functions/v1/embed',
@@ -274,8 +321,7 @@ begin
       body => v_batch.body,
       timeout_milliseconds => v_timeout
     );
-    perform pgmq.delete('embedding_jobs', v_batch.msg_ids);
-    v_sent := v_sent + cardinality(v_batch.msg_ids);
+    v_sent := v_sent + jsonb_array_length(v_batch.body -> 'msgIds');
   end loop;
   return v_sent;
 end $$;

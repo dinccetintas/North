@@ -1975,6 +1975,17 @@ export type Database = {
         Args: { p_ref: string; p_user_id: string };
         Returns: string;
       };
+      embedding_jobs_ack: { Args: { p_msg_ids: number[] }; Returns: number };
+      embedding_jobs_claim: {
+        Args: {
+          p_batch_size?: number;
+          p_requests?: number;
+          p_vt_seconds?: number;
+        };
+        Returns: {
+          body: Json;
+        }[];
+      };
       embedding_queue_depth: {
         Args: Record<PropertyKey, never>;
         Returns: number;

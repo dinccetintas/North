@@ -196,4 +196,14 @@ describe("M7 schema: memory items, embeddings and the embedding queue (LRN-7)", 
     expect((await ownerRaw.rpc("embedding_queue_depth")).error?.code).toBe("42501");
     expect((await (anon as unknown as RawClient).rpc("embedding_queue_depth")).error?.code).toBe("42501");
   });
+
+  it("LRN-7 embedding_jobs_ack and embedding_jobs_claim: service role only; an owner and a signed-out caller get permission denied", async () => {
+    const acked = await raw.rpc("embedding_jobs_ack", { p_msg_ids: [] });
+    expect(acked.error).toBeNull();
+    expect(acked.data).toBe(0);
+    for (const client of [ownerRaw, anon as unknown as RawClient]) {
+      expect((await client.rpc("embedding_jobs_ack", { p_msg_ids: [1] })).error?.code).toBe("42501");
+      expect((await client.rpc("embedding_jobs_claim")).error?.code).toBe("42501");
+    }
+  });
 });
