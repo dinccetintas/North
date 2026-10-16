@@ -1,4 +1,5 @@
 export * from "./models";
+export * from "./pricing/api-usage";
 export * from "./tiers";
 export * from "./authority/index";
 export * from "./budget/guard";

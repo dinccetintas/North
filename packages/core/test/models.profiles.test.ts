@@ -63,7 +63,8 @@ describe("TST-1 model profiles", () => {
   });
 
   it("costOfUsage prices by model id with cache reads", () => {
-    expect(costOfUsage({ model: "claude-haiku-5-5", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 })).toBeCloseTo(0.10, 6);
+    // 100,000 prompt tokens is still the short Haiku tier (0.10 per million): 0.01 USD.
+    expect(costOfUsage({ model: "claude-haiku-5-5", inputTokens: 100_000, outputTokens: 0, cacheReadTokens: 0 })).toBeCloseTo(0.01, 9);
     expect(costOfUsage({ model: "unknown-model", inputTokens: 1, outputTokens: 1, cacheReadTokens: 1 })).toBeNaN();
   });
 
@@ -71,7 +72,8 @@ describe("TST-1 model profiles", () => {
     const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000 };
     expect(costOfUsage({ model: "claude-opus-5-5", ...usage })).toBeCloseTo(4 + 20 + 0.2, 6);
     expect(costOfUsage({ model: "claude-sonnet-5-5", ...usage })).toBeCloseTo(2 + 10 + 0.1, 6);
-    expect(costOfUsage({ model: "claude-haiku-5-5", ...usage })).toBeCloseTo(0.1 + 0.5 + 0.01, 6);
+    // A prompt of 2M tokens is over 100,000, so Haiku bills the long-prompt tier: 0.50 + 2.50 + 0.05.
+    expect(costOfUsage({ model: "claude-haiku-5-5", ...usage })).toBeCloseTo(0.5 + 2.5 + 0.05, 6);
     expect(costOfUsage({ model: "claude-haiku-5-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 })).toBe(0);
   });
 });

@@ -100,25 +100,41 @@ export function resolveEffort(alias: string, profile: ModelProfile = DEFAULT_PRO
   return lookupRoute(alias, profile).effort;
 }
 
-interface Price {
+/** USD per million tokens for one tier. */
+export interface Price {
   readonly input: number;
-  readonly output: number;
+  /** Writing the prompt cache with the 5-minute lifetime. */
+  readonly cacheWrite5m: number;
+  /** Writing the prompt cache with the 1-hour lifetime. */
+  readonly cacheWrite1h: number;
   readonly cacheRead: number;
+  readonly output: number;
 }
 
-const price = (input: number, output: number, cacheRead: number): Price =>
-  Object.freeze({ input, output, cacheRead });
+/** A model's price; `longPrompt` is the tier for prompts over `LONG_PROMPT_TOKENS`, when the model has one. */
+export interface ModelPrice extends Price {
+  readonly longPrompt?: Price;
+}
+
+/** Prompts longer than this (input + cache reads + cache writes, per request) bill the model's `longPrompt` tier. */
+export const LONG_PROMPT_TOKENS = 100_000;
+
+const tier = (rates: Price): Price => Object.freeze({ ...rates });
+const withLongPrompt = (rates: Price, longPrompt: Price): ModelPrice => Object.freeze({ ...rates, longPrompt: tier(longPrompt) });
 
 /**
  * USD per million tokens, keyed by model ID. Source: the official pricing page
  * (https://platform.claude.com/docs/en/about-claude/pricing), checked 2026-10-16.
- * Haiku uses the rate for prompts up to 100k tokens; longer prompts cost more
- * and are not modelled here.
+ * Opus and Sonnet have one tier. Haiku bills prompts over 100,000 tokens at
+ * the `longPrompt` tier, priced per request on the whole prompt.
  */
-export const PRICE_USD_PER_MTOK: Readonly<Record<string, Price>> = Object.freeze({
-  [OPUS]: price(4, 20, 0.2),
-  [SONNET]: price(2, 10, 0.1),
-  [HAIKU]: price(0.1, 0.5, 0.01),
+export const PRICE_USD_PER_MTOK: Readonly<Record<string, ModelPrice>> = Object.freeze({
+  [OPUS]: tier({ input: 4, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20 }),
+  [SONNET]: tier({ input: 2, cacheWrite5m: 2.5, cacheWrite1h: 4, cacheRead: 0.1, output: 10 }),
+  [HAIKU]: withLongPrompt(
+    { input: 0.1, cacheWrite5m: 0.125, cacheWrite1h: 0.2, cacheRead: 0.01, output: 0.5 },
+    { input: 0.5, cacheWrite5m: 0.625, cacheWrite1h: 1, cacheRead: 0.05, output: 2.5 },
+  ),
 });
 
 export interface ModelUsage {
@@ -126,19 +142,32 @@ export interface ModelUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  /** Tokens written to the 5-minute prompt cache; 0 when absent. */
+  readonly cacheWriteTokens?: number;
+  /** Tokens written to the 1-hour prompt cache; 0 when absent. */
+  readonly cacheWrite1hTokens?: number;
 }
 
 /**
- * Prices one usage record in USD. Returns NaN for a model with no price entry:
- * callers must treat NaN as "unpriced", never as zero cost.
+ * Prices one usage record in USD: input, 5-minute and 1-hour cache writes,
+ * cache reads and output. A model with a `longPrompt` tier bills the whole
+ * request at that tier once input + reads + writes pass `LONG_PROMPT_TOKENS`.
+ * Returns NaN for a model with no price entry: callers must treat NaN as
+ * "unpriced", never as zero cost.
  */
 export function costOfUsage(usage: ModelUsage): number {
   if (!Object.hasOwn(PRICE_USD_PER_MTOK, usage.model)) return Number.NaN;
-  const rate = PRICE_USD_PER_MTOK[usage.model]!;
+  const entry = PRICE_USD_PER_MTOK[usage.model]!;
+  const write5m = usage.cacheWriteTokens ?? 0;
+  const write1h = usage.cacheWrite1hTokens ?? 0;
+  const promptTokens = usage.inputTokens + usage.cacheReadTokens + write5m + write1h;
+  const rate = entry.longPrompt !== undefined && promptTokens > LONG_PROMPT_TOKENS ? entry.longPrompt : entry;
   return (
     (usage.inputTokens * rate.input +
-      usage.outputTokens * rate.output +
-      usage.cacheReadTokens * rate.cacheRead) /
+      write5m * rate.cacheWrite5m +
+      write1h * rate.cacheWrite1h +
+      usage.cacheReadTokens * rate.cacheRead +
+      usage.outputTokens * rate.output) /
     1_000_000
   );
 }
