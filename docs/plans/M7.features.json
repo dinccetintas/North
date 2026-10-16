@@ -1,0 +1,30 @@
+{
+  "milestone": "M7",
+  "title": "Ground truth: hardening, compliance, real tests and staging",
+  "spec": "docs/superpowers/specs/2026-10-16-north-studio-phase-design.md",
+  "plan": "docs/plans/M7.md",
+  "rule": "Only a passing test or a completed acceptance run flips `passes` to true. Tests are never edited to pass.",
+  "features": [
+    { "id": "M7-F1", "requirement": "TST-1", "statement": "Model profiles route aliases per profile and a price table prices usage", "proof": "packages/core/test/models.profiles.test.ts", "passes": false },
+    { "id": "M7-F2", "requirement": "TST-1", "statement": "A per-day test budget guard caps spend and rolls with the day", "proof": "packages/core/test/budget.test-run.test.ts, apps/worker/test/gateway.test.ts", "passes": false },
+    { "id": "M7-F3", "requirement": "CMP-1", "statement": "Outreach to a suppressed address or domain, or without a sender identity, is blocked at the gate", "proof": "packages/core/test/authority.gate.test.ts, apps/worker/test/actions.test.ts", "passes": false },
+    { "id": "M7-F4", "requirement": "CMP-1", "statement": "Every first-contact email carries the footer, List-Unsubscribe and List-Unsubscribe-Post", "proof": "packages/integrations/test/live.gmail.test.ts, apps/worker/test/perform.test.ts", "passes": false },
+    { "id": "M7-F5", "requirement": "CMP-1", "statement": "GET or POST /u/{token} writes an opt-out suppression and never redirects; bad tokens answer 404", "proof": "apps/worker/test/unsubscribe.test.ts", "passes": false },
+    { "id": "M7-F6", "requirement": "CMP-1", "statement": "Bounces and opt-out replies mark the lead and write a suppression", "proof": "apps/worker/test/replies.test.ts", "passes": false },
+    { "id": "M7-F7", "requirement": "CMP-1", "statement": "The founder saves the sender identity in Settings; without it a batch is blocked with a readable reason", "proof": "apps/web/e2e/m4-growth-sales.spec.ts (CMP-1)", "passes": false },
+    { "id": "M7-F8", "requirement": "TST-5", "statement": "The fence blocks any external action whose target is outside the allow-lists, default deny", "proof": "packages/core/test/authority.fence.test.ts, apps/worker/test/fence.test.ts", "passes": false },
+    { "id": "M7-F9", "requirement": "SEC-2", "statement": "No agent subprocess receives the model key, HOME or the host config; each company has its own config dir", "proof": "packages/agents/test/runtime.subprocess-env.test.ts", "passes": false },
+    { "id": "M7-F10", "requirement": "SEC-1", "statement": "Engineering runs under the SDK sandbox with unsandboxed commands refused and a network allow-list", "proof": "packages/agents/test/runtime.claude-agent-sdk.test.ts; staging run.json shows sandbox enabled", "passes": false },
+    { "id": "M7-F11", "requirement": "SEC-1", "statement": "The gateway injects the key, strips the caller's, streams SSE unchanged and refuses past the cap", "proof": "apps/worker/test/gateway.test.ts", "passes": false },
+    { "id": "M7-F12", "requirement": "TST-2", "statement": "Record then replay serves the stored response without the upstream; a miss fails readably", "proof": "apps/worker/test/gateway-cassette.test.ts, scripts/cassette-check.test.ts", "passes": false },
+    { "id": "M7-F13", "requirement": "SEC-2", "statement": "Agent session entries persist append-only and never reach the browser", "proof": "packages/db/test/agentSessions.test.ts, packages/agents/test/runtime.session-store.test.ts", "passes": false },
+    { "id": "M7-F14", "requirement": "LRN-7", "statement": "Memory items are embedded inside Supabase and searched hybrid (full text + vector, RRF)", "proof": "packages/db/test/memory-hybrid.test.ts", "passes": false },
+    { "id": "M7-F15", "requirement": "LRN-6", "statement": "Memory enters runs as bounded data: digest capped at 8,000 chars, search results in a stripped, capped block", "proof": "packages/agents/test/runtime.memory-tool.test.ts, packages/agents/test/prompts.build.test.ts", "passes": false },
+    { "id": "M7-F16", "requirement": "MKT-1 (prep)", "statement": "The Meta adapter targets Graph API v26.0", "proof": "packages/integrations/test/live.meta-ads.test.ts", "passes": false },
+    { "id": "M7-F17", "requirement": "TST-2", "statement": "Real-Claude smoke runs on every PR under $0.50 on the smoke profile", "proof": "ci job llm-smoke; docs/evidence/M7/smoke-llm.json", "passes": false },
+    { "id": "M7-F18", "requirement": "STG-1", "statement": "Staging (Vercel, Supabase, Fly, Inngest) passes the staging check: fence on, env staging, sandbox routes closed, buckets private", "proof": "docs/evidence/M7/staging-check.json", "passes": false },
+    { "id": "M7-F19", "requirement": "TST-3", "statement": "The nightly staging journey runs green from the workflow", "proof": "nightly-staging run URL in docs/plans/M7.progress.md", "passes": false },
+    { "id": "M7-F20", "requirement": "TST-4", "statement": "Milestone acceptance on the production profile: real magic link, onboarding with real Claude, artifacts open, kill switch within 5 s, cost at most $10", "proof": "docs/evidence/M7/acceptance/<date>/", "passes": false },
+    { "id": "M7-F21", "requirement": "TST-4", "statement": "The gap report lists what the acceptance proved weak and what M8 fixes first", "proof": "docs/evidence/M7/gap-report.md", "passes": false }
+  ]
+}
