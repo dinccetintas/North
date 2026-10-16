@@ -3,19 +3,21 @@
 // subprocess carries a placeholder key; only this module holds the real one,
 // injects it, enforces the day's spend cap, and records or replays exchanges
 // as cassettes. Replies stream through byte for byte (SSE included); no fetch,
-// no buffering of the wire, only a bounded copy for pricing and recording.
+// no buffering of the wire. A stream is priced as it goes by; only a bounded
+// copy is kept, for recording and for reading a non-streaming reply's usage.
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type RequestOptions, type Server, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { AddressInfo } from "node:net";
-import { costOfUsage } from "@north/core";
+import { costAtHighestRate, costOfUsage, type ModelUsage } from "@north/core";
 import { z } from "zod";
 import { createCapture } from "./capture";
-import { cassetteKey, readCassette, writeCassette, type CassetteResponse } from "./cassette";
-import { hasLoopbackHost, hasPlaceholderKey, isEncoded, replyHeaders, upstreamHeaders, type Headers } from "./headers";
+import { cassetteKey, holdsAnthropicKey, readCassette, writeCassette, type CassetteResponse } from "./cassette";
+import { betaHeaderOf, forwardedRequestHeaders, hasLoopbackHost, hasPlaceholderKey, isEncoded, isEventStream, replyHeaders, upstreamHeaders } from "./headers";
 import { resolveOptions, type GatewayOptions, type ResolvedOptions } from "./options";
-import { usageFromResponse } from "./usage";
+import { createSseUsage, type SseUsage } from "./sse";
+import { replyUsage, usageFromResponse } from "./usage";
 
-export { DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_REQUEST_BYTES } from "./options";
+export { DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS } from "./options";
 export type { GatewayMode, GatewayOptions } from "./options";
 
 /** What the gateway has done since it started (spend and `unpriced` are the budget's, for today). */
@@ -25,7 +27,7 @@ export interface GatewayStats {
   readonly spentUsd: number;
   /** Replays that found no cassette. */
   readonly misses: number;
-  /** Replies whose cost could not be computed: spend the cap does not see. */
+  /** Replies priced by guess (a model with no price entry) or not at all (no readable usage); see `GatewayBudget.exhaust`. */
   readonly unpriced: number;
   readonly capUsd: number;
 }
@@ -123,11 +125,22 @@ const parseJson = (body: Buffer): unknown => {
   }
 };
 
-/** Settles the budget with the cost of a reply: a 2xx without a readable usage (or with an unknown model) settles NaN, which the budget counts as unpriced. Errors cost nothing. */
-function settleFromBody(ctx: Context, status: number, headers: Headers, body: Buffer | null): void {
+/**
+ * Settles the budget with what a finished 2xx reply cost (an error costs
+ * nothing). A model with no price is charged the dearest rate and counted as
+ * unpriced; a reply with no readable usage closes the day under a cap (see
+ * `GatewayBudget.exhaust`), so spend that cannot be seen cannot slip past it.
+ */
+function settleUsage(ctx: Context, status: number, usage: ModelUsage | null): void {
   if (status < 200 || status >= 300) return;
-  const usage = body === null || isEncoded(headers) ? null : usageFromResponse(body, headers);
-  ctx.opts.budget.settle(usage === null ? Number.NaN : costOfUsage(usage));
+  const { budget, log } = ctx.opts;
+  if (usage === null) {
+    if (budget.exhaust("a 2xx reply carried no readable usage")) log("gateway: a reply carried no readable usage, so the day's budget is closed until the next UTC day");
+    return;
+  }
+  const cost = costOfUsage(usage);
+  if (Number.isNaN(cost)) budget.settleUnpriced(costAtHighestRate(usage));
+  else budget.settle(cost);
 }
 
 /** Answers from the cassette of `key`: the stored status, headers and body, priced like a live reply. A miss or a broken file is a 502 naming the key. */
@@ -143,59 +156,84 @@ async function replayFrom(ctx: Context, res: ServerResponse, key: string): Promi
     ctx.counters.misses += 1;
     return sendError(res, 502, { type: "north_cassette_miss", key });
   }
-  settleFromBody(ctx, cassette.status, cassette.headers, cassette.body);
+  settleUsage(ctx, cassette.status, usageFromResponse(cassette.body, cassette.headers));
   const stored: Record<string, string> = {};
   for (const [name, value] of Object.entries(replyHeaders(cassette.headers))) stored[name] = String(value);
   res.writeHead(cassette.status, { ...stored, "content-length": cassette.body.length });
   res.end(cassette.body);
 }
 
+/** Why an exchange cannot be recorded, or null when it can. The reply is stored verbatim, so one that holds a key is refused rather than scrubbed. */
+function recordingRefusal(headers: IncomingHttpHeaders, captured: Buffer | null): string | null {
+  if (captured === null) return "the reply is too large to record";
+  if (isEncoded(headers)) return "the reply is compressed";
+  return holdsAnthropicKey(captured, headers) ? "the reply holds an Anthropic key" : null;
+}
+
 /** After a reply has ended: settle its cost, and in record mode store the whole exchange. Nothing here may throw. */
-async function conclude(ctx: Context, ex: Exchange, req: IncomingMessage, status: number, headers: IncomingHttpHeaders, captured: Buffer | null, complete: boolean): Promise<void> {
+async function conclude(ctx: Context, ex: Exchange, req: IncomingMessage, status: number, headers: IncomingHttpHeaders, captured: Buffer | null, sse: SseUsage | null, complete: boolean): Promise<void> {
   if (ex.key === null) return;
-  const unusable = captured === null ? "reply too large to price or record" : isEncoded(headers) ? "reply is compressed, so it cannot be priced or recorded" : null;
-  if (unusable !== null) ctx.opts.log(`gateway: ${unusable} (${ex.key.slice(0, 12)})`);
-  settleFromBody(ctx, status, headers, unusable === null ? captured : null);
-  if (ctx.opts.mode !== "record" || !complete || unusable !== null || captured === null) return;
+  settleUsage(ctx, status, replyUsage(headers, sse, captured));
+  if (ctx.opts.mode !== "record" || !complete) return;
+  const refusal = recordingRefusal(headers, captured);
+  if (refusal !== null || captured === null) {
+    ctx.opts.log(`gateway: not recording ${ex.key.slice(0, 12)}: ${refusal ?? "no copy"}`);
+    return;
+  }
   try {
     const stored = { status, headers: replyHeaders(headers), body: captured };
-    await writeCassette(ctx.opts.cassetteDir, ex.key, stored, { method: "POST", path: req.url ?? "", headers: req.headers, body: ex.body });
+    await writeCassette(ctx.opts.cassetteDir, ex.key, stored, { method: "POST", path: req.url ?? "", headers: forwardedRequestHeaders(req.headers), body: ex.body });
   } catch (error) {
     ctx.opts.log(`gateway: could not record ${ex.key.slice(0, 12)}: ${error instanceof Error ? error.message : "write failed"}`);
   }
 }
 
+/** Runs `after` once `work` has settled, however it settled; nothing here can reject. */
+const thenAlways = (work: Promise<void>, after: () => void): void => {
+  void work
+    .catch(() => undefined)
+    .finally(after)
+    .catch(() => undefined);
+};
+
 /**
- * Streams the upstream's reply to the caller as it arrives and keeps a bounded
- * copy. The caller's response ends only after the cost is settled and, in
- * record mode, the cassette is written, so a caller that has seen the end can
- * rely on both. A reply cut short (either side hangs up) is priced from what
- * arrived and never recorded.
+ * Streams the upstream's reply to the caller as it arrives, prices a stream as
+ * it goes by, and keeps a bounded copy. The caller's response ends only after
+ * the cost is settled and, in record mode, the cassette is written, so a caller
+ * that has seen the end can rely on both. A reply cut short (either side hangs
+ * up) is priced from what arrived and never recorded.
  */
 function relay(ctx: Context, ex: Exchange, req: IncomingMessage, upRes: IncomingMessage, res: ServerResponse): void {
   const capture = createCapture(ctx.opts.maxCaptureBytes);
+  const sse = isEventStream(upRes.headers) ? createSseUsage() : null;
   const status = upRes.statusCode ?? 502;
   let concluded = false;
   const finish = (complete: boolean): Promise<void> => {
     if (concluded) return Promise.resolve();
     concluded = true;
-    return conclude(ctx, ex, req, status, upRes.headers, capture.result(), complete);
+    return conclude(ctx, ex, req, status, upRes.headers, capture.result(), sse, complete);
   };
   res.writeHead(status, replyHeaders(upRes.headers));
   upRes.on("data", (chunk: Buffer) => {
     capture.add(chunk);
+    sse?.push(chunk);
     if (res.write(chunk)) return;
     upRes.pause();
     res.once("drain", () => upRes.resume());
   });
-  upRes.on("end", () => void finish(true).then(() => res.end()));
+  upRes.on("end", () => thenAlways(finish(true), () => res.end()));
   upRes.on("close", () => {
-    if (!upRes.complete) void finish(false).then(() => res.destroy());
+    if (!upRes.complete) thenAlways(finish(false), () => res.destroy());
   });
-  upRes.on("error", () => void finish(false).then(() => res.destroy()));
+  upRes.on("error", () => thenAlways(finish(false), () => res.destroy()));
 }
 
-/** Sends the request upstream with the real key and relays the reply. A connection failure is a 502; a caller that hangs up cancels the upstream request. */
+/**
+ * Sends the request upstream with the real key and relays the reply. A
+ * connection failure is a 502; an upstream silent for `upstreamTimeoutMs` is
+ * cut (a 504 before its headers, a cut stream after); a caller that hangs up
+ * cancels the upstream request.
+ */
 function forward(ctx: Context, req: IncomingMessage, res: ServerResponse, ex: Exchange): void {
   const { upstream, apiKey } = ctx.opts;
   const options: RequestOptions = {
@@ -207,8 +245,17 @@ function forward(ctx: Context, req: IncomingMessage, res: ServerResponse, ex: Ex
     headers: upstreamHeaders(req.headers, apiKey ?? "", upstream.host, ex.body.length),
   };
   const upReq = upstream.protocol === "https:" ? httpsRequest(options) : httpRequest(options);
+  let timedOut = false;
   upReq.on("response", (upRes) => relay(ctx, ex, req, upRes, res));
+  upReq.setTimeout(ctx.opts.upstreamTimeoutMs, () => {
+    if (res.writableFinished) return;
+    timedOut = true;
+    ctx.opts.log("gateway: upstream timed out");
+    if (!res.headersSent) sendError(res, 504, { type: "north_upstream_timeout" });
+    upReq.destroy();
+  });
   upReq.on("error", (error: NodeJS.ErrnoException) => {
+    if (timedOut) return;
     if (!res.destroyed) ctx.opts.log(`gateway: upstream unreachable (${error.code ?? error.name})`);
     sendError(res, 502, { type: "north_upstream_unreachable" });
   });
@@ -218,12 +265,13 @@ function forward(ctx: Context, req: IncomingMessage, res: ServerResponse, ex: Ex
   upReq.end(ex.body);
 }
 
-/** The cap check for `/v1/messages`: a 402 once the day's spend has reached the cap. True when the request may go on. */
+/** The cap check for `/v1/messages`: a 402 once the day's spend has reached the cap (or the day was closed by a reply that could not be priced). True when the request may go on. */
 function underCap(ctx: Context, res: ServerResponse): boolean {
   const { budget } = ctx.opts;
   if (budget.reserve(0)) return true;
   const { capUsd, spentUsd } = budget.stats();
-  sendError(res, 402, { type: "north_budget_exceeded", cap_usd: capUsd, spent_usd: spentUsd });
+  const type = budget.exhaustion() === null ? "north_budget_exceeded" : "north_budget_unpriced";
+  sendError(res, 402, { type, cap_usd: capUsd, spent_usd: spentUsd });
   return false;
 }
 
@@ -241,7 +289,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   if (!parsed.success) return sendError(res, 400, { type: "north_gateway_bad_request" });
   if (!underCap(ctx, res)) return;
   ctx.counters.requests += 1;
-  const key = cassetteKey(parsed.data);
+  const key = cassetteKey({ path: `${UPSTREAM_PATHS.messages}${screened.search}`, betaHeader: betaHeaderOf(req.headers), body: parsed.data });
   if (ctx.opts.mode === "replay") return replayFrom(ctx, res, key);
   forward(ctx, req, res, { route: "messages", search: screened.search, body, key });
 }

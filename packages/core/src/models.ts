@@ -125,7 +125,9 @@ const withLongPrompt = (rates: Price, longPrompt: Price): ModelPrice => Object.f
 /**
  * USD per million tokens, keyed by model ID. Source: the official pricing page
  * (https://platform.claude.com/docs/en/about-claude/pricing), checked 2026-10-16.
- * Opus and Sonnet have one tier. Haiku bills prompts over 100,000 tokens at
+ * Cache reads are 0.05x the base input price on Opus 5.5 and Sonnet 5.5 (pricing
+ * page, footnote 2: $0.10 on Sonnet 5.5, $0.20 on Opus 5.5), so those two rates are
+ * current, not stale. Opus and Sonnet have one tier. Haiku bills prompts over 100,000 tokens at
  * the `longPrompt` tier, priced per request on the whole prompt.
  */
 export const PRICE_USD_PER_MTOK: Readonly<Record<string, ModelPrice>> = Object.freeze({
@@ -146,13 +148,18 @@ export interface ModelUsage {
   readonly cacheWriteTokens?: number;
   /** Tokens written to the 1-hour prompt cache; 0 when absent. */
   readonly cacheWrite1hTokens?: number;
+  /** `fast` bills the whole request at twice the standard price; absent means standard. */
+  readonly speed?: "standard" | "fast";
 }
+
+/** Fast mode doubles the price of the request. */
+const FAST_MULTIPLIER = 2;
 
 /**
  * Prices one usage record in USD: input, 5-minute and 1-hour cache writes,
  * cache reads and output. A model with a `longPrompt` tier bills the whole
- * request at that tier once input + reads + writes pass `LONG_PROMPT_TOKENS`.
- * Returns NaN for a model with no price entry: callers must treat NaN as
+ * request at that tier once input + reads + writes pass `LONG_PROMPT_TOKENS`;
+ * `speed: "fast"` doubles the total. Returns NaN for a model with no price entry: callers must treat NaN as
  * "unpriced", never as zero cost.
  */
 export function costOfUsage(usage: ModelUsage): number {
@@ -162,12 +169,24 @@ export function costOfUsage(usage: ModelUsage): number {
   const write1h = usage.cacheWrite1hTokens ?? 0;
   const promptTokens = usage.inputTokens + usage.cacheReadTokens + write5m + write1h;
   const rate = entry.longPrompt !== undefined && promptTokens > LONG_PROMPT_TOKENS ? entry.longPrompt : entry;
-  return (
+  const standard =
     (usage.inputTokens * rate.input +
       write5m * rate.cacheWrite5m +
       write1h * rate.cacheWrite1h +
       usage.cacheReadTokens * rate.cacheRead +
       usage.outputTokens * rate.output) /
-    1_000_000
-  );
+    1_000_000;
+  return usage.speed === "fast" ? standard * FAST_MULTIPLIER : standard;
+}
+
+/**
+ * The most this usage could cost under any model in the price table (its own
+ * `model` is ignored). For a reply whose model has no price entry but whose
+ * token counts are readable: charging the dearest rate keeps a spend cap from
+ * being bypassed by an unfamiliar model id, at the price of overcounting.
+ */
+export function costAtHighestRate(usage: ModelUsage): number {
+  let highest = 0;
+  for (const model of Object.keys(PRICE_USD_PER_MTOK)) highest = Math.max(highest, costOfUsage({ ...usage, model }));
+  return highest;
 }

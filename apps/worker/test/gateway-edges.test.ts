@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { costOfUsage } from "@north/core";
 import { GatewayBudget } from "../src/gateway/budget";
 import { DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_REQUEST_BYTES } from "../src/gateway/server";
-import { call, closedPort, completion, errorType, jsonHandler, MESSAGES, open, readUntil, sseEvent, useGateway } from "./gateway-helpers";
+import { call, closedPort, completion, errorType, jsonHandler, MESSAGES, open, readUntil, sseEvent, USAGE, useGateway } from "./gateway-helpers";
 
 /**
  * SEC-1 / TST-2: what the gateway does when things go wrong (down upstream,
@@ -63,7 +63,7 @@ describe("SEC-1 gateway failure modes", () => {
     expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
   });
 
-  it("passes a response beyond the capture limit through intact, but leaves it unpriced and unrecorded", async () => {
+  it("passes a JSON reply beyond the capture limit through intact: unreadable, so unpriced, and unrecorded", async () => {
     const big = JSON.stringify({ ...JSON.parse(completion()), pad: "y".repeat(5000) });
     h.upstream.handler = jsonHandler(big);
     const gateway = await h.start({ mode: "record", maxCaptureBytes: 1024 });
@@ -130,6 +130,65 @@ describe("SEC-1 gateway failure modes", () => {
   });
 });
 
+describe("SEC-1 gateway timeouts and a failing logger", () => {
+  it("answers 504 when the upstream sends nothing within the idle timeout, and keeps serving", async () => {
+    h.upstream.handler = () => undefined; // never answers
+    const gateway = await h.start({ upstreamTimeoutMs: 200 });
+    const started = Date.now();
+    const res = await call(gateway.baseUrl, { body: MESSAGES });
+    expect(res.status).toBe(504);
+    expect(res.headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(res.body.toString())).toEqual({ error: { type: "north_upstream_timeout" } });
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(h.logs).toEqual([expect.stringMatching(/timed out/)]);
+    h.logs.length = 0;
+    expect(gateway.stats()).toMatchObject({ requests: 1, spentUsd: 0 });
+    h.upstream.handler = jsonHandler(completion());
+    expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
+  });
+
+  it("ends the stream when the upstream goes quiet after its headers, pricing what arrived and recording nothing", async () => {
+    h.upstream.handler = (_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(sseEvent("message_start", { message: { model: "claude-haiku-5-5", usage: { input_tokens: 1000, output_tokens: 1 } } }));
+    };
+    const gateway = await h.start({ upstreamTimeoutMs: 200, mode: "record" });
+    const { response } = open(gateway.baseUrl, { body: { ...MESSAGES, stream: true } });
+    const res = await response;
+    res.on("error", () => undefined);
+    res.resume();
+    await new Promise<void>((resolve) => res.on("close", resolve));
+    await vi.waitFor(() => expect(gateway.stats().spentUsd).toBeGreaterThan(0));
+    expect(gateway.stats().spentUsd).toBeCloseTo((1000 * 0.1 + 0.5) / 1_000_000, 12);
+    expect(await readdir(h.dir)).toEqual([]);
+    expect(h.logs).toEqual([expect.stringMatching(/timed out/)]);
+    h.logs.length = 0;
+  });
+
+  it("a logger that throws never breaks the proxy: the request completes and the next one works", async () => {
+    const port = await closedPort();
+    const calls: string[] = [];
+    const throwing = (message: string): void => {
+      calls.push(message);
+      throw new Error("logger down");
+    };
+    const down = await h.start({ upstream: `http://127.0.0.1:${port}`, log: throwing });
+    expect((await call(down.baseUrl, { body: MESSAGES })).status).toBe(502);
+    expect((await call(down.baseUrl, { body: MESSAGES })).status).toBe(502);
+
+    const leaky = completion("claude-haiku-5-5", USAGE, "the key is sk-ant-abc");
+    h.upstream.handler = jsonHandler(leaky);
+    const recorder = await h.start({ mode: "record", log: throwing });
+    const first = await call(recorder.baseUrl, { body: MESSAGES });
+    expect(first.status).toBe(200);
+    expect(first.body.toString()).toBe(leaky);
+    h.upstream.handler = jsonHandler(completion());
+    expect((await call(recorder.baseUrl, { body: MESSAGES })).status).toBe(200);
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(await readdir(h.dir)).toHaveLength(1);
+  });
+});
+
 describe("SEC-1 gateway start-up", () => {
   it("binds 127.0.0.1 on an ephemeral port, or on the port it is given", async () => {
     const first = await h.start();
@@ -157,6 +216,7 @@ describe("SEC-1 gateway start-up", () => {
     await expect(h.start({ mode: "tape" as never })).rejects.toThrow(/mode/i);
     await expect(h.start({ cassetteDir: "" })).rejects.toThrow(/cassette/i);
     await expect(h.start({ port: 70000 })).rejects.toThrow(/port/i);
+    await expect(h.start({ upstreamTimeoutMs: 0 })).rejects.toThrow(/upstreamTimeoutMs/);
     await expect(h.start({ host: "0.0.0.0" as never })).rejects.toThrow(/host/i);
   });
 

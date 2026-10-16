@@ -1,62 +1,33 @@
 // TST-1: the cost of a Messages API reply, read from its body. A JSON body
 // carries `usage` and `model`; an SSE stream carries them in `message_start`
-// and the final `message_delta`. The body is untrusted: every shape is parsed.
+// and the final `message_delta` (see `sse.ts`). The body is untrusted: every
+// shape is parsed, and a reply with no readable usage yields null.
 import { usageFromApi, type ModelUsage } from "@north/core";
-import { z } from "zod";
-import { contentTypeOf, type Headers } from "./headers";
+import { isEncoded, isEventStream, type Headers } from "./headers";
+import { usageFromSse, type SseUsage } from "./sse";
 
-const UsageFields = z.record(z.string(), z.unknown());
-const MessageStartSchema = z.object({ type: z.literal("message_start"), message: z.object({ model: z.string().min(1), usage: UsageFields }) });
-const MessageDeltaSchema = z.object({ type: z.literal("message_delta"), usage: UsageFields });
-
-/** The JSON payload of each SSE event in the text; events that are not JSON are skipped. */
-function* eventPayloads(text: string): Generator<unknown> {
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const data = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).replace(/^ /, ""))
-      .join("\n");
-    if (!data) continue;
-    try {
-      yield JSON.parse(data) as unknown;
-    } catch {
-      // Not an event this gateway prices.
-    }
-  }
-}
-
-/** Drops null and absent fields: a later usage object only overrides with a real count. */
-const definedOnly = (fields: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== null && value !== undefined));
-
-/**
- * Usage of an SSE stream: `message_start`'s usage and model, with the fields
- * of every `message_delta` laid over them (the counts are cumulative, and
- * older streams repeat only `output_tokens`). A stream cut short is priced from
- * what arrived. Null without a `message_start`.
- */
-export function usageFromSse(text: string): ModelUsage | null {
-  let start: { model: string; usage: Record<string, unknown> } | null = null;
-  let delta: Record<string, unknown> = {};
-  for (const payload of eventPayloads(text)) {
-    const started = MessageStartSchema.safeParse(payload);
-    if (started.success) {
-      start = started.data.message;
-      continue;
-    }
-    const updated = MessageDeltaSchema.safeParse(payload);
-    if (updated.success) delta = { ...delta, ...definedOnly(updated.data.usage) };
-  }
-  return start === null ? null : usageFromApi({ model: start.model, usage: { ...definedOnly(start.usage), ...delta } });
-}
-
-/** Usage of a whole reply body, by its content type; null when it has none to read. */
-export function usageFromResponse(body: Buffer, headers: Headers): ModelUsage | null {
-  const text = body.toString("utf8");
-  if (contentTypeOf(headers).startsWith("text/event-stream")) return usageFromSse(text);
+/** Usage of a non-streaming JSON body; null when it is not JSON or has no usable usage. */
+export function usageFromJson(body: Buffer): ModelUsage | null {
   try {
-    return usageFromApi(JSON.parse(text) as unknown);
+    return usageFromApi(JSON.parse(body.toString("utf8")) as unknown);
   } catch {
     return null;
   }
+}
+
+/** Usage of a whole reply body held in memory (a replayed cassette): an encoded body has none to read. */
+export function usageFromResponse(body: Buffer, headers: Headers): ModelUsage | null {
+  if (isEncoded(headers)) return null;
+  return isEventStream(headers) ? usageFromSse(body.toString("utf8")) : usageFromJson(body);
+}
+
+/**
+ * Usage of a live reply once it has ended. A stream is read by `sse` as it
+ * went by (whatever the capture limit); any other body from the bounded copy,
+ * which is null when the reply outgrew the limit. An encoded body has none.
+ */
+export function replyUsage(headers: Headers, sse: SseUsage | null, captured: Buffer | null): ModelUsage | null {
+  if (isEncoded(headers)) return null;
+  if (sse !== null) return sse.result();
+  return captured === null ? null : usageFromJson(captured);
 }

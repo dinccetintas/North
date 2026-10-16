@@ -1,7 +1,9 @@
 // TST-2: cassettes for the model gateway. A cassette is one recorded exchange
 // (request and response) stored as `<dir>/<key>.json`, where the key hashes the
 // request after the parts that change between runs are normalised. Cassettes
-// are committed, so everything written passes through `scrubCassette` first.
+// are committed: the stored request is scrubbed (`scrubCassette`), the stored
+// response is kept verbatim so replay serves exactly what was recorded, and a
+// response that holds an Anthropic key is refused outright.
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,14 +13,14 @@ const KeySchema = z.string().regex(/^[0-9a-f]{64}$/, "a cassette key is a sha256
 
 // ---- the key ----------------------------------------------------------------
 
-// Not `\b`: an id after an underscore (`session_<uuid>`) must still be found.
-const UUID_V4 = /(?<![0-9A-Za-z])[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![0-9A-Za-z])/gi;
+// Not `\b`: an id after an underscore (`session_<uuid>`) must still be found. Any version or variant.
+const UUID = /(?<![0-9A-Za-z])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9A-Za-z])/gi;
 const ISO_TIMESTAMP = /(?<![0-9A-Za-z])\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
 const TASK_ID_LINE = /^Task id: .*$/gm;
 
 /** What changes between two runs of the same test, replaced by a fixed placeholder. */
 function normalise(text: string): string {
-  return text.replace(TASK_ID_LINE, "Task id: <id>").replace(UUID_V4, "<uuid>").replace(ISO_TIMESTAMP, "<timestamp>");
+  return text.replace(TASK_ID_LINE, "Task id: <id>").replace(UUID, "<uuid>").replace(ISO_TIMESTAMP, "<timestamp>");
 }
 
 /** JSON with object keys sorted at every depth and every string normalised (keys are kept as they are). */
@@ -35,31 +37,58 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * The cassette key of a request body: the sha256 hex of its canonical JSON
- * (keys sorted recursively) after UUIDs (v4 shape), ISO-8601 date-times and
- * `Task id: …` lines are replaced by placeholders in every string. Two runs of
- * the same test therefore share a key; any other change to the request does not.
+ * What a cassette key is made of: the request target (path and query), the
+ * `anthropic-beta` header value, and the parsed JSON body.
  */
-export function cassetteKey(body: unknown): string {
-  return createHash("sha256").update(canonicalJson(body)).digest("hex");
+export interface CassetteKeyInput {
+  /** Path and query as forwarded, e.g. `/v1/messages?beta=true`. */
+  readonly path: string;
+  /** The `anthropic-beta` header value, possibly several flags; "" when there is none. */
+  readonly betaHeader: string;
+  readonly body: unknown;
+}
+
+/** The beta flags of a header value, trimmed, sorted and comma-joined: the order a caller lists them in does not matter. */
+const normaliseBeta = (header: string): string =>
+  header
+    .split(",")
+    .map((flag) => flag.trim())
+    .filter((flag) => flag !== "")
+    .sort()
+    .join(",");
+
+/**
+ * The cassette key of a request: the sha256 hex of the canonical JSON (keys
+ * sorted recursively) of `{ path, betaHeader, body }`, after UUIDs (any
+ * version), ISO-8601 date-times and `Task id: …` lines are replaced by
+ * placeholders in every string, and the beta flags are sorted. Two runs of the
+ * same test therefore share a key; any other change to the request, including
+ * its path or its beta flags, does not.
+ */
+export function cassetteKey(input: CassetteKeyInput): string {
+  return createHash("sha256").update(canonicalJson({ path: input.path, betaHeader: normaliseBeta(input.betaHeader), body: input.body })).digest("hex");
 }
 
 // ---- scrubbing --------------------------------------------------------------
 
 const ANTHROPIC_KEY = /sk-ant-[A-Za-z0-9_-]+/g;
-const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+// The scheme is spelled `Bearer`, followed by a long token: plain English ("the bearer of this note") stays.
+const BEARER_TOKEN = /Bearer [A-Za-z0-9._~+/-]{16,}=*/g;
 const NORTH_TEST_EMAIL = /[A-Za-z0-9._%+-]+@north\.test\b/gi;
 
+/** Matches one Anthropic key (no `g` flag, so `test` keeps no state). */
+const ANTHROPIC_KEY_ONCE = /sk-ant-[A-Za-z0-9_-]+/;
+
 /**
- * Removes what must never be committed: Anthropic keys, bearer tokens and
- * email addresses under `@north.test`. Idempotent; the replacements keep JSON
- * strings valid.
+ * Removes what must never be committed from a request: Anthropic keys, bearer
+ * tokens (`Bearer` and a token of 16 or more characters) and email addresses
+ * under `@north.test`. Idempotent; the replacements keep JSON strings valid.
  */
 export function scrubCassette(text: string): string {
   return text.replace(ANTHROPIC_KEY, "sk-ant-REDACTED").replace(BEARER_TOKEN, "Bearer REDACTED").replace(NORTH_TEST_EMAIL, "redacted@north.test");
 }
 
-/** latin1 maps bytes 1:1 to characters, so scrubbing never alters the other bytes of a body. */
+/** latin1 maps bytes 1:1 to characters, so scrubbing never alters the other bytes of a request body. */
 const scrubBody = (body: Buffer): Buffer => Buffer.from(scrubCassette(body.toString("latin1")), "latin1");
 
 // ---- the file ---------------------------------------------------------------
@@ -75,17 +104,10 @@ const CassetteFileSchema = z.object({
 });
 
 /** Headers as Node hands them over: a repeated header may be an array. */
-type HeaderInput = Readonly<Record<string, string | readonly string[] | undefined>>;
+export type HeaderInput = Readonly<Record<string, string | string[] | undefined>>;
 
-/** A recorded response, as the gateway replays it (`headers` come back as plain strings). */
+/** One side of a recorded exchange as the gateway replays it: `readCassette` returns plain-string headers. */
 export interface CassetteResponse {
-  readonly status: number;
-  readonly headers: Readonly<Record<string, string>>;
-  readonly body: Buffer;
-}
-
-/** A response to record: the same, with headers as they arrived. */
-export interface RecordedResponse {
   readonly status: number;
   readonly headers: HeaderInput;
   readonly body: Buffer;
@@ -101,34 +123,48 @@ export interface CassetteRequest {
 
 /** Request headers that carry a credential: never stored. */
 const SECRET_REQUEST_HEADERS: ReadonlySet<string> = new Set(["x-api-key", "authorization"]);
-/** Response headers that identify the account, set state, or describe the wire (the stored body is scrubbed, so its length changes): never stored. */
+/** Response headers that identify the account, set state, or describe the wire (the replay computes its own length): never stored. */
 const DROPPED_RESPONSE_HEADERS: ReadonlySet<string> = new Set(["set-cookie", "anthropic-organization-id", "content-length", "transfer-encoding", "connection", "keep-alive"]);
 
-/** Lower-cased, multi-values joined, scrubbed; the names in `dropped` are left out. */
-function cleanHeaders(headers: HeaderInput, dropped: ReadonlySet<string>): Record<string, string> {
-  const clean: Record<string, string> = {};
+/** Lower-cased, multi-values joined; the names in `dropped` are left out; values are passed through `clean`. */
+function cleanHeaders(headers: HeaderInput, dropped: ReadonlySet<string>, clean: (value: string) => string): Record<string, string> {
+  const kept: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
     if (value === undefined || dropped.has(lower)) continue;
-    clean[lower] = scrubCassette(Array.isArray(value) ? value.join(", ") : String(value));
+    kept[lower] = clean(Array.isArray(value) ? value.join(", ") : String(value));
   }
-  return clean;
+  return kept;
+}
+
+/**
+ * True when the body (or a header value) holds something shaped like an
+ * Anthropic key. A response like that is never recorded: unlike a request, it
+ * cannot be scrubbed without changing what replay serves.
+ */
+export function holdsAnthropicKey(body: Buffer, headers: HeaderInput = {}): boolean {
+  const headerText = Object.values(headers).flat().join("\n");
+  return ANTHROPIC_KEY_ONCE.test(body.toString("latin1")) || ANTHROPIC_KEY_ONCE.test(headerText);
 }
 
 const fileOf = (dir: string, key: string): string => join(dir, `${KeySchema.parse(key)}.json`);
 
 /**
- * Stores one exchange as `<dir>/<key>.json`: the request without its key
- * headers, the full response, both bodies base64 and scrubbed. The write goes
- * to a temp file and is renamed into place, so a reader never sees half a file.
- * Throws when `key` is not a sha256 hex digest.
+ * Stores one exchange as `<dir>/<key>.json`, both bodies base64. The request
+ * is scrubbed (body, path and header values) and loses its key headers. The
+ * response is stored verbatim, so replay serves exactly what was recorded; it
+ * loses only its account and wire headers, and a response that holds an
+ * Anthropic key is refused (throws, writes nothing). The write goes to a temp
+ * file and is renamed into place, so a reader never sees half a file. Throws
+ * when `key` is not a sha256 hex digest.
  */
-export async function writeCassette(dir: string, key: string, response: RecordedResponse, request: CassetteRequest): Promise<void> {
+export async function writeCassette(dir: string, key: string, response: CassetteResponse, request: CassetteRequest): Promise<void> {
   const target = fileOf(dir, key);
+  if (holdsAnthropicKey(response.body, response.headers)) throw new Error("refusing to record a response that holds an Anthropic key");
   const file = {
     key,
-    request: { method: request.method, path: scrubCassette(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS), body: scrubBody(request.body).toString("base64") },
-    response: { status: response.status, headers: cleanHeaders(response.headers, DROPPED_RESPONSE_HEADERS), body: scrubBody(response.body).toString("base64") },
+    request: { method: request.method, path: scrubCassette(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, scrubCassette), body: scrubBody(request.body).toString("base64") },
+    response: { status: response.status, headers: cleanHeaders(response.headers, DROPPED_RESPONSE_HEADERS, (value) => value), body: response.body.toString("base64") },
   };
   await mkdir(dir, { recursive: true });
   const temp = join(dir, `.${key}.${randomBytes(6).toString("hex")}.tmp`);

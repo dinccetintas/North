@@ -17,8 +17,9 @@ const first = (value: HeaderValue | undefined): string | undefined => (Array.isA
 
 const HOP_BY_HOP: readonly string[] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
 
-/** Headers the gateway sets itself, so the caller's copy is dropped on the way upstream. */
-const REPLACED_UPSTREAM: ReadonlySet<string> = new Set(["x-api-key", "authorization", "host", "content-length", "accept-encoding"]);
+/** Caller headers that go upstream, by name. Anything else (cookies, forwarding headers, other anthropic-* headers) stays behind. */
+const FORWARDED_REQUEST_HEADERS: ReadonlySet<string> = new Set(["content-type", "accept", "accept-language", "user-agent", "anthropic-version", "anthropic-beta", "x-app"]);
+const STAINLESS_PREFIX = "x-stainless-";
 
 /** The hop-by-hop names of one message: the fixed list, `proxy-*`, and whatever its Connection header names. */
 function hopByHopNames(headers: Headers): Set<string> {
@@ -32,20 +33,29 @@ function hopByHopNames(headers: Headers): Set<string> {
 }
 
 /**
- * The headers of the upstream request: the caller's, minus its credentials and
- * hop-by-hop headers, plus the real key, the upstream's own Host, an exact
- * Content-Length (the body is buffered) and `accept-encoding: identity` (the
- * gateway reads and scrubs the reply, so it must not be compressed).
- * `anthropic-version`, `anthropic-beta` and `content-type` pass through.
+ * The caller's headers that may go upstream: an allowlist (`content-type`,
+ * `accept`, `accept-language`, `user-agent`, `anthropic-version`,
+ * `anthropic-beta`, `x-app` and any `x-stainless-*`). Credentials, cookies,
+ * forwarding headers, hop-by-hop headers and every other header are dropped.
+ * Cassettes store these and nothing else.
  */
-export function upstreamHeaders(incoming: IncomingHttpHeaders, apiKey: string, upstreamHost: string, bodyLength: number): HeaderBag {
-  const dropped = hopByHopNames(incoming);
+export function forwardedRequestHeaders(incoming: IncomingHttpHeaders): HeaderBag {
   const kept: HeaderBag = {};
   for (const [name, value] of Object.entries(incoming)) {
-    if (value === undefined || dropped.has(name) || REPLACED_UPSTREAM.has(name)) continue;
-    kept[name] = value;
+    if (value === undefined) continue;
+    if (FORWARDED_REQUEST_HEADERS.has(name) || name.startsWith(STAINLESS_PREFIX)) kept[name] = value;
   }
-  return { ...kept, host: upstreamHost, "x-api-key": apiKey, "accept-encoding": "identity", "content-length": String(bodyLength) };
+  return kept;
+}
+
+/**
+ * The headers of the upstream request: the allowlisted ones, plus the real
+ * key, the upstream's own Host, an exact Content-Length (the body is buffered)
+ * and `accept-encoding: identity` (the gateway reads the reply, so it must not
+ * be compressed).
+ */
+export function upstreamHeaders(incoming: IncomingHttpHeaders, apiKey: string, upstreamHost: string, bodyLength: number): HeaderBag {
+  return { ...forwardedRequestHeaders(incoming), host: upstreamHost, "x-api-key": apiKey, "accept-encoding": "identity", "content-length": String(bodyLength) };
 }
 
 /** The headers of the reply to the caller: the upstream's, unchanged, minus hop-by-hop headers. */
@@ -69,6 +79,12 @@ const HostHeaderSchema = z
     }
   });
 
+/** The `anthropic-beta` header as one string ("" when absent); several header lines are joined with a comma. */
+export const betaHeaderOf = (headers: IncomingHttpHeaders): string => {
+  const value = headers["anthropic-beta"];
+  return Array.isArray(value) ? value.join(",") : (value ?? "");
+};
+
 /** True when the request names a loopback host (any port): a page on another origin that resolves to 127.0.0.1 sends its own Host and is refused. */
 export const hasLoopbackHost = (headers: IncomingHttpHeaders): boolean => HostHeaderSchema.safeParse(headers.host).success;
 
@@ -77,6 +93,9 @@ export const hasPlaceholderKey = (headers: IncomingHttpHeaders): boolean => head
 
 /** The media type line of a message (lower-cased), or "" when it has none. */
 export const contentTypeOf = (headers: Headers): string => (first(headers["content-type"]) ?? "").toLowerCase();
+
+/** True when the reply is a Server-Sent Events stream. */
+export const isEventStream = (headers: Headers): boolean => contentTypeOf(headers).startsWith("text/event-stream");
 
 /** True when the body is encoded (gzip, br, ...): its bytes cannot be priced or scrubbed. */
 export function isEncoded(headers: Headers): boolean {

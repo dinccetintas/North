@@ -28,8 +28,8 @@ export interface FakeUpstream {
 export const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** A Messages API non-streaming body. */
-export const completion = (model = "claude-haiku-5-5", usage: Record<string, unknown> = USAGE): string =>
-  JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model, content: [{ type: "text", text: "Done." }], usage });
+export const completion = (model = "claude-haiku-5-5", usage: Record<string, unknown> = USAGE, text = "Done."): string =>
+  JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model, content: [{ type: "text", text }], usage });
 
 /** Answers every request with a 200 JSON completion. */
 export const jsonHandler =

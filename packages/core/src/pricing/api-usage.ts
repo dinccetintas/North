@@ -19,6 +19,8 @@ const ApiUsageSchema = z.object({
   cache_creation_input_tokens: OptionalCount,
   cache_read_input_tokens: OptionalCount,
   cache_creation: CacheCreationSchema.nullish(),
+  /** `fast` is the only value that changes the price; anything else is standard. */
+  speed: z.string().nullish(),
 });
 
 const ApiMessageSchema = z.object({
@@ -31,7 +33,9 @@ const ApiMessageSchema = z.object({
  * `ModelUsage`. Cache writes come from the `cache_creation` breakdown when it
  * is present; whatever `cache_creation_input_tokens` reports beyond the
  * breakdown (or all of it, when there is none) counts as 5-minute writes, so a
- * short breakdown can never price fewer writes than the API said. Returns null
+ * short breakdown can never price fewer writes than the API said. `usage.speed`
+ * "fast" is carried as `speed: "fast"` (it doubles the cost), anything else as
+ * "standard". Returns null
  * when the body has no model or no usable counts: callers treat that as
  * "unpriced", never as free.
  */
@@ -49,5 +53,6 @@ export function usageFromApi(body: unknown): ModelUsage | null {
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: write5m + unexplained,
     cacheWrite1hTokens: write1h,
+    speed: usage.speed === "fast" ? "fast" : "standard",
   });
 }

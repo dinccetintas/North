@@ -1,11 +1,8 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GatewayBudget } from "../src/gateway/budget";
-import { cassetteKey, readCassette, scrubCassette, writeCassette } from "../src/gateway/cassette";
-import { startGateway, type Gateway } from "../src/gateway/server";
-import { call, completion as completionBody, fakeUpstream, jsonHandler, type FakeUpstream } from "./gateway-helpers";
+import { cassetteKey, holdsAnthropicKey, readCassette, scrubCassette, writeCassette } from "../src/gateway/cassette";
 
 /**
  * TST-1 / TST-2: cassettes make real-Claude tests replayable. The key survives
@@ -21,6 +18,9 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/** The cassette key of a Messages request body (path and beta flags default to none). */
+const keyOf = (body: unknown, path = "/v1/messages", betaHeader = "") => cassetteKey({ path, betaHeader, body });
+
 const request = (overrides: Record<string, unknown> = {}) => ({
   model: "claude-haiku-5-5",
   max_tokens: 256,
@@ -30,13 +30,13 @@ const request = (overrides: Record<string, unknown> = {}) => ({
 
 describe("TST-2 cassetteKey", () => {
   it("is a sha256 hex digest", () => {
-    expect(cassetteKey(request())).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyOf(request())).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("does not depend on key order, at any depth", () => {
     const a = { model: "m", messages: [{ role: "user", content: "x" }], metadata: { a: 1, b: { c: 2, d: 3 } } };
     const b = { metadata: { b: { d: 3, c: 2 }, a: 1 }, messages: [{ content: "x", role: "user" }], model: "m" };
-    expect(cassetteKey(a)).toBe(cassetteKey(b));
+    expect(keyOf(a)).toBe(keyOf(b));
   });
 
   it("is stable across uuid, timestamp and task-id changes", () => {
@@ -44,9 +44,28 @@ describe("TST-2 cassetteKey", () => {
     const changed = request({
       messages: [{ role: "user", content: "Task id: 9f8e7d6c-1111-4222-8333-444455556666\nDraft the post for 2027-01-02T03:04:05Z please." }],
     });
-    expect(cassetteKey(changed)).toBe(cassetteKey(base));
+    expect(keyOf(changed)).toBe(keyOf(base));
     const upper = request({ messages: [{ role: "user", content: "Task id: 5A1C7A60-5D0C-4A52-8D3E-2F1F3A9B7C11\nDraft the post for 2026-10-16T08:30:00.000Z please." }] });
-    expect(cassetteKey(upper)).toBe(cassetteKey(base));
+    expect(keyOf(upper)).toBe(keyOf(base));
+  });
+
+  it("normalises a UUID of any version or shape, not only v4", () => {
+    const withId = (id: string) => ({ note: `run ${id} done` });
+    expect(keyOf(withId("0190a4e0-7b3c-7d2e-9f1a-3c5b8e2d4f60"))).toBe(keyOf(withId("0190ffff-1111-7222-8333-444455556666")));
+    expect(keyOf(withId("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))).toBe(keyOf(withId("00000000-0000-0000-0000-000000000000")));
+    expect(keyOf(withId("0190A4E0-7B3C-7D2E-9F1A-3C5B8E2D4F60"))).toBe(keyOf(withId("0190a4e0-7b3c-7d2e-9f1a-3c5b8e2d4f60")));
+  });
+
+  it("separates requests that differ only by path or by beta flags; the flags' order and spacing do not matter", () => {
+    const body = request();
+    const base = keyOf(body);
+    expect(keyOf(body, "/v1/messages?beta=true")).not.toBe(base);
+    expect(keyOf(body, "/v1/messages/count_tokens")).not.toBe(base);
+    expect(keyOf(body, "/v1/messages", "prompt-caching-2024-07-31")).not.toBe(base);
+    expect(keyOf(body, "/v1/messages", "a-1,b-2")).not.toBe(keyOf(body, "/v1/messages", "a-1"));
+    expect(keyOf(body, "/v1/messages", "b-2, a-1")).toBe(keyOf(body, "/v1/messages", "a-1,b-2"));
+    expect(keyOf(body, "/v1/messages", " a-1 ,, b-2 ")).toBe(keyOf(body, "/v1/messages", "a-1,b-2"));
+    expect(keyOf(body, "/v1/messages", "")).toBe(base);
   });
 
   it("normalises a uuid, a timestamp and a task-id line anywhere in any string, nested", () => {
@@ -56,41 +75,41 @@ describe("TST-2 cassetteKey", () => {
     });
     const one = withIds("0b6ed9f6-0000-4000-8000-000000000001", "2026-10-16T01:02:03+02:00", "task-1");
     const two = withIds("7c9d1e22-ffff-4fff-bfff-0000000000aa", "2030-02-03T23:59:59.123456Z", "totally-different-task-9");
-    expect(cassetteKey(two)).toBe(cassetteKey(one));
+    expect(keyOf(two)).toBe(keyOf(one));
   });
 
   it("finds an id or a timestamp next to an underscore or a dash, but not inside a longer hex run", () => {
     const meta = (id: string, at: string) => ({ metadata: { user_id: `user_abc_account_${id}_session_${id}`, note: `ts_${at}-end` } });
-    expect(cassetteKey(meta("0b6ed9f6-0000-4000-8000-000000000001", "2026-10-16T01:02:03Z"))).toBe(cassetteKey(meta("7c9d1e22-ffff-4fff-bfff-0000000000aa", "2027-01-01T00:00:00Z")));
-    const glued = (id: string) => cassetteKey({ text: `abc${id}` });
+    expect(keyOf(meta("0b6ed9f6-0000-4000-8000-000000000001", "2026-10-16T01:02:03Z"))).toBe(keyOf(meta("7c9d1e22-ffff-4fff-bfff-0000000000aa", "2027-01-01T00:00:00Z")));
+    const glued = (id: string) => keyOf({ text: `abc${id}` });
     expect(glued("0b6ed9f6-0000-4000-8000-000000000001")).not.toBe(glued("7c9d1e22-ffff-4fff-bfff-0000000000aa"));
   });
 
   it("changes when anything that matters changes", () => {
-    const base = cassetteKey(request());
-    expect(cassetteKey(request({ model: "claude-sonnet-5-5" }))).not.toBe(base);
-    expect(cassetteKey(request({ max_tokens: 257 }))).not.toBe(base);
-    expect(cassetteKey(request({ messages: [{ role: "user", content: "Task id: 5a1c7a60-5d0c-4a52-8d3e-2f1f3a9b7c11\nDraft the OTHER post." }] }))).not.toBe(base);
-    expect(cassetteKey(request({ stream: true }))).not.toBe(base);
+    const base = keyOf(request());
+    expect(keyOf(request({ model: "claude-sonnet-5-5" }))).not.toBe(base);
+    expect(keyOf(request({ max_tokens: 257 }))).not.toBe(base);
+    expect(keyOf(request({ messages: [{ role: "user", content: "Task id: 5a1c7a60-5d0c-4a52-8d3e-2f1f3a9b7c11\nDraft the OTHER post." }] }))).not.toBe(base);
+    expect(keyOf(request({ stream: true }))).not.toBe(base);
   });
 
   it("does not collapse a date without a time, or a number that looks like an id", () => {
-    const day = (d: string) => cassetteKey({ content: `since ${d}` });
+    const day = (d: string) => keyOf({ content: `since ${d}` });
     expect(day("2026-10-01")).not.toBe(day("2026-10-02"));
-    expect(cassetteKey({ n: 1 })).not.toBe(cassetteKey({ n: 2 }));
+    expect(keyOf({ n: 1 })).not.toBe(keyOf({ n: 2 }));
   });
 
   it("tells a string from a number and null from absent", () => {
-    expect(cassetteKey({ a: "1" })).not.toBe(cassetteKey({ a: 1 }));
-    expect(cassetteKey({ a: null })).not.toBe(cassetteKey({}));
-    expect(cassetteKey([1, [2, null]])).toMatch(/^[0-9a-f]{64}$/);
-    expect(cassetteKey("plain string")).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyOf({ a: "1" })).not.toBe(keyOf({ a: 1 }));
+    expect(keyOf({ a: null })).not.toBe(keyOf({}));
+    expect(keyOf([1, [2, null]])).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyOf("plain string")).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("does not mutate its input", () => {
     const body = request();
     const before = JSON.stringify(body);
-    cassetteKey(body);
+    keyOf(body);
     expect(JSON.stringify(body)).toBe(before);
   });
 });
@@ -101,9 +120,16 @@ describe("TST-2 scrubCassette", () => {
     expect(out).toBe("a sk-ant-REDACTED b sk-ant-REDACTED c");
   });
 
-  it("redacts bearer tokens", () => {
-    expect(scrubCassette("authorization: Bearer abc.DEF-123_456+/= done")).toBe("authorization: Bearer REDACTED done");
+  it("redacts bearer tokens, token-shaped ones only", () => {
+    expect(scrubCassette("authorization: Bearer abc.DEF-123_456+/xyz= done")).toBe("authorization: Bearer REDACTED done");
     expect(scrubCassette('{"h":"Bearer eyJhbGciOi.payload.sig"}')).toBe('{"h":"Bearer REDACTED"}');
+    expect(scrubCassette("Bearer abcdefghijklmnopqrstuvwxyz")).toBe("Bearer REDACTED");
+  });
+
+  it("leaves plain English alone: 'the bearer of this note', 'Bearer bonds', a short word after Bearer", () => {
+    const prose = "the bearer of this note may enter; Bearer bonds pay; the Bearer shortword";
+    expect(scrubCassette(prose)).toBe(prose);
+    expect(scrubCassette("bearer abcdefghijklmnopqrstuvwxyz")).toBe("bearer abcdefghijklmnopqrstuvwxyz"); // the scheme is spelled Bearer
   });
 
   it("redacts emails under @north.test and only those", () => {
@@ -111,7 +137,7 @@ describe("TST-2 scrubCassette", () => {
   });
 
   it("is idempotent and leaves clean text alone", () => {
-    const dirty = "sk-ant-secret Bearer tok bob@north.test";
+    const dirty = "sk-ant-secret Bearer abcdefghijklmnop1234 bob@north.test";
     const once = scrubCassette(dirty);
     expect(scrubCassette(once)).toBe(once);
     expect(scrubCassette("nothing to see here")).toBe("nothing to see here");
@@ -119,7 +145,7 @@ describe("TST-2 scrubCassette", () => {
 });
 
 describe("TST-2 writeCassette and readCassette", () => {
-  const key = cassetteKey(request());
+  const key = keyOf(request());
 
   it("round-trips the response, byte for byte, through <key>.json", async () => {
     const body = Buffer.from('{"id":"msg_1","content":[{"type":"text","text":"héllo ✓"}]}', "utf8");
@@ -161,27 +187,36 @@ describe("TST-2 writeCassette and readCassette", () => {
     expect(raw).not.toContain("real-token");
   });
 
-  it("scrubs secrets out of the stored request, the response and the header values", async () => {
-    const dirtyRequest = JSON.stringify(request({ metadata: { note: "key sk-ant-api03-LEAK and Bearer LEAKTOKEN, mail bob@north.test" } }));
+  it("scrubs the stored request (body, path and header values) but stores the response verbatim", async () => {
+    const dirtyRequest = JSON.stringify(request({ metadata: { note: "key sk-ant-api03-LEAK and Bearer LEAKTOKENLEAKTOKEN1234, mail bob@north.test" } }));
+    const reply = Buffer.from('{"text":"mail ana@north.test, the bearer of this note, Bearer SHORT"}');
     await writeCassette(
       dir,
       key,
-      { status: 200, headers: { "content-type": "application/json", "x-note": "Bearer LEAKHEADER" }, body: Buffer.from('{"text":"echo sk-ant-api03-LEAK2 ana@north.test"}') },
-      { method: "POST", path: "/v1/messages", headers: { "x-trace": "sk-ant-api03-LEAK3" }, body: Buffer.from(dirtyRequest) },
+      { status: 200, headers: { "content-type": "application/json", "x-note": "ana@north.test" }, body: reply },
+      { method: "POST", path: "/v1/messages?note=sk-ant-api03-LEAKPATH", headers: { "x-trace": "sk-ant-api03-LEAK3" }, body: Buffer.from(dirtyRequest) },
     );
     const raw = await readFile(join(dir, `${key}.json`), "utf8");
-    const file = JSON.parse(raw) as { request: { body: string; headers: Record<string, string> }; response: { body: string; headers: Record<string, string> } };
-    const stored = [
-      Buffer.from(file.request.body, "base64").toString(),
-      Buffer.from(file.response.body, "base64").toString(),
-      JSON.stringify(file.request.headers),
-      JSON.stringify(file.response.headers),
-    ].join("\n");
-    for (const leak of ["LEAK", "bob@north.test", "ana@north.test"]) expect(stored).not.toContain(leak);
-    expect(stored).toContain("sk-ant-REDACTED");
-    expect(stored).toContain("redacted@north.test");
+    const file = JSON.parse(raw) as { request: { path: string; body: string; headers: Record<string, string> } };
+    const storedRequest = [Buffer.from(file.request.body, "base64").toString(), file.request.path, JSON.stringify(file.request.headers)].join("\n");
+    for (const leak of ["LEAK", "bob@north.test"]) expect(storedRequest).not.toContain(leak);
+    expect(storedRequest).toContain("sk-ant-REDACTED");
+    expect(storedRequest).toContain("redacted@north.test");
     expect(() => JSON.parse(Buffer.from(file.request.body, "base64").toString())).not.toThrow();
-    expect(() => JSON.parse(Buffer.from(file.response.body, "base64").toString())).not.toThrow();
+    const back = await readCassette(dir, key);
+    expect(back?.body.equals(reply)).toBe(true);
+    expect(back?.headers["x-note"]).toBe("ana@north.test");
+  });
+
+  it("refuses to record a response that holds an Anthropic key, and writes no file", async () => {
+    const put = (body: string, headers: Record<string, string> = {}) =>
+      writeCassette(dir, key, { status: 200, headers, body: Buffer.from(body) }, { method: "POST", path: "/v1/messages", headers: {}, body: Buffer.from("{}") });
+    await expect(put('{"text":"my key is sk-ant-abc"}')).rejects.toThrow(/Anthropic key/);
+    await expect(put("{}", { "x-echo": "sk-ant-api03-xyz" })).rejects.toThrow(/Anthropic key/);
+    expect(await readdir(dir)).toEqual([]);
+    expect(holdsAnthropicKey(Buffer.from('{"k":"sk-ant-abc"}'))).toBe(true);
+    expect(holdsAnthropicKey(Buffer.from("sk-ant-"))).toBe(false);
+    expect(holdsAnthropicKey(Buffer.from("nothing here"))).toBe(false);
   });
 
   it("drops set-cookie and the organisation id from the stored response headers", async () => {
@@ -226,134 +261,5 @@ describe("TST-2 writeCassette and readCassette", () => {
   it("refuses a key that is not a sha256 hex digest, so a key can never name another path", async () => {
     await expect(readCassette(dir, "../../etc/passwd")).rejects.toThrow(/key/i);
     await expect(writeCassette(dir, "../x", { status: 200, headers: {}, body: Buffer.alloc(0) }, { method: "POST", path: "/", headers: {}, body: Buffer.alloc(0) })).rejects.toThrow(/key/i);
-  });
-});
-
-// ---- record and replay through the gateway ---------------------------------
-
-const completion = completionBody();
-
-describe("TST-2 record then replay", () => {
-  let upstream: FakeUpstream;
-  let gateways: Gateway[] = [];
-  const logs: string[] = [];
-
-  beforeEach(async () => {
-    upstream = await fakeUpstream();
-    upstream.handler = jsonHandler(completion);
-    gateways = [];
-    logs.length = 0;
-  });
-  afterEach(async () => {
-    await Promise.all(gateways.map((g) => g.close()));
-    await upstream.close();
-    expect(logs).toEqual([]);
-  });
-
-  const start = async (mode: "live" | "record" | "replay", apiKey: string | null = "sk-ant-real", budget = new GatewayBudget(0)): Promise<Gateway> => {
-    const gateway = await startGateway({ apiKey, upstream: upstream.url, mode, cassetteDir: dir, budget, log: (m) => logs.push(m) });
-    gateways.push(gateway);
-    return gateway;
-  };
-  const post = (gateway: Gateway, body: unknown) => call(gateway.baseUrl, { body: body as Record<string, unknown> });
-
-  it("TST-2 record then replay serves the stored body without touching the upstream", async () => {
-    const recorder = await start("record");
-    const live = await post(recorder, request());
-    expect(live.status).toBe(200);
-    expect(upstream.seen).toHaveLength(1);
-    await recorder.close();
-
-    const files = await readdir(dir);
-    expect(files).toEqual([`${cassetteKey(request())}.json`]);
-
-    const replayer = await start("replay", null);
-    // A later run: other task id, other timestamp, same request.
-    const again = await post(
-      replayer,
-      request({ messages: [{ role: "user", content: "Task id: 11111111-2222-4333-8444-555555555555\nDraft the post for 2031-05-06T07:08:09Z please." }] }),
-    );
-    expect(again.status).toBe(200);
-    expect(again.headers["content-type"]).toBe("application/json");
-    expect(again.headers["content-length"]).toBe(String(Buffer.byteLength(completion)));
-    expect(again.body.toString()).toBe(completion);
-    expect(upstream.seen).toHaveLength(1);
-    expect(replayer.stats()).toMatchObject({ requests: 1, misses: 0 });
-  });
-
-  it("prices a replayed response from the stored body", async () => {
-    const recorder = await start("record");
-    await post(recorder, request());
-    const recorded = recorder.stats().spentUsd;
-    expect(recorded).toBeCloseTo((1000 * 0.1 + 200 * 0.5) / 1_000_000, 12);
-    await recorder.close();
-
-    const replayBudget = new GatewayBudget(0);
-    const replayer = await start("replay", null, replayBudget);
-    await post(replayer, request());
-    expect(replayer.stats().spentUsd).toBeCloseTo(recorded, 12);
-    expect(replayBudget.stats().spentUsd).toBeCloseTo(recorded, 12);
-  });
-
-  it("replay miss answers 502 with the key and counts the miss", async () => {
-    const replayer = await start("replay", null);
-    const body = request({ messages: [{ role: "user", content: "never recorded" }] });
-    const res = await post(replayer, body);
-    expect(res.status).toBe(502);
-    expect(res.headers["content-type"]).toBe("application/json");
-    expect(JSON.parse(res.body.toString())).toEqual({ error: { type: "north_cassette_miss", key: cassetteKey(body) } });
-    expect(replayer.stats().misses).toBe(1);
-    expect(upstream.seen).toHaveLength(0);
-  });
-
-  it("replay answers a malformed cassette with 502 and its key, not a hang or a crash", async () => {
-    const key = cassetteKey(request());
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, `${key}.json`), "garbage");
-    const replayer = await start("replay", null);
-    const res = await post(replayer, request());
-    expect(res.status).toBe(502);
-    expect(JSON.parse(res.body.toString())).toEqual({ error: { type: "north_cassette_invalid", key } });
-    expect(upstream.seen).toHaveLength(0);
-    expect(logs).toEqual([expect.stringContaining(`cassette ${key}.json is malformed`)]);
-    logs.length = 0;
-  });
-
-  it("record stores a non-2xx exchange too, and replay serves its status", async () => {
-    const errorBody = JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } });
-    upstream.handler = jsonHandler(errorBody, 429);
-    const recorder = await start("record");
-    expect((await post(recorder, request())).status).toBe(429);
-    await recorder.close();
-
-    const replayer = await start("replay", null);
-    const again = await post(replayer, request());
-    expect(again.status).toBe(429);
-    expect(again.body.toString()).toBe(errorBody);
-    expect(replayer.stats().unpriced).toBe(0);
-  });
-
-  it("the recorded file holds no key, and live mode records nothing", async () => {
-    const live = await start("live");
-    await post(live, request());
-    expect(await readdir(dir)).toEqual([]);
-    await live.close();
-
-    const recorder = await start("record", "sk-ant-api03-THE-REAL-KEY");
-    await post(recorder, request());
-    const [file] = await readdir(dir);
-    const raw = await readFile(join(dir, file!), "utf8");
-    expect(raw).not.toContain("THE-REAL-KEY");
-    expect(raw).not.toContain("north-gateway");
-  });
-
-  it("only the modes that contact the upstream need a key", async () => {
-    const budget = new GatewayBudget(0);
-    for (const mode of ["live", "record"] as const) {
-      await expect(startGateway({ apiKey: null, upstream: upstream.url, mode, cassetteDir: dir, budget })).rejects.toThrow(/API key/i);
-      await expect(startGateway({ apiKey: "", upstream: upstream.url, mode, cassetteDir: dir, budget })).rejects.toThrow(/API key/i);
-    }
-    const replayer = await start("replay", null);
-    expect(replayer.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 });

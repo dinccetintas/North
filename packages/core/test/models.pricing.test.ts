@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LONG_PROMPT_TOKENS, PRICE_USD_PER_MTOK, costOfUsage, type ModelUsage } from "../src/models";
+import { LONG_PROMPT_TOKENS, PRICE_USD_PER_MTOK, costAtHighestRate, costOfUsage, type ModelUsage } from "../src/models";
 import { usageFromApi } from "../src/pricing/api-usage";
 
 /**
@@ -84,7 +84,45 @@ describe("TST-1 costOfUsage prices all five token kinds", () => {
   });
 });
 
+describe("TST-1 fast mode and the highest rate", () => {
+  const usage: ModelUsage = { model: "claude-sonnet-5-5", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 };
+
+  it("fast speed doubles the cost of the whole request; standard and absent do not", () => {
+    expect(costOfUsage({ ...usage, speed: "fast" })).toBeCloseTo(4, 9);
+    expect(costOfUsage({ ...usage, speed: "standard" })).toBeCloseTo(2, 9);
+    expect(costOfUsage(usage)).toBeCloseTo(2, 9);
+    expect(costOfUsage({ ...usage, model: "claude-haiku-5-5", inputTokens: 100_001, speed: "fast" })).toBeCloseTo(2 * ((100_001 * 0.5) / MTOK), 12);
+    expect(costOfUsage({ ...usage, model: "claude-unknown-9", speed: "fast" })).toBeNaN();
+  });
+
+  it("costAtHighestRate prices a usage at the dearest model in the table, whatever its own model says", () => {
+    const mixed: ModelUsage = { model: "claude-mystery-9", inputTokens: 1000, outputTokens: 200, cacheReadTokens: 50, cacheWriteTokens: 30, cacheWrite1hTokens: 20 };
+    const opus = costOfUsage({ ...mixed, model: "claude-opus-5-5" });
+    expect(costAtHighestRate(mixed)).toBeCloseTo((1000 * 4 + 200 * 20 + 50 * 0.2 + 30 * 5 + 20 * 8) / MTOK, 12);
+    expect(costAtHighestRate(mixed)).toBeCloseTo(opus, 12);
+    for (const model of Object.keys(PRICE_USD_PER_MTOK)) expect(costAtHighestRate(mixed)).toBeGreaterThanOrEqual(costOfUsage({ ...mixed, model }));
+    expect(costAtHighestRate({ ...mixed, model: "claude-opus-5-5" })).toBeCloseTo(opus, 12);
+  });
+
+  it("costAtHighestRate keeps the fast multiplier, is finite, and is 0 for no tokens", () => {
+    const fast: ModelUsage = { model: "x", inputTokens: 10, outputTokens: 10, cacheReadTokens: 0, speed: "fast" };
+    expect(costAtHighestRate(fast)).toBeCloseTo(2 * ((10 * 4 + 10 * 20) / MTOK), 12);
+    expect(Number.isFinite(costAtHighestRate(fast))).toBe(true);
+    expect(costAtHighestRate({ model: "x", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 })).toBe(0);
+  });
+});
+
 describe("TST-1 usageFromApi maps a Messages API body to ModelUsage", () => {
+  it("reads usage.speed: fast is fast, anything else (or none) is standard", () => {
+    const withSpeed = (speed: unknown) => usageFromApi({ model: "m", usage: { input_tokens: 1, output_tokens: 1, speed } });
+    expect(withSpeed("fast")?.speed).toBe("fast");
+    expect(withSpeed("standard")?.speed).toBe("standard");
+    expect(withSpeed(null)?.speed).toBe("standard");
+    expect(withSpeed(undefined)?.speed).toBe("standard");
+    expect(withSpeed("turbo")?.speed).toBe("standard");
+    expect(usageFromApi({ model: "m", usage: { input_tokens: 1, output_tokens: 1, speed: 7 } })).toBeNull();
+  });
+
   it("reads the five token kinds from the cache_creation breakdown when present", () => {
     expect(
       usageFromApi({
@@ -97,19 +135,19 @@ describe("TST-1 usageFromApi maps a Messages API body to ModelUsage", () => {
           cache_creation: { ephemeral_5m_input_tokens: 40, ephemeral_1h_input_tokens: 30 },
         },
       }),
-    ).toEqual({ model: "claude-sonnet-5-5", inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40, cacheWrite1hTokens: 30 });
+    ).toEqual({ model: "claude-sonnet-5-5", inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40, cacheWrite1hTokens: 30, speed: "standard" });
   });
 
   it("falls back to cache_creation_input_tokens as 5-minute writes when there is no breakdown", () => {
     expect(
       usageFromApi({ model: "claude-haiku-5-5", usage: { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 50, cache_read_input_tokens: 3 } }),
-    ).toEqual({ model: "claude-haiku-5-5", inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 50, cacheWrite1hTokens: 0 });
+    ).toEqual({ model: "claude-haiku-5-5", inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 50, cacheWrite1hTokens: 0, speed: "standard" });
   });
 
   it("treats null and absent cache counts as 0", () => {
     expect(
       usageFromApi({ model: "m", usage: { input_tokens: 5, output_tokens: 6, cache_creation_input_tokens: null, cache_read_input_tokens: null, cache_creation: null } }),
-    ).toEqual({ model: "m", inputTokens: 5, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0 });
+    ).toEqual({ model: "m", inputTokens: 5, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, speed: "standard" });
     expect(usageFromApi({ model: "m", usage: { input_tokens: 5, output_tokens: 6 } })).toMatchObject({ cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
 

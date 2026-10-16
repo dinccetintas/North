@@ -24,16 +24,20 @@ export interface GatewayOptions {
   readonly port?: number;
   /** Request body limit in bytes (default 32 MB). */
   readonly maxRequestBytes?: number;
-  /** How much of a reply is kept for pricing and recording (default 8 MB). */
+  /** How much of a reply is kept for recording (default 8 MB); a larger reply is served and priced but not recorded. */
   readonly maxCaptureBytes?: number;
+  /** How long the upstream may stay silent, before its headers or between chunks, before the exchange is cut (default 10 minutes). */
+  readonly upstreamTimeoutMs?: number;
   /** Where one-line warnings go (default `console.warn`). */
   readonly log?: (message: string) => void;
 }
 
 /** Request body limit: a Messages request with a long transcript fits well below this. */
 export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
-/** Reply bytes kept for pricing and recording; a larger reply streams through unpriced and unrecorded. */
+/** Reply bytes kept for recording (and for reading a non-streaming reply's usage); a larger reply streams through unrecorded. */
 export const DEFAULT_MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+/** Idle time after which a silent upstream is cut: a long generation still sends chunks, so this only catches a hung connection. */
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** The options after validation, with defaults filled in. */
 export interface ResolvedOptions {
@@ -45,6 +49,8 @@ export interface ResolvedOptions {
   readonly port: number;
   readonly maxRequestBytes: number;
   readonly maxCaptureBytes: number;
+  readonly upstreamTimeoutMs: number;
+  /** Never throws: a logger must not be able to break the proxy. */
   readonly log: (message: string) => void;
 }
 
@@ -69,11 +75,23 @@ const OptionsSchema = z.object({
   port: z.number().int().min(0).max(65535).optional(),
   maxRequestBytes: Bytes.optional(),
   maxCaptureBytes: Bytes.optional(),
+  upstreamTimeoutMs: Bytes.optional(),
   log: z.custom<(message: string) => void>((value) => typeof value === "function").optional(),
 });
 
 /** A header value the real key can be sent as: printable ASCII, no space. */
 const HEADER_SAFE_KEY = /^[\x21-\x7e]+$/;
+
+/** A logger that cannot throw: whatever the injected one does, the proxy carries on. */
+const safeLog =
+  (log: (message: string) => void) =>
+  (message: string): void => {
+    try {
+      log(message);
+    } catch {
+      // Nothing to do: logging is best effort.
+    }
+  };
 
 const describeIssue = (issue: z.core.$ZodIssue): string => `${issue.path.join(".") || "options"}: ${issue.message}`;
 
@@ -103,6 +121,7 @@ export function resolveOptions(options: GatewayOptions): ResolvedOptions {
     port: data.port ?? 0,
     maxRequestBytes: data.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
     maxCaptureBytes: data.maxCaptureBytes ?? DEFAULT_MAX_CAPTURE_BYTES,
-    log: data.log ?? ((message: string) => console.warn(message)),
+    upstreamTimeoutMs: data.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS,
+    log: safeLog(data.log ?? ((message: string) => console.warn(message))),
   });
 }

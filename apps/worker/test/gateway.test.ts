@@ -36,20 +36,42 @@ describe("SEC-1 gateway key handling", () => {
     expect(JSON.stringify(seen.headers)).not.toContain("north-gateway");
   });
 
-  it("drops hop-by-hop headers, anything the Connection header names, and asks for an uncompressed reply", async () => {
+  it("forwards only an allowlist of the caller's headers, and asks for an uncompressed reply", async () => {
     const gateway = await h.start();
     await call(gateway.baseUrl, {
-      headers: { connection: "keep-alive, x-secret-hop", "x-secret-hop": "1", "keep-alive": "timeout=5", te: "trailers", "proxy-authorization": "Basic Zm9v", "proxy-connection": "keep-alive", "accept-encoding": "gzip, br", "x-kept": "yes" },
+      headers: {
+        accept: "application/json",
+        "accept-language": "en",
+        "user-agent": "claude-cli/9",
+        "anthropic-beta": "b-2, a-1",
+        "x-app": "cli",
+        "x-stainless-lang": "js",
+        "x-stainless-retry-count": "0",
+        "accept-encoding": "gzip, br",
+        cookie: "session=secret",
+        "x-forwarded-host": "evil.example",
+        "x-forwarded-for": "10.0.0.1",
+        "x-real-ip": "10.0.0.2",
+        "anthropic-dangerous-direct-browser-access": "true",
+        connection: "keep-alive, x-secret-hop",
+        "x-secret-hop": "1",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        "proxy-authorization": "Basic Zm9v",
+        "x-kept": "no",
+      },
       body: MESSAGES,
     });
     const headers = h.upstream.seen[0]!.headers;
-    for (const name of ["x-secret-hop", "keep-alive", "te", "proxy-authorization", "proxy-connection"]) expect(headers[name], name).toBeUndefined();
+    for (const name of ["cookie", "x-forwarded-host", "x-forwarded-for", "x-real-ip", "anthropic-dangerous-direct-browser-access", "x-secret-hop", "keep-alive", "te", "proxy-authorization", "x-kept"]) {
+      expect(headers[name], name).toBeUndefined();
+    }
+    expect(headers).toMatchObject({ accept: "application/json", "accept-language": "en", "user-agent": "claude-cli/9", "anthropic-beta": "b-2, a-1", "x-app": "cli", "x-stainless-lang": "js", "x-stainless-retry-count": "0", "anthropic-version": "2023-06-01", "content-type": "application/json" });
     expect(headers["accept-encoding"]).toBe("identity");
-    expect(headers["x-kept"]).toBe("yes");
     expect(headers["content-length"]).toBe(String(Buffer.byteLength(JSON.stringify(MESSAGES))));
   });
 
-  it("answers 401 unless the caller carries exactly the placeholder key, before anything else", async () => {
+  it("answers 401 unless the caller carries exactly the placeholder key, ahead of routing", async () => {
     const gateway = await h.start();
     for (const headers of [{ "x-api-key": null }, { "x-api-key": "wrong" }, { "x-api-key": REAL_KEY }, { "x-api-key": "north-gateway2" }, { "x-api-key": null, authorization: "Bearer north-gateway" }] as const) {
       const res = await call(gateway.baseUrl, { headers, body: MESSAGES });
@@ -57,7 +79,7 @@ describe("SEC-1 gateway key handling", () => {
       expect(res.headers["content-type"]).toBe("application/json");
       expect(JSON.parse(res.body.toString())).toEqual({ error: { type: "north_gateway_unauthorized" } });
     }
-    // Before routing: a wrong key on an unknown path is still a 401, not a 404.
+    // Ahead of routing: a wrong key on an unknown path is still a 401, not a 404 (the Host is checked before both).
     expect((await call(gateway.baseUrl, { path: "/", method: "GET", headers: { "x-api-key": "wrong" } })).status).toBe(401);
     expect(h.upstream.seen).toHaveLength(0);
     expect(gateway.stats().requests).toBe(0);
@@ -91,11 +113,20 @@ describe("SEC-1 gateway key handling", () => {
     expect(h.upstream.seen).toHaveLength(0);
   });
 
-  it("proxies only POST /v1/messages and POST /v1/messages/count_tokens; everything else is 404", async () => {
+  it("rejects GET / and POST /v1/other with 404", async () => {
+    const gateway = await h.start();
+    for (const attempt of [{ method: "GET", path: "/" }, { method: "POST", path: "/v1/other" }]) {
+      const res = await call(gateway.baseUrl, { ...attempt, body: MESSAGES });
+      expect(res.status, `${attempt.method} ${attempt.path}`).toBe(404);
+      expect(res.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(res.body.toString())).toEqual({ error: { type: "north_gateway_not_found" } });
+    }
+    expect(h.upstream.seen).toHaveLength(0);
+  });
+
+  it("proxies only POST /v1/messages and POST /v1/messages/count_tokens: every other method or path is 404 too", async () => {
     const gateway = await h.start();
     const attempts: Array<{ method: string; path: string }> = [
-      { method: "GET", path: "/" },
-      { method: "POST", path: "/v1/other" },
       { method: "GET", path: "/v1/messages" },
       { method: "POST", path: "/v1/messages/extra" },
       { method: "POST", path: "/v1/messages/count_tokens/x" },
@@ -236,14 +267,7 @@ describe("TST-1 gateway pricing and the day cap", () => {
     expect(h.upstream.seen).toHaveLength(1);
   });
 
-  it("an unknown model is unpriced: it counts in `unpriced` and adds nothing", async () => {
-    h.upstream.handler = jsonHandler(completion("claude-mystery-9"));
-    const gateway = await h.start();
-    expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
-    expect(gateway.stats()).toMatchObject({ requests: 1, spentUsd: 0, unpriced: 1 });
-  });
-
-  it("a 2xx without usable usage settles 0 and counts as unpriced; an upstream error does not", async () => {
+  it("with no cap, a 2xx without usable usage settles 0 and counts as unpriced; an upstream error does not", async () => {
     const gateway = await h.start();
     for (const body of ["not json at all", JSON.stringify({ model: "claude-haiku-5-5" }), JSON.stringify({ model: "claude-haiku-5-5", usage: { input_tokens: "many" } })]) {
       h.upstream.handler = jsonHandler(body);

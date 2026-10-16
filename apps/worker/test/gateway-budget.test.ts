@@ -121,4 +121,52 @@ describe("TST-1 GatewayBudget", () => {
     expect(() => new GatewayBudget(Number.NaN)).toThrow(/cap/i);
     expect(() => new GatewayBudget(Number.POSITIVE_INFINITY)).toThrow(/cap/i);
   });
+
+  it("settleUnpriced adds the estimate to the spend and counts it as unpriced", () => {
+    const budget = new GatewayBudget(5, at("2026-10-16T10:00:00Z"));
+    budget.settleUnpriced(0.75);
+    budget.settleUnpriced(Number.NaN);
+    budget.settleUnpriced(-1);
+    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.75, unpriced: 3, day: "2026-10-16" });
+  });
+
+  it("exhaust closes the day under a cap: the spend jumps to the cap, reserve(0) is false, and the reason is kept", () => {
+    const budget = new GatewayBudget(5, at("2026-10-16T10:00:00Z"));
+    budget.settle(1);
+    expect(budget.exhaustion()).toBeNull();
+    expect(budget.exhaust("no usage")).toBe(true);
+    expect(budget.state).toEqual({ capUsd: 5, spentUsd: 5, day: "2026-10-16" });
+    expect(budget.reserve(0)).toBe(false);
+    expect(budget.exhaustion()).toBe("no usage");
+    expect(budget.stats().unpriced).toBe(1);
+    // A second call during the same day changes nothing and says it was already closed.
+    expect(budget.exhaust("again")).toBe(false);
+    expect(budget.exhaustion()).toBe("no usage");
+    expect(budget.stats().unpriced).toBe(2);
+  });
+
+  it("exhaust never lowers a spend that is already over the cap", () => {
+    const budget = new GatewayBudget(1, at("2026-10-16T10:00:00Z"));
+    budget.settle(3);
+    budget.exhaust("x");
+    expect(budget.state.spentUsd).toBe(3);
+  });
+
+  it("exhaust ends with the UTC day", () => {
+    let now = new Date("2026-10-16T23:59:00Z");
+    const budget = new GatewayBudget(5, () => now);
+    budget.exhaust("x");
+    now = new Date("2026-10-17T00:00:00Z");
+    expect(budget.exhaustion()).toBeNull();
+    expect(budget.reserve(0)).toBe(true);
+    expect(budget.state.spentUsd).toBe(0);
+  });
+
+  it("with no cap, exhaust only counts", () => {
+    const budget = new GatewayBudget(0, at("2026-10-16T10:00:00Z"));
+    expect(budget.exhaust("no usage")).toBe(false);
+    expect(budget.exhaustion()).toBeNull();
+    expect(budget.reserve(0)).toBe(true);
+    expect(budget.stats()).toMatchObject({ spentUsd: 0, unpriced: 1 });
+  });
 });

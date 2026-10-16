@@ -26,6 +26,7 @@ const utcDay = (date: Date): string => date.toISOString().slice(0, 10);
 export class GatewayBudget {
   private current: TestRunBudget;
   private unpricedCount = 0;
+  private exhausted: { readonly day: string; readonly reason: string } | null = null;
 
   /** Throws when `capUsd` is not a finite number of at least 0. */
   constructor(
@@ -66,6 +67,40 @@ export class GatewayBudget {
       return;
     }
     this.current = applyTestSpend(state, actualUsd);
+  }
+
+  /**
+   * Adds a guess for a reply whose model has no price (the dearest rate, see
+   * `costAtHighestRate`) to the day's spend and counts the reply as unpriced.
+   * A guess that is not a non-negative finite number adds nothing.
+   */
+  settleUnpriced(estimateUsd: number): void {
+    const state = this.sync();
+    this.unpricedCount += 1;
+    if (Number.isFinite(estimateUsd) && estimateUsd >= 0) this.current = applyTestSpend(state, estimateUsd);
+  }
+
+  /**
+   * Fails closed when a reply cannot be priced at all: under a cap, the day's
+   * spend becomes the cap (never lower), so nothing more is admitted until the
+   * UTC day rolls, and `exhaustion()` reports why. Counts as unpriced. With no
+   * cap there is nothing to close and it only counts. True when this call
+   * closed the day (false when it was already closed, or there is no cap).
+   */
+  exhaust(reason: string): boolean {
+    const state = this.sync();
+    this.unpricedCount += 1;
+    if (state.capUsd === 0) return false;
+    const alreadyClosed = this.exhausted?.day === state.day;
+    this.current = Object.freeze({ ...state, spentUsd: Math.max(state.spentUsd, state.capUsd) });
+    if (!alreadyClosed) this.exhausted = Object.freeze({ day: state.day, reason });
+    return !alreadyClosed;
+  }
+
+  /** Why today is closed by `exhaust`, or null when it is not (a new UTC day clears it). */
+  exhaustion(): string | null {
+    const { day } = this.sync();
+    return this.exhausted?.day === day ? this.exhausted.reason : null;
   }
 
   /** Cap, today's spend, the unpriced count and the day. */

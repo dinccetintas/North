@@ -25,32 +25,51 @@ never sees half a recording.
 
 ## The key
 
-`cassetteKey(body)`: the request body as canonical JSON (object keys sorted at
-every depth), after these are replaced in every string value:
+`cassetteKey({ path, betaHeader, body })`: the request path and query as
+forwarded (`/v1/messages?beta=true`), the `anthropic-beta` flags (trimmed,
+sorted, comma-joined; empty when there are none) and the request body, as
+canonical JSON (object keys sorted at every depth), after these are replaced in
+every string value:
 
 | What | Becomes |
 | --- | --- |
-| UUIDs (v4 shape, any case) | `<uuid>` |
+| UUIDs of any version (`8-4-4-4-12` hex, any case) | `<uuid>` |
 | ISO-8601 date-times (`2026-10-16T08:30:00.000Z`, with or without offset) | `<timestamp>` |
 | lines starting `Task id: ` | `Task id: <id>` |
 
 Two runs of the same test share a key; any other change to the request (model,
-prompt text, `max_tokens`, `stream`) gives a new one, and replay answers a miss
-with `502 { "error": { "type": "north_cassette_miss", "key": "..." } }` naming
-the file it looked for. A date without a time (`2026-10-16`) is not replaced.
+prompt text, `max_tokens`, `stream`, path, beta flags) gives a new one, and
+replay answers a miss with
+`502 { "error": { "type": "north_cassette_miss", "key": "..." } }` naming the
+file it looked for. A date without a time (`2026-10-16`) is not replaced. The key
+is always computed from the live, unscrubbed request, so recording and replay
+agree.
 
-## Scrub rules
+## What is stored, and what is scrubbed
 
-Everything written passes through `scrubCassette`, request and response alike:
+The stored **request** passes through `scrubCassette` (body, path and header
+values):
 
 - `sk-ant-...` keys become `sk-ant-REDACTED`
-- `Bearer <token>` becomes `Bearer REDACTED`
+- `Bearer <token>` (capital B, a token of 16 or more characters) becomes
+  `Bearer REDACTED`; the English word "bearer" is left alone
 - any email under `@north.test` becomes `redacted@north.test`
 
-The request's `x-api-key` and `authorization` headers are never stored, and
-neither are the response's `set-cookie` and `anthropic-organization-id`. Read a
-new cassette before committing it anyway: the rules cover credentials, not
-everything an agent might echo.
+Only these request headers are stored (the ones the gateway forwards):
+`content-type`, `accept`, `accept-language`, `user-agent`, `anthropic-version`,
+`anthropic-beta`, `x-app` and `x-stainless-*`. Never `x-api-key`,
+`authorization`, cookies or forwarding headers.
+
+The stored **response** is kept verbatim, so replay serves exactly what was
+recorded (a scrubbed reply would change the agent's next request and miss its
+cassette). The only headers left out are `set-cookie`,
+`anthropic-organization-id` and the wire headers (`content-length`,
+`transfer-encoding`, `connection`, `keep-alive`). A response that matches
+`sk-ant-[A-Za-z0-9_-]+` is **not recorded** at all (nothing is written, the
+gateway logs it once and still serves the reply). A reply over the capture
+limit (8 MB) or a compressed one is not recorded either; it is still served
+and priced. Read a new cassette before committing it anyway: the rules cover
+credentials, not everything an agent might echo.
 
 ## Modes
 
