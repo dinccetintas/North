@@ -17,7 +17,8 @@ const BUILTIN_BY_ROLE_TOOL: Readonly<Record<string, readonly string[]>> = Object
   "tests.run": ["Bash"],
 });
 
-const ENGINEERING_ROLE = "engineering";
+/** The one role that may write files and run a shell; it is also the only role that runs in the OS sandbox. */
+export const ENGINEERING_ROLE = "engineering";
 
 const unique = (values: readonly string[]): readonly string[] => Object.freeze([...new Set(values)]);
 

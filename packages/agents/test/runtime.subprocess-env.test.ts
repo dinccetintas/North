@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SUBPROCESS_ENV_ALLOWLIST, companyConfigDir, defaultConfigRoot, minimalSubprocessEnv, subprocessEnvFor } from "../src/runtime/subprocess-env";
+import { SUBPROCESS_ENV_ALLOWLIST, companyConfigDir, defaultConfigRoot, minimalSubprocessEnv, npmCacheDir, subprocessEnvFor } from "../src/runtime/subprocess-env";
 
 const COMPANY = "0b9f2c1e-7a34-4d58-9e61-2f5c8a1d3b70";
 const GATEWAY = "http://127.0.0.1:4310";
@@ -73,6 +73,48 @@ describe("SEC-2 subprocess env", () => {
     const warnings: string[] = [];
     subprocessEnvFor({ PATH: "/bin" }, { companyId: "c1", configRoot: "/r", gatewayBaseUrl: GATEWAY, hostKey: "sk-ant-host", warn: (m) => warnings.push(m) });
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("SEC-1 subprocess env: npm cache, gateway mode and the empty gateway", () => {
+  it("pins npm_config_cache into the company's own dir, whatever the base carried", () => {
+    const env = subprocessEnvFor({ PATH: "/bin", npm_config_cache: "/root/.npm" }, { companyId: "c1", configRoot: "/data/agent-config", gatewayBaseUrl: GATEWAY });
+    expect(env.npm_config_cache).toBe("/data/agent-config/c1/npm-cache");
+    expect(npmCacheDir("/data/agent-config/c1")).toBe("/data/agent-config/c1/npm-cache");
+    const noGateway = subprocessEnvFor({ PATH: "/bin" }, { companyId: "c1", configRoot: "/data/agent-config", hostKey: "", warn: () => undefined });
+    expect(noGateway.npm_config_cache).toBe("/data/agent-config/c1/npm-cache");
+  });
+
+  it("F3 an empty gateway URL reaches the URL check and throws, instead of falling back to the host key", () => {
+    const warnings: string[] = [];
+    expect(() => subprocessEnvFor({ PATH: "/bin" }, { companyId: "c1", configRoot: "/r", gatewayBaseUrl: "", hostKey: "sk-ant-host", warn: (m) => warnings.push(m) })).toThrow(/gateway URL/);
+    expect(warnings).toEqual([]);
+  });
+
+  it("F4 in gateway mode the base is cut down to the allow-list, so a caller-supplied provider switch or secret never reaches the subprocess", () => {
+    const base = {
+      PATH: "/bin",
+      LANG: "en_US.UTF-8",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_CUSTOM_HEADERS: "x-api-key: sk-ant-real",
+      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      HTTPS_PROXY: "http://proxy:3128",
+    };
+    const env = subprocessEnvFor(base, { companyId: "c1", configRoot: "/r", gatewayBaseUrl: GATEWAY });
+    for (const name of ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_CUSTOM_HEADERS", "AWS_SECRET_ACCESS_KEY", "HTTPS_PROXY"]) expect(env, name).not.toHaveProperty(name);
+    expect(JSON.stringify(env)).not.toMatch(/sk-ant-real|aws-secret/);
+    expect(env).toMatchObject({ PATH: "/bin", LANG: "en_US.UTF-8", ANTHROPIC_BASE_URL: GATEWAY, ANTHROPIC_API_KEY: "north-gateway", HOME: "/r/c1" });
+    expect(Object.keys(base)).toHaveLength(6);
+  });
+
+  it("F4 in gateway mode an allow-listed variable with an empty value stays out, as in minimalSubprocessEnv", () => {
+    const env = subprocessEnvFor({ PATH: "/bin", LANG: "" }, { companyId: "c1", configRoot: "/r", gatewayBaseUrl: GATEWAY });
+    expect(env).not.toHaveProperty("LANG");
+  });
+
+  it("F4 without a gateway the base still passes through unchanged (the pre-gateway fallback)", () => {
+    const env = subprocessEnvFor({ PATH: "/bin", CUSTOM: "kept" }, { companyId: "c1", configRoot: "/r", hostKey: "", warn: () => undefined });
+    expect(env.CUSTOM).toBe("kept");
   });
 });
 

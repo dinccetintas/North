@@ -6,6 +6,7 @@ export * from "./runtime/vars";
 export * from "./runtime/mock";
 export * from "./runtime/tool-policy";
 export * from "./runtime/claude-agent-sdk";
+export * from "./runtime/path-scope";
 export * from "./runtime/subprocess-env";
 export * from "./runtime/session-store";
 export * from "./runtime/select";

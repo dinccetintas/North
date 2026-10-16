@@ -15,11 +15,16 @@ export interface SessionEntriesPort {
 
 const REPLACEMENT = "�";
 
+/** Anything `cleanString` would touch: U+0000, or a surrogate half (a valid pair matches too and is kept by the slow path). */
+// eslint-disable-next-line no-control-regex -- U+0000 is exactly what Postgres jsonb refuses
+const NEEDS_CLEANING = /[\u0000\ud800-\udfff]/;
+
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
 
-/** U+0000 and lone surrogates become U+FFFD (Postgres jsonb refuses both); valid surrogate pairs stay. */
+/** U+0000 and lone surrogates become U+FFFD (Postgres jsonb refuses both); valid surrogate pairs stay. A clean string is returned as it is, unscanned. */
 function cleanString(text: string): { readonly text: string; readonly replaced: number } {
+  if (!NEEDS_CLEANING.test(text)) return { text, replaced: 0 };
   let out = "";
   let replaced = 0;
   for (let i = 0; i < text.length; i += 1) {
@@ -70,25 +75,13 @@ export interface NorthSessionStoreOptions {
   readonly warn?: (message: string) => void;
 }
 
-/**
- * The SDK `SessionStore` for one company's run. `append` mirrors the batch
- * through the port at the next seq of its transcript (kept per session and
- * subpath, read lazily from the stored count and re-read after a failure, and
- * serialised per transcript so two batches never share a seq); `load` returns
- * the stored entries in order, or null for a session never written. Both refuse
- * a session that belongs to another company. Entries are sanitised for jsonb
- * first and are never dropped. The optional listing and delete methods are
- * omitted: the table is append-only history.
- */
-export function createNorthSessionStore(opts: NorthSessionStoreOptions): SessionStore {
-  const { companyId, entries: port } = opts;
-  const warn = opts.warn ?? ((message: string) => console.warn(message));
-  const nextSeq = new Map<string, number>();
-  const tails = new Map<string, Promise<void>>();
-  const idOf = (key: SessionKey): string => `${key.sessionId}\u0000${key.subpath ?? ""}`;
+/** One transcript of one session: the main one (empty subpath) or a subagent's. */
+const transcriptId = (key: SessionKey): string => `${key.sessionId}\u0000${key.subpath ?? ""}`;
 
-  /** Runs `task` after every earlier task of the same transcript has settled, whether it passed or not. */
-  const serialised = <T>(id: string, task: () => Promise<T>): Promise<T> => {
+/** Runs the tasks of one id strictly one after another, whether the earlier ones passed or not; different ids run side by side. */
+function createSerialiser(): <T>(id: string, task: () => Promise<T>) => Promise<T> {
+  const tails = new Map<string, Promise<void>>();
+  return (id, task) => {
     const result = (tails.get(id) ?? Promise.resolve()).then(task);
     const tail = result.then(() => undefined, () => undefined);
     tails.set(id, tail);
@@ -97,24 +90,59 @@ export function createNorthSessionStore(opts: NorthSessionStoreOptions): Session
     });
     return result;
   };
+}
 
-  const assertOwnSession = async (sessionId: string): Promise<void> => {
-    const owner = await port.companyOf(sessionId);
-    if (owner !== null && owner !== companyId) throw new Error(`session ${sessionId} belongs to another company`);
-  };
-
-  const appendAt = async (key: SessionKey, batch: readonly unknown[]): Promise<void> => {
-    await assertOwnSession(key.sessionId);
-    const id = idOf(key);
+/**
+ * Appends a batch at the next seq of its transcript. The seq is read lazily
+ * from the stored row count, advanced by what the port returns, and dropped
+ * after a failed write: a timed-out write may have landed, so the rows are
+ * counted again next time. Callers serialise per transcript.
+ */
+function createSeqAppender(port: SessionEntriesPort): (key: SessionKey, batch: readonly unknown[]) => Promise<void> {
+  const nextSeq = new Map<string, number>();
+  return async (key, batch) => {
+    const id = transcriptId(key);
     const subpath = key.subpath ?? "";
     const from = nextSeq.get(id) ?? (await port.read(key.sessionId, subpath)).length;
     try {
       nextSeq.set(id, await port.append(key.sessionId, subpath, batch, from));
     } catch (error) {
-      nextSeq.delete(id); // the write may or may not have landed: count the stored rows again next time
+      nextSeq.delete(id);
       throw error;
     }
   };
+}
+
+/** Refuses a session of another company. An own session is remembered, so the db is asked once per session, not once per batch; a refusal is never remembered. */
+function createOwnership(port: SessionEntriesPort, companyId: string): { readonly assertOwn: (sessionId: string) => Promise<void>; readonly markOwn: (sessionId: string) => void } {
+  const verified = new Set<string>();
+  return {
+    async assertOwn(sessionId) {
+      if (verified.has(sessionId)) return;
+      const owner = await port.companyOf(sessionId);
+      if (owner !== null && owner !== companyId) throw new Error(`session ${sessionId} belongs to another company`);
+      if (owner === companyId) verified.add(sessionId);
+    },
+    markOwn: (sessionId) => void verified.add(sessionId),
+  };
+}
+
+/**
+ * The SDK `SessionStore` for one company's run. `append` mirrors the batch
+ * through the port at the next seq of its transcript, serialised per transcript
+ * so two batches never share a seq; `load` returns the stored entries in order,
+ * or null for a session never written. Both refuse a session that belongs to
+ * another company (asked of the db once per session; a session this store has
+ * itself written counts as verified). Entries are sanitised for jsonb first and
+ * are never dropped. The optional listing and delete methods are omitted: the
+ * table is append-only history.
+ */
+export function createNorthSessionStore(opts: NorthSessionStoreOptions): SessionStore {
+  const { entries: port } = opts;
+  const warn = opts.warn ?? ((message: string) => console.warn(message));
+  const serialised = createSerialiser();
+  const appendAt = createSeqAppender(port);
+  const ownership = createOwnership(port, opts.companyId);
 
   return {
     async append(key: SessionKey, batch: SessionStoreEntry[]): Promise<void> {
@@ -122,10 +150,14 @@ export function createNorthSessionStore(opts: NorthSessionStoreOptions): Session
       const { value, replaced } = sanitizeJson(batch);
       if (replaced > 0) warn(`session ${key.sessionId}: replaced ${replaced} unencodable characters`);
       // queued before any await, so batches reach the port in the order the SDK appended them
-      await serialised(idOf(key), () => appendAt(key, value as readonly unknown[]));
+      await serialised(transcriptId(key), async () => {
+        await ownership.assertOwn(key.sessionId);
+        await appendAt(key, value as readonly unknown[]);
+        ownership.markOwn(key.sessionId);
+      });
     },
     async load(key: SessionKey): Promise<SessionStoreEntry[] | null> {
-      await assertOwnSession(key.sessionId);
+      await ownership.assertOwn(key.sessionId);
       const rows = await port.read(key.sessionId, key.subpath ?? "");
       if (rows.length === 0) return null;
       const parsed = StoredEntriesSchema.safeParse(rows);

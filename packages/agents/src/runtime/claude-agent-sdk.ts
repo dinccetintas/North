@@ -2,16 +2,17 @@
 // building (model profile, tool lists, sandbox, per-company env, session store),
 // the PreToolUse audit hook, and result mapping. Credentials never enter here.
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createSdkMcpServer, query, type HookCallback, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentOutputSchema, DEFAULT_PROFILE, PlanOutputSchema, TASK_TYPES, outputJsonSchema, resolveEffort, resolveModel, type ModelProfile, type TaskType } from "@north/core";
 import { buildTaskPrompt } from "../prompts/build";
 import type { RoleDefinition } from "../roles/schema";
 import { elapsedMinutes, withRunMeta } from "./meta";
 import { memorySearchTool, type MemoryHit } from "./memory-tool";
+import { PATH_SCOPED_TOOLS, PathSegmentSchema, pathArgumentsOf, pathOutsideWorkspace } from "./path-scope";
 import { createNorthSessionStore, type SessionEntriesPort } from "./session-store";
-import { companyConfigDir, defaultConfigRoot, minimalSubprocessEnv, subprocessEnvFor } from "./subprocess-env";
-import { allowedToolsFor, disallowedToolsFor } from "./tool-policy";
+import { companyConfigDir, defaultConfigRoot, minimalSubprocessEnv, npmCacheDir, subprocessEnvFor } from "./subprocess-env";
+import { ENGINEERING_ROLE, allowedToolsFor, disallowedToolsFor } from "./tool-policy";
 import type { AgentRunInput, AgentRunResult, AgentRunUsage, AgentRuntime } from "./types";
 
 // memorySearchTool and MemoryHit moved to memory-tool.ts; re-exported so existing imports keep compiling.
@@ -69,8 +70,11 @@ const NORTH_SERVER_VERSION = "0.1.0";
 
 const isTaskType = (value: string): value is TaskType => (TASK_TYPES as readonly string[]).includes(value);
 
-/** Per-task workspace directory: `<workspaceRoot>/<taskId>`. */
+/** Per-task workspace directory: `<workspaceRoot>/<taskId>`; throws when the id could step outside the root. */
 export function taskWorkspace(workspaceRoot: string, taskId: string): string {
+  if (!PathSegmentSchema.safeParse(taskId).success) {
+    throw new Error(`Invalid task id for the task workspace: ${JSON.stringify(taskId)}`);
+  }
   return join(workspaceRoot, taskId);
 }
 
@@ -85,9 +89,27 @@ async function traceToolCall(deps: ClaudeAgentSdkDeps, call: ToolCallTrace): Pro
 }
 
 /**
+ * SEC-1: why a file-tool call must not go ahead, or undefined when it may. The
+ * built-in file tools run outside the OS sandbox and take any host path, so
+ * every path the call names has to stay inside the task workspace. A check
+ * that cannot finish (a bad task id, a malformed input, a symlink loop) is a
+ * denial too.
+ */
+async function pathScopeReason(input: AgentRunInput, toolName: string, toolInput: unknown, deps: ClaudeAgentSdkDeps): Promise<string | undefined> {
+  if (!PATH_SCOPED_TOOLS.includes(toolName)) return undefined;
+  try {
+    const outside = await pathOutsideWorkspace(taskWorkspace(deps.workspaceRoot, input.taskId), pathArgumentsOf(toolName, toolInput));
+    return outside === null ? undefined : `Path "${outside}" is outside the task workspace`;
+  } catch (error) {
+    return `Path check failed (${error instanceof Error ? error.message : String(error)}); call denied`;
+  }
+}
+
+/**
  * PreToolUse hook: records every call through `deps.audit` and denies tools
- * outside the role's allowed list. An audit failure denies too (fail closed).
- * The final decision then goes to `deps.onToolCall` (fail open).
+ * outside the role's allowed list, and file-tool paths outside the task
+ * workspace (SEC-1). The kill switch and an audit failure deny too (fail
+ * closed). The final decision then goes to `deps.onToolCall` (fail open).
  */
 export function auditHook(input: AgentRunInput, allowed: readonly string[], deps: ClaudeAgentSdkDeps): HookCallback {
   return async (hookInput) => {
@@ -100,7 +122,7 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
       input: hookInput.tool_input,
       decision: permitted ? "allow" : "deny",
     };
-    let reason = permitted ? undefined : `Tool "${hookInput.tool_name}" is not allowed for role "${input.role}"`;
+    let reason = permitted ? await pathScopeReason(input, hookInput.tool_name, hookInput.tool_input, deps) : `Tool "${hookInput.tool_name}" is not allowed for role "${input.role}"`;
     try {
       if (deps.isKilled && (await deps.isKilled(input.companyId))) {
         reason = "Kill switch is active for this company; all agent actions are stopped";
@@ -118,7 +140,18 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
 const profileOf = (deps: ClaudeAgentSdkDeps): ModelProfile => deps.profile ?? DEFAULT_PROFILE;
 const configRootOf = (deps: ClaudeAgentSdkDeps): string => deps.configRoot ?? defaultConfigRoot(deps.workspaceRoot);
 const isMcpTool = (name: string): boolean => name.startsWith("mcp__");
-const ENGINEERING_ROLE = "engineering";
+
+/** The directories the engineering sandbox's filesystem rules are built from. */
+export interface EngineeringSandboxPaths {
+  /** Root of every company's agent config dir. */
+  readonly configRoot: string;
+  /** Root of every task workspace. */
+  readonly workspaceRoot: string;
+  /** This run's task workspace, `<workspaceRoot>/<taskId>`. */
+  readonly workspace: string;
+  /** This run's company config dir, `<configRoot>/<companyId>`. */
+  readonly companyDir: string;
+}
 
 /**
  * SEC-1: engineering is the only role with a shell, so its commands run in the
@@ -126,14 +159,44 @@ const ENGINEERING_ROLE = "engineering";
  * registry as the only network host a command may reach. The model gateway is
  * not listed: the Claude process calls it outside the sandbox (the sandbox
  * wraps shell commands only), and listing loopback would let a command reach it.
+ *
+ * Filesystem: the config root and the workspace root, which hold every company's
+ * config, transcripts and task files, are unreadable, and only this run's task
+ * workspace and company dir are re-allowed (`allowRead` wins over `denyRead`,
+ * sdk.d.ts `sandbox.filesystem.allowRead`). The one writable place outside the
+ * workspace is the company's npm cache. The company dir itself is NOT writable:
+ * `<companyDir>/.claude/settings.json` is the subprocess's user settings, and
+ * the SDK honours sandbox-loosening keys from user settings, so a command that
+ * could write there could switch the sandbox off for the next run. Paths are
+ * made absolute so the rules do not depend on the worker's cwd. Returns a fresh
+ * object, with fresh lists, on every call.
  */
-const engineeringSandbox = (): NonNullable<Options["sandbox"]> => ({
-  enabled: true,
-  failIfUnavailable: true,
-  allowUnsandboxedCommands: false,
-  autoAllowBashIfSandboxed: false,
-  network: { allowedDomains: ["registry.npmjs.org"] },
-});
+export function engineeringSandbox(paths: EngineeringSandboxPaths): NonNullable<Options["sandbox"]> {
+  const companyDir = resolve(paths.companyDir);
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    autoAllowBashIfSandboxed: false,
+    network: { allowedDomains: ["registry.npmjs.org"] },
+    filesystem: {
+      denyRead: [resolve(paths.configRoot), resolve(paths.workspaceRoot)],
+      allowRead: [resolve(paths.workspace), companyDir],
+      allowWrite: [npmCacheDir(companyDir)],
+    },
+  };
+}
+
+/** This run's sandbox, from the host's roots and the run's own task and company. */
+function sandboxFor(input: AgentRunInput, deps: ClaudeAgentSdkDeps): NonNullable<Options["sandbox"]> {
+  const configRoot = configRootOf(deps);
+  return engineeringSandbox({
+    configRoot,
+    workspaceRoot: deps.workspaceRoot,
+    workspace: taskWorkspace(deps.workspaceRoot, input.taskId),
+    companyDir: companyConfigDir(configRoot, input.companyId),
+  });
+}
 
 /** This run's subprocess env: the base plus the company's config dir, and the gateway or (without one) the host key. */
 function envFor(input: AgentRunInput, deps: ClaudeAgentSdkDeps): Record<string, string> {
@@ -142,7 +205,7 @@ function envFor(input: AgentRunInput, deps: ClaudeAgentSdkDeps): Record<string, 
     ...subprocessEnvFor(base, {
       companyId: input.companyId,
       configRoot: configRootOf(deps),
-      ...(deps.gatewayBaseUrl ? { gatewayBaseUrl: deps.gatewayBaseUrl } : {}),
+      ...(deps.gatewayBaseUrl !== undefined ? { gatewayBaseUrl: deps.gatewayBaseUrl } : {}),
       ...(deps.warn ? { warn: deps.warn } : {}),
     }),
   };
@@ -179,7 +242,7 @@ export function buildQueryOptions(input: AgentRunInput, role: RoleDefinition, de
     outputFormat: { type: "json_schema", schema: taskType ? outputJsonSchema(taskType) : input.outputSchema },
     hooks: { PreToolUse: [{ hooks: [auditHook(input, allowedTools, deps)] }] },
     systemPrompt: system,
-    ...(role.role === ENGINEERING_ROLE ? { sandbox: engineeringSandbox() } : {}),
+    ...(role.role === ENGINEERING_ROLE ? { sandbox: sandboxFor(input, deps) } : {}),
     ...sessionOptions(input, deps),
     ...(input.resume ? { resume: input.resume.sessionId } : {}),
   };
@@ -259,9 +322,12 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
   private async stream(input: AgentRunInput, role: RoleDefinition, taskType: TaskType): Promise<AgentRunResult> {
     const model = resolveModel(role.model, profileOf(this.deps));
     try {
-      // the company's config dir first: a crafted company id is refused before anything is created
-      await mkdir(companyConfigDir(configRootOf(this.deps), input.companyId), { recursive: true, mode: 0o700 });
-      await mkdir(taskWorkspace(this.deps.workspaceRoot, input.taskId), { recursive: true });
+      // both paths are checked before anything is created: a crafted company or task id fails the run first
+      const companyDir = companyConfigDir(configRootOf(this.deps), input.companyId);
+      const workspace = taskWorkspace(this.deps.workspaceRoot, input.taskId);
+      await mkdir(companyDir, { recursive: true, mode: 0o700 });
+      await mkdir(npmCacheDir(companyDir), { recursive: true, mode: 0o700 }); // the sandbox can only bind a path that exists
+      await mkdir(workspace, { recursive: true });
       const options = buildQueryOptions(input, role, this.deps);
       const { user } = buildTaskPrompt(input, role, input.vars ?? {});
       let last: SDKResultMessage | undefined;

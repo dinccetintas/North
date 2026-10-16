@@ -154,6 +154,68 @@ describe("SEC-2 createNorthSessionStore", () => {
   });
 });
 
+/** The fake port with a counter on `companyOf`, the call the db would answer. */
+function countingOwner(owners: Record<string, string> = {}) {
+  const fake = fakeEntries(owners);
+  let asked = 0;
+  const entries: Entries = { ...fake.entries, companyOf: async (sessionId) => (asked += 1, fake.entries.companyOf(sessionId)) };
+  return { entries, fake, asked: () => asked };
+}
+
+describe("F8 the store asks the db who owns a session once, not on every batch", () => {
+  it("two appends to a session of the run's own company make one companyOf call", async () => {
+    const counted = countingOwner({ s1: COMPANY });
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: counted.entries });
+    await store.append(key("s1"), [entry(1)]);
+    await store.append(key("s1"), [entry(2)]);
+    expect(counted.asked()).toBe(1);
+    expect(counted.fake.stored("s1")).toHaveLength(2);
+  });
+
+  it("a session the run just created is verified by its own first append, so the second append does not ask again", async () => {
+    const counted = countingOwner();
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: counted.entries });
+    await store.append(key("fresh"), [entry(1)]);
+    await store.append(key("fresh"), [entry(2)]);
+    await store.append(key("fresh", "subagents/a"), [entry(3)]);
+    expect(counted.asked()).toBe(1);
+  });
+
+  it("a load after an append reuses the verified owner", async () => {
+    const counted = countingOwner({ s1: COMPANY });
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: counted.entries });
+    await store.append(key("s1"), [entry(1)]);
+    await store.load(key("s1"));
+    expect(counted.asked()).toBe(1);
+  });
+
+  it("a foreign owner is never cached: every attempt asks again and is refused again", async () => {
+    const counted = countingOwner({ foreign: "company-2" });
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: counted.entries });
+    await expect(store.append(key("foreign"), [entry(1)])).rejects.toThrow("belongs to another company");
+    await expect(store.append(key("foreign"), [entry(2)])).rejects.toThrow("belongs to another company");
+    await expect(store.load(key("foreign"))).rejects.toThrow("belongs to another company");
+    expect(counted.asked()).toBe(3);
+  });
+
+  it("a failed first append does not mark a new session as verified", async () => {
+    const counted = countingOwner();
+    let fail = true;
+    const flaky: Entries = { ...counted.entries, append: async (...args) => (fail ? ((fail = false), Promise.reject(new Error("db down"))) : counted.entries.append(...args)) };
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: flaky });
+    await expect(store.append(key("s1"), [entry(1)])).rejects.toThrow("db down");
+    await store.append(key("s1"), [entry(1)]);
+    expect(counted.asked()).toBe(2);
+  });
+
+  it("the cache belongs to one store: another run's store asks for itself", async () => {
+    const counted = countingOwner({ s1: COMPANY });
+    await createNorthSessionStore({ companyId: COMPANY, entries: counted.entries }).append(key("s1"), [entry(1)]);
+    await createNorthSessionStore({ companyId: COMPANY, entries: counted.entries }).append(key("s1"), [entry(2)]);
+    expect(counted.asked()).toBe(2);
+  });
+});
+
 describe("SEC-2 sanitizeJson", () => {
   it("leaves clean values, valid surrogate pairs and non-strings alone", () => {
     const value = { a: "plain", b: ["\u{1F600}", 1, true, null], c: { d: "café" } };
@@ -176,6 +238,12 @@ describe("SEC-2 sanitizeJson", () => {
     const { value, replaced } = sanitizeJson({ "k\u0000ey": 1 });
     expect(value).toEqual({ "k�ey": 1 });
     expect(replaced).toBe(1);
+  });
+
+  it("F6 a clean string comes back as it was, and a string holding only a valid pair is still not counted as replaced", () => {
+    const long = "plain text ".repeat(50_000);
+    expect(sanitizeJson(long)).toEqual({ value: long, replaced: 0 });
+    expect(sanitizeJson("a\u{1F600}b\u{10FFFF}")).toEqual({ value: "a\u{1F600}b\u{10FFFF}", replaced: 0 });
   });
 
   it("returns new objects and never mutates its input", () => {

@@ -1,25 +1,15 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { HookInput, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { outputJsonSchema } from "@north/core";
-import { auditHook, buildQueryOptions, mapResult, memorySearchTool, usageOf, type ClaudeAgentSdkDeps, type ToolAuditEntry, type ToolCallTrace } from "../src/runtime/claude-agent-sdk";
+import { auditHook, buildQueryOptions, mapResult, memorySearchTool, taskWorkspace, usageOf, type ClaudeAgentSdkDeps, type ToolAuditEntry, type ToolCallTrace } from "../src/runtime/claude-agent-sdk";
 import { memorySearchTool as memorySearchToolModule, type MemoryHit } from "../src/runtime/memory-tool";
 import { allowedToolsFor, MEMORY_SEARCH_TOOL } from "../src/runtime/tool-policy";
 import type { RoleDefinition } from "../src/roles/schema";
-import { loadTestRoles, makeDeps, makeInput, requireRole } from "./helpers";
+import { loadTestRoles, makeDeps, makeInput, preToolUse, requireRole } from "./helpers";
 
 let roles: ReadonlyMap<string, RoleDefinition>;
 beforeAll(async () => {
   roles = await loadTestRoles();
-});
-
-const preToolUse = (tool_name: string): HookInput => ({
-  hook_event_name: "PreToolUse",
-  session_id: "s",
-  transcript_path: "/tmp/t",
-  cwd: "/tmp",
-  tool_name,
-  tool_input: { q: 1 },
-  tool_use_id: "tu-1",
 });
 
 const successResult = (structured_output: unknown): SDKResultMessage =>
@@ -200,7 +190,26 @@ describe("SEC-1 / TST-1 query options", () => {
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: false,
       network: { allowedDomains: ["registry.npmjs.org"] },
+      filesystem: {
+        denyRead: ["/tmp/north-agent-config", "/tmp/north-workspaces"],
+        allowRead: ["/tmp/north-workspaces/task-1", "/tmp/north-agent-config/company-1"],
+        allowWrite: ["/tmp/north-agent-config/company-1/npm-cache"],
+      },
     });
+  });
+
+  it("F3 an empty gateway URL is refused instead of silently falling back to the host key", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-host");
+    const deps = { ...makeDeps(roles), gatewayBaseUrl: "" };
+    expect(() => buildQueryOptions(makeInput(), requireRole(roles, "research"), deps)).toThrow(/gateway URL/);
+  });
+
+  it("F7 a crafted task id cannot reach outside the workspace root", () => {
+    for (const taskId of ["../escape", "a/b", "", "..", "t\0"]) {
+      expect(() => buildQueryOptions(makeInput({ taskId }), requireRole(roles, "research"), makeDeps(roles)), JSON.stringify(taskId)).toThrow(/task id/);
+      expect(() => taskWorkspace("/tmp/north-workspaces", taskId), JSON.stringify(taskId)).toThrow(/task id/);
+    }
+    expect(taskWorkspace("/tmp/north-workspaces", "0b9f2c1e-7a34-4d58-9e61-2f5c8a1d3b70")).toBe("/tmp/north-workspaces/0b9f2c1e-7a34-4d58-9e61-2f5c8a1d3b70");
   });
 
   it("no other role gets a sandbox block, because none of them can run a shell", () => {

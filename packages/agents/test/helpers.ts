@@ -1,5 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { loadRoles } from "../src/roles/loader";
 import type { RoleDefinition } from "../src/roles/schema";
 import type { ClaudeAgentSdkDeps, ToolAuditEntry } from "../src/runtime/claude-agent-sdk";
@@ -53,3 +54,14 @@ export function makeDeps(roles: ReadonlyMap<string, RoleDefinition>, auditLog: T
     configRoot: "/tmp/north-agent-config",
   };
 }
+
+/** A PreToolUse hook input for `tool_name`; the input defaults to a pathless `{ q: 1 }`. */
+export const preToolUse = (tool_name: string, tool_input: unknown = { q: 1 }): HookInput => ({
+  hook_event_name: "PreToolUse",
+  session_id: "s",
+  transcript_path: "/tmp/t",
+  cwd: "/tmp",
+  tool_name,
+  tool_input,
+  tool_use_id: "tu-1",
+});

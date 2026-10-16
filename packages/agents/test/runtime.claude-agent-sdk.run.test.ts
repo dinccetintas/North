@@ -66,6 +66,27 @@ describe("ClaudeAgentSdkRuntime.run", () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
+  it("SEC-1 creates the company's npm cache dir, because the sandbox can only bind a path that exists", async () => {
+    const configRoot = join(workspaceRoot, "agent-config");
+    queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
+    await new ClaudeAgentSdkRuntime(runDeps({ configRoot })).run(makeInput({ companyId: "company-8", role: "engineering", taskType: "prd" }));
+    expect((await stat(join(configRoot, "company-8", "npm-cache"))).isDirectory()).toBe(true);
+  });
+
+  it("F7 refuses a crafted task id before it creates anything or spawns the SDK", async () => {
+    const configRoot = join(workspaceRoot, "agent-config");
+    queryMock.mockClear();
+    const marker = `../north-escape-${process.pid}-${Date.now()}`;
+    for (const taskId of [marker, "a/b", "..", ""]) {
+      const run = await new ClaudeAgentSdkRuntime(runDeps({ configRoot })).run(makeInput({ taskId, companyId: "company-f7" }));
+      expect(run, JSON.stringify(taskId)).toMatchObject({ status: "failed", error: expect.stringContaining("task id") });
+    }
+    expect(queryMock).not.toHaveBeenCalled();
+    await expect(stat(join(workspaceRoot, marker))).rejects.toThrow();
+    await expect(stat(join(workspaceRoot, "a"))).rejects.toThrow();
+    await expect(stat(join(configRoot, "company-f7"))).rejects.toThrow();
+  });
+
   it("returns failed when query throws", async () => {
     queryMock.mockImplementationOnce(() => {
       throw new Error("no api key");
