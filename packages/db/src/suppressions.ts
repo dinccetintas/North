@@ -36,7 +36,17 @@ export type AddSuppressionInput = z.input<typeof AddSuppressionInputSchema>;
 
 /** Addresses per query: with their domains the `in` list stays short enough for the request URL. */
 const ADDRESSES_PER_QUERY = 50;
-const RecipientsSchema = z.array(z.string().max(254));
+/** Any string is a recipient to look at; only a non-string is a caller error. Strings that are not plain addresses are answered, not rejected (see `listSuppressed`). */
+const RecipientsSchema = z.array(z.string());
+/**
+ * A recipient the suppression query can carry: 3 to 254 characters, at most one
+ * `@` (with something on each side), and none of `"` `\` `,` `(` `)`, whitespace
+ * or control characters. postgrest-js writes an `in` list unescaped, so one
+ * entry opening a quote and a later one closing it would hide every address
+ * between them from the lookup.
+ */
+const PLAIN_ADDRESS = /^[^\s"\\,()@\p{Cc}]+(?:@[^\s"\\,()@\p{Cc}]+)?$/u;
+const isPlainAddress = (address: string): boolean => address.length >= 3 && address.length <= 254 && PLAIN_ADDRESS.test(address);
 
 const normalise = (address: string): string => address.trim().toLowerCase();
 /** The part after the last `@`, or "" for a string without one. */
@@ -67,15 +77,20 @@ export async function addSuppression(db: DbClient, raw: AddSuppressionInput): Pr
  * (trimmed, lower-cased, in input order, without repeats) whose exact address
  * is suppressed or whose domain (after the last `@`) is suppressed as a bare
  * domain. A bare-domain row blocks that exact domain, not its subdomains.
- * Reads every matching row (pages past PostgREST's 1000 rows, so a long
- * history of repeats for one address cannot hide another address).
+ * Fails closed: an input that is not a plain address (empty, too short or
+ * long, a quote, backslash, comma, parenthesis, whitespace or control
+ * character, more than one `@`) cannot be looked up safely, so it is returned
+ * as suppressed and the gate refuses it; the caller does not have to have
+ * normalised anything. Reads every matching row (pages past PostgREST's 1000
+ * rows, so a long history of repeats for one address cannot hide another).
  */
 export async function listSuppressed(db: DbClient, companyId: string, emails: readonly string[]): Promise<readonly string[]> {
   const id = UuidSchema.parse(companyId);
-  const inputs = [...new Set(RecipientsSchema.parse(emails).map(normalise).filter((a) => a.length > 0))];
+  const inputs = [...new Set(RecipientsSchema.parse(emails).map(normalise))];
+  const readable = inputs.filter(isPlainAddress);
   const named = new Set<string>();
-  for (let i = 0; i < inputs.length; i += ADDRESSES_PER_QUERY) {
-    const chunk = inputs.slice(i, i + ADDRESSES_PER_QUERY);
+  for (let i = 0; i < readable.length; i += ADDRESSES_PER_QUERY) {
+    const chunk = readable.slice(i, i + ADDRESSES_PER_QUERY);
     const keys = [...new Set(chunk.flatMap((a) => [a, domainOf(a)]).filter((k) => k.length > 0))];
     const rows = await readAllPages(
       (from, to) => db.from("suppressions").select("email").eq("company_id", id).in("email", keys).order("id").range(from, to),
@@ -83,7 +98,7 @@ export async function listSuppressed(db: DbClient, companyId: string, emails: re
     );
     for (const row of rows) named.add(row.email);
   }
-  return Object.freeze(inputs.filter((a) => named.has(a) || named.has(domainOf(a))));
+  return Object.freeze(inputs.filter((a) => !isPlainAddress(a) || named.has(a) || named.has(domainOf(a))));
 }
 
 /** How many suppression rows the company has, repeats included (what the owner sees under RLS, what the worker sees in full). */

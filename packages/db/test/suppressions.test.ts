@@ -68,6 +68,22 @@ describe("CMP-1 suppressions repository", () => {
     expect(await listSuppressed(service, owned.companyId, ["z@blocked.io", "ADA@example.com", "z@blocked.io", "ada@example.com"])).toEqual(["z@blocked.io", "ada@example.com"]);
   });
 
+  it("CMP-1 listSuppressed cannot be bypassed by quotes that bracket a suppressed address: the address and both quoted entries come back", async () => {
+    await addSuppression(service, { companyId: owned.companyId, email: "opted-out@example.test", reason: "opt_out" });
+    // Unescaped, postgrest-js sends in.("zzz@y.test,opted-out@example.test,w@v.test") and PostgREST reads one value: the row is missed.
+    const bracketed = ['"zzz@y.test', "opted-out@example.test", 'w@v.test"'];
+    expect(await listSuppressed(service, owned.companyId, bracketed)).toEqual(bracketed);
+    expect(await listSuppressed(service, owned.companyId, ["opted-out@example.test"])).toEqual(["opted-out@example.test"]);
+  });
+
+  it("CMP-1 listSuppressed fails closed on any entry that is not a plain address: it comes back as suppressed, the clean ones do not", async () => {
+    const unreadable = ["x@y.test,opted-out@example.test", "back\\slash@x.test", "paren(thesis)@x.test", "two words@x.test", "ctrl\u0000char@x.test", "a@b@c.test", "@x.test", "a@", "ab", "", "x".repeat(255), `${"x".repeat(250)}@a.io`];
+    const clean = ["clean@example.net", "plus+tag@example.net", "o'brien@example.net"];
+    const found = await listSuppressed(service, owned.companyId, [clean[0]!, ...unreadable, clean[1]!, "ADA@example.com", clean[2]!]);
+    expect(found).toEqual([...unreadable, "ada@example.com"]);
+    expect(await listSuppressed(service, owned.companyId, [" Comma,Entry@X.test "])).toEqual(["comma,entry@x.test"]);
+  });
+
   it("CMP-1 listSuppressed reads one company only: another company's suppression of the same address does not count", async () => {
     await addSuppression(service, { companyId: rival.companyId, email: "only-rival@example.com", reason: "manual" });
     await addSuppression(service, { companyId: rival.companyId, email: "rival-domain.test", reason: "manual" });
