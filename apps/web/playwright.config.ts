@@ -6,6 +6,8 @@ const executablePath = process.env.E2E_CHROMIUM_PATH;
 
 export default defineConfig({
   testDir: "./e2e",
+  /** Production-build flows (the offline brief) run with playwright.prod.config.ts: `pnpm e2e:prod`. */
+  testIgnore: /\.prod\.spec\.ts$/,
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

@@ -1,24 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
-import { onboardedCompany, POLL_INTERVAL_MS, WORKER_TIMEOUT_MS } from "./flows";
-import { companyIdBySlug, generateBrief, localDayFor } from "./stack";
+import { onboardedCompany } from "./flows";
+import { companyIdBySlug } from "./stack";
 import { enablePublicPage, manifestOf } from "./stack-m6";
 
 /**
  * M6 acceptance, PWA, settings and legal (docs/plans/M6.md, PWA-1, BRF-1,
  * LEG-1): the manifest validates and the service worker controls the page;
- * offline, a company path shows the offline page with the latest brief and
- * never a card; the install bar can be dismissed for good; the brief hour
- * saves; the three legal drafts render with their banner and the footer is
- * on the login and the public page. Needs the worker for the brief.
+ * the install bar can be dismissed for good; the brief hour saves; the three
+ * legal drafts render with their banner and the footer is on the login and
+ * the public page. The offline brief needs a production build and runs in
+ * e2e/m6-offline.prod.spec.ts (`pnpm e2e:prod`).
  */
 
 const EVIDENCE_DIR = "../../docs/evidence/M6";
 const SW_TIMEOUT_MS = 30_000;
 
 const shot = (page: Page, name: string, project: string) => page.screenshot({ path: `${EVIDENCE_DIR}/${name}-${project}.png`, fullPage: true });
-
-const cached = (page: Page, cacheName: string, key: string) =>
-  page.evaluate(async ([name, k]) => Boolean(await (await caches.open(name)).match(k)), [cacheName, key] as const);
 
 /** What Chromium fires when the app is installable; the test stands in for the browser. */
 const dispatchInstallPrompt = (page: Page) =>
@@ -30,7 +27,7 @@ const dispatchInstallPrompt = (page: Page) =>
     window.dispatchEvent(event);
   });
 
-test("M6 PWA, settings and legal: manifest, service worker, offline brief, install bar, brief hour, legal drafts", async ({ page, browser, context }, testInfo) => {
+test("M6 PWA, settings and legal: manifest, service worker, install bar, brief hour, legal drafts", async ({ page, browser }, testInfo) => {
   test.setTimeout(300_000);
   const project = testInfo.project.name;
   const stamp = Date.now().toString(36);
@@ -46,40 +43,21 @@ test("M6 PWA, settings and legal: manifest, service worker, offline brief, insta
   await page.reload();
   await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null), { timeout: SW_TIMEOUT_MS }).toBe(true);
 
-  // The home shows today's brief; the page hands it to the worker, which keeps it for offline reading.
-  const day = localDayFor("UTC");
-  await generateBrief(companyId, day);
-  await page.goto(`/c/${slug}`);
+  // The offline brief needs a production build: e2e/m6-offline.prod.spec.ts (pnpm e2e:prod).
+
+  // The install bar shows when the browser says the app is installable, and stays dismissed.
+  // The listener attaches after hydration, so the stand-in event is fired until the page has taken it.
+  await page.goto("/companies");
   await expect
     .poll(
       async () => {
-        await page.reload();
-        return page.getByTestId("brief").count();
+        await dispatchInstallPrompt(page);
+        return page.getByTestId("install-accept").count();
       },
-      { timeout: WORKER_TIMEOUT_MS, intervals: [POLL_INTERVAL_MS] },
+      { timeout: 15_000 },
     )
     .toBe(1);
-  const headline = (await page.getByTestId("brief").getByTestId("brief-headline").textContent()) ?? "";
-  await expect.poll(() => cached(page, "north-brief-v1", `/brief/${slug}`), { timeout: SW_TIMEOUT_MS }).toBe(true);
-  await expect.poll(() => cached(page, "north-static-v1", "/offline"), { timeout: SW_TIMEOUT_MS }).toBe(true);
-
-  // Offline: a company path is the offline page with the latest brief; a card path too, never a stale card.
-  await context.setOffline(true);
-  await page.goto(`/c/${slug}`);
-  await expect(page.getByTestId("offline-page")).toBeVisible();
-  await expect(page.getByTestId("offline-brief")).toHaveAttribute("data-brief-date", day);
-  await expect(page.getByTestId("offline-brief").getByTestId("brief-headline")).toHaveText(headline);
-  await shot(page, "offline-brief", project);
-  await page.goto(`/c/${slug}/decisions/00000000-0000-4000-8000-000000000000`);
-  await expect(page.getByTestId("offline-page")).toBeVisible();
-  await expect(page.getByTestId("decision-card")).toHaveCount(0);
-  await context.setOffline(false);
-
-  // The install bar shows when the browser says the app is installable, and stays dismissed.
-  await page.goto("/companies");
-  await dispatchInstallPrompt(page);
   await expect(page.getByTestId("install-prompt")).toBeVisible();
-  await expect(page.getByTestId("install-accept")).toBeVisible();
   await shot(page, "install-prompt", project);
   await page.getByTestId("install-dismiss").click();
   await expect(page.getByTestId("install-prompt")).toHaveCount(0);

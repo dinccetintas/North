@@ -92,6 +92,11 @@ jobs:
       - run: pnpm e2e
         env:
           CI: "1"
+      # PWA-1: the offline brief needs a production build (the dev server cannot hydrate offline).
+      - name: e2e on a production build (offline brief)
+        run: pnpm e2e:prod
+        env:
+          CI: "1"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -99,5 +104,6 @@ jobs:
           if-no-files-found: ignore
           path: |
             apps/web/playwright-report
+            apps/web/playwright-report-prod
             docs/evidence/M6/ci-*.png
             dev.log
