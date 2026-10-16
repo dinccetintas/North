@@ -15,6 +15,10 @@ const input: AgentRunInput = {
 };
 
 describe("MockRuntime", () => {
+  it("reports zero cache tokens in its usage, so a priced run starts from a complete record", () => {
+    expect(mockUsage()).toMatchObject({ model: "mock", cacheReadTokens: 0, cacheWriteTokens: 0 });
+  });
+
   it("replays scripted results and records calls", async () => {
     const runtime = MockRuntime.fromRecord({
       "research:market_report": () => ({ status: "succeeded", output: { ok: true }, actions: [], sessionId: "s1", usage: mockUsage() }),

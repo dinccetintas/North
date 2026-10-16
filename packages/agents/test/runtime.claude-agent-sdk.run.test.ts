@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as AgentSdk from "@anthropic-ai/claude-agent-sdk";
 import type { RoleDefinition } from "../src/roles/schema";
+import type { ClaudeAgentSdkDeps } from "../src/runtime/claude-agent-sdk";
 import { loadTestRoles, makeDeps, makeInput } from "./helpers";
 
 const queryMock = vi.fn();
@@ -37,11 +38,14 @@ beforeAll(async () => {
 });
 afterAll(async () => rm(workspaceRoot, { recursive: true, force: true }));
 
+/** Deps whose workspaces and per-company config dirs both live inside the test's temp dir. */
+const runDeps = (extra: Partial<ClaudeAgentSdkDeps> = {}): ClaudeAgentSdkDeps => ({ ...makeDeps(roles), workspaceRoot, configRoot: join(workspaceRoot, "agent-config"), ...extra });
+
 describe("ClaudeAgentSdkRuntime.run", () => {
   it("creates the task workspace, sends the user prompt, and maps the last result", async () => {
     const output = { summary: "found", artifacts: [], memory: [], actions: [], confidence: "medium" };
     queryMock.mockReturnValueOnce(stream({ type: "assistant" }, result({ structured_output: output })));
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps());
     const run = await runtime.run(makeInput());
     expect(run).toMatchObject({ status: "succeeded", sessionId: "sess-live", output });
     expect((await stat(join(workspaceRoot, "task-1"))).isDirectory()).toBe(true);
@@ -50,18 +54,30 @@ describe("ClaudeAgentSdkRuntime.run", () => {
     expect(call.options.cwd).toBe(join(workspaceRoot, "task-1"));
   });
 
+  it("creates the company's config dir next to the workspace, and refuses a crafted company id before spawning", async () => {
+    const configRoot = join(workspaceRoot, "agent-config");
+    queryMock.mockClear();
+    queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
+    const deps = runDeps({ configRoot });
+    await new ClaudeAgentSdkRuntime(deps).run(makeInput({ companyId: "company-9" }));
+    expect((await stat(join(configRoot, "company-9"))).isDirectory()).toBe(true);
+    const crafted = await new ClaudeAgentSdkRuntime(deps).run(makeInput({ companyId: "../escape" }));
+    expect(crafted).toMatchObject({ status: "failed", error: expect.stringContaining("company id") });
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
   it("returns failed when query throws", async () => {
     queryMock.mockImplementationOnce(() => {
       throw new Error("no api key");
     });
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps());
     const run = await runtime.run(makeInput());
     expect(run).toMatchObject({ status: "failed", sessionId: null, error: expect.stringContaining("no api key") });
   });
 
   it("returns failed for unknown roles and task types without calling the SDK", async () => {
     queryMock.mockClear();
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps());
     expect((await runtime.run(makeInput({ role: "nobody" }))).status).toBe("failed");
     expect((await runtime.run(makeInput({ taskType: "nothing" }))).status).toBe("failed");
     expect(queryMock).not.toHaveBeenCalled();
@@ -69,7 +85,7 @@ describe("ClaudeAgentSdkRuntime.run", () => {
 
   it("returns failed when the stream ends without a result message", async () => {
     queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps());
     const run = await runtime.run(makeInput());
     expect(run).toMatchObject({ status: "failed", error: expect.stringContaining("without a result") });
   });
@@ -88,7 +104,7 @@ describe("B6-5 ClaudeAgentSdkRuntime run facts (BIL-2 sandbox minutes, OBS-1 tra
   it("sandboxMinutes is the wall time of the subprocess stream, and the trace id is echoed", async () => {
     const output = { summary: "found", artifacts: [], memory: [], actions: [], confidence: "medium" };
     queryMock.mockReturnValueOnce(stream(result({ structured_output: output })));
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(1_000, 90_000) });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps({ monotonicMs: ticking(1_000, 90_000) }));
     const run = await runtime.run(makeInput({ traceId: "trace-9" }));
     expect(run).toMatchObject({ status: "succeeded", sandboxMinutes: 1.5, traceId: "trace-9" });
   });
@@ -97,17 +113,17 @@ describe("B6-5 ClaudeAgentSdkRuntime run facts (BIL-2 sandbox minutes, OBS-1 tra
     queryMock.mockImplementationOnce(() => {
       throw new Error("subprocess died");
     });
-    const runtime = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(5, 30_000) });
+    const runtime = new ClaudeAgentSdkRuntime(runDeps({ monotonicMs: ticking(5, 30_000) }));
     expect(await runtime.run(makeInput())).toMatchObject({ status: "failed", sandboxMinutes: 0.5 });
     expect(await runtime.run(makeInput({ role: "nobody", traceId: "t" }))).toMatchObject({ status: "failed", sandboxMinutes: 0, traceId: "t" });
     queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
-    const empty = new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot, monotonicMs: ticking(0, 6_000) });
+    const empty = new ClaudeAgentSdkRuntime(runDeps({ monotonicMs: ticking(0, 6_000) }));
     expect(await empty.run(makeInput())).toMatchObject({ status: "failed", sandboxMinutes: 0.1 });
   });
 
   it("defaults to the process's monotonic clock", async () => {
     queryMock.mockReturnValueOnce(stream({ type: "assistant" }));
-    const run = await new ClaudeAgentSdkRuntime({ ...makeDeps(roles), workspaceRoot }).run(makeInput());
+    const run = await new ClaudeAgentSdkRuntime(runDeps()).run(makeInput());
     expect(run.sandboxMinutes).toBeGreaterThanOrEqual(0);
     expect(run.sandboxMinutes).toBeLessThan(1);
   });

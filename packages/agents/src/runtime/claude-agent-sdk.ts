@@ -1,20 +1,21 @@
+// The production AgentRuntime over the Agent SDK's `query()` (ADR 0004): option
+// building (model profile, tool lists, sandbox, per-company env, session store),
+// the PreToolUse audit hook, and result mapping. Credentials never enter here.
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { createSdkMcpServer, query, tool, type HookCallback, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
-import { AgentOutputSchema, PlanOutputSchema, TASK_TYPES, outputJsonSchema, resolveModel, type TaskType } from "@north/core";
+import { createSdkMcpServer, query, type HookCallback, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentOutputSchema, DEFAULT_PROFILE, PlanOutputSchema, TASK_TYPES, outputJsonSchema, resolveEffort, resolveModel, type ModelProfile, type TaskType } from "@north/core";
 import { buildTaskPrompt } from "../prompts/build";
 import type { RoleDefinition } from "../roles/schema";
 import { elapsedMinutes, withRunMeta } from "./meta";
+import { memorySearchTool, type MemoryHit } from "./memory-tool";
+import { createNorthSessionStore, type SessionEntriesPort } from "./session-store";
+import { companyConfigDir, defaultConfigRoot, minimalSubprocessEnv, subprocessEnvFor } from "./subprocess-env";
 import { allowedToolsFor, disallowedToolsFor } from "./tool-policy";
 import type { AgentRunInput, AgentRunResult, AgentRunUsage, AgentRuntime } from "./types";
 
-/** One memory item returned by the host's search. */
-export interface MemoryHit {
-  readonly title: string;
-  readonly content: string;
-  readonly kind: string;
-}
+// memorySearchTool and MemoryHit moved to memory-tool.ts; re-exported so existing imports keep compiling.
+export { memorySearchTool, type MemoryHit };
 
 /** One audited tool call; the host persists it (audit_log). */
 export interface ToolAuditEntry {
@@ -42,8 +43,18 @@ export interface ClaudeAgentSdkDeps {
   readonly workspaceRoot: string;
   /** Kill switch probe: when it resolves true (or throws) every further tool call is denied. */
   readonly isKilled?: (companyId: string) => Promise<boolean>;
-  /** Environment handed to the agent subprocess; defaults to `minimalSubprocessEnv(process.env)`. */
+  /** Base environment of the agent subprocess; defaults to `minimalSubprocessEnv(process.env)`. Each run adds its company's HOME and the gateway. */
   readonly subprocessEnv?: Readonly<Record<string, string>>;
+  /** Model profile (TST-1) that routes role aliases to models and effort; defaults to `DEFAULT_PROFILE` (production). */
+  readonly profile?: ModelProfile;
+  /** SEC-1: the model gateway the subprocess talks to (`ANTHROPIC_BASE_URL`). Absent: the host key passes through and `warn` is called. */
+  readonly gatewayBaseUrl?: string;
+  /** Root of the per-company agent config dirs (`<configRoot>/<companyId>` is HOME and CLAUDE_CONFIG_DIR); defaults to `agent-config` next to `workspaceRoot`. */
+  readonly configRoot?: string;
+  /** SEC-2: where session transcripts are mirrored (the worker wires `@north/db`); absent: transcripts stay in the company's config dir only. */
+  readonly sessionEntries?: SessionEntriesPort;
+  /** Operational warnings (an exposed key, replaced characters); defaults to `console.warn`. */
+  readonly warn?: (message: string) => void;
   /**
    * OBS-1: called for every PreToolUse decision after the audit, allowed or
    * denied, so the worker's tracer can add a span. Observability only: a
@@ -56,55 +67,11 @@ export interface ClaudeAgentSdkDeps {
 
 const NORTH_SERVER_VERSION = "0.1.0";
 
-/** Variables the agent subprocess may see. Everything else (service-role keys, Inngest keys) stays in the worker. */
-export const SUBPROCESS_ENV_ALLOWLIST: readonly string[] = Object.freeze([
-  "PATH",
-  "HOME",
-  "TMPDIR",
-  "LANG",
-  "LC_ALL",
-  "SHELL",
-  "ANTHROPIC_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-]);
-
-/** Filters the host environment down to the allow-list; never includes an empty value. */
-export function minimalSubprocessEnv(source: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
-  const picked: Record<string, string> = {};
-  for (const key of SUBPROCESS_ENV_ALLOWLIST) {
-    const value = source[key];
-    if (value) picked[key] = value;
-  }
-  return Object.freeze(picked);
-}
-
 const isTaskType = (value: string): value is TaskType => (TASK_TYPES as readonly string[]).includes(value);
 
 /** Per-task workspace directory: `<workspaceRoot>/<taskId>`. */
 export function taskWorkspace(workspaceRoot: string, taskId: string): string {
   return join(workspaceRoot, taskId);
-}
-
-const renderHits = (hits: readonly MemoryHit[]): string =>
-  hits.length === 0 ? "No matching memory." : hits.map((h) => `## ${h.title} (${h.kind})\n${h.content}`).join("\n\n");
-
-/** In-process MCP tool: searches company memory through the host callback; errors come back as tool errors, never throws. */
-export function memorySearchTool(input: AgentRunInput, deps: ClaudeAgentSdkDeps) {
-  return tool(
-    "memory_search",
-    "Search this company's memory (thesis, personas, decisions, learnings, docs). Returns the best matching items as text.",
-    { query: z.string().min(1).max(500) },
-    async ({ query: text }) => {
-      try {
-        const hits = await deps.memorySearch(input.companyId, text);
-        return { content: [{ type: "text" as const, text: renderHits(hits) }] };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `memory_search failed: ${message}` }], isError: true };
-      }
-    },
-    { annotations: { readOnlyHint: true, openWorldHint: false } },
-  );
 }
 
 /** Hands one decision to the tracer; tracing never decides a tool call, so its errors stop here. */
@@ -148,41 +115,96 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
   };
 }
 
+const profileOf = (deps: ClaudeAgentSdkDeps): ModelProfile => deps.profile ?? DEFAULT_PROFILE;
+const configRootOf = (deps: ClaudeAgentSdkDeps): string => deps.configRoot ?? defaultConfigRoot(deps.workspaceRoot);
+const isMcpTool = (name: string): boolean => name.startsWith("mcp__");
+const ENGINEERING_ROLE = "engineering";
+
+/**
+ * SEC-1: engineering is the only role with a shell, so its commands run in the
+ * OS sandbox. No unsandboxed retry, no start without the sandbox, and the npm
+ * registry as the only network host a command may reach. The model gateway is
+ * not listed: the Claude process calls it outside the sandbox (the sandbox
+ * wraps shell commands only), and listing loopback would let a command reach it.
+ */
+const engineeringSandbox = (): NonNullable<Options["sandbox"]> => ({
+  enabled: true,
+  failIfUnavailable: true,
+  allowUnsandboxedCommands: false,
+  autoAllowBashIfSandboxed: false,
+  network: { allowedDomains: ["registry.npmjs.org"] },
+});
+
+/** This run's subprocess env: the base plus the company's config dir, and the gateway or (without one) the host key. */
+function envFor(input: AgentRunInput, deps: ClaudeAgentSdkDeps): Record<string, string> {
+  const base = deps.subprocessEnv ?? minimalSubprocessEnv(process.env);
+  return {
+    ...subprocessEnvFor(base, {
+      companyId: input.companyId,
+      configRoot: configRootOf(deps),
+      ...(deps.gatewayBaseUrl ? { gatewayBaseUrl: deps.gatewayBaseUrl } : {}),
+      ...(deps.warn ? { warn: deps.warn } : {}),
+    }),
+  };
+}
+
+/** SEC-2: mirrors the transcript into North's session entries when the host wired them; flushed in batches. */
+function sessionOptions(input: AgentRunInput, deps: ClaudeAgentSdkDeps): Pick<Options, "sessionStore" | "sessionStoreFlush"> {
+  if (!deps.sessionEntries) return {};
+  const store = createNorthSessionStore({ companyId: input.companyId, entries: deps.sessionEntries, ...(deps.warn ? { warn: deps.warn } : {}) });
+  return { sessionStore: store, sessionStoreFlush: "batched" };
+}
+
 /** Pure builder for the Agent SDK `query()` options (ADR 0004). Does not touch the filesystem. */
 export function buildQueryOptions(input: AgentRunInput, role: RoleDefinition, deps: ClaudeAgentSdkDeps): Options {
   const allowedTools = allowedToolsFor(role);
+  const profile = profileOf(deps);
   const taskType = isTaskType(input.taskType) ? input.taskType : undefined;
   const { system } = buildTaskPrompt(input, role, input.vars ?? {});
   return {
     cwd: taskWorkspace(deps.workspaceRoot, input.taskId),
-    env: { ...(deps.subprocessEnv ?? minimalSubprocessEnv(process.env)) },
+    env: envFor(input, deps),
     settingSources: [],
+    settings: { disableSkillShellExecution: true },
+    skills: [],
     permissionMode: "dontAsk",
-    model: resolveModel(role.model),
+    model: resolveModel(role.model, profile),
+    effort: resolveEffort(role.model, profile),
     maxTurns: role.max_turns,
     maxBudgetUsd: role.max_budget_usd,
+    tools: allowedTools.filter((name) => !isMcpTool(name)),
     allowedTools: [...allowedTools],
     disallowedTools: [...disallowedToolsFor(role)],
     mcpServers: { north: createSdkMcpServer({ name: "north", version: NORTH_SERVER_VERSION, tools: [memorySearchTool(input, deps)] }) },
     outputFormat: { type: "json_schema", schema: taskType ? outputJsonSchema(taskType) : input.outputSchema },
     hooks: { PreToolUse: [{ hooks: [auditHook(input, allowedTools, deps)] }] },
     systemPrompt: system,
+    ...(role.role === ENGINEERING_ROLE ? { sandbox: engineeringSandbox() } : {}),
+    ...sessionOptions(input, deps),
     ...(input.resume ? { resume: input.resume.sessionId } : {}),
   };
 }
 
-const zeroUsage = (model: string): AgentRunUsage => Object.freeze({ model, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 });
+const zeroUsage = (model: string): AgentRunUsage =>
+  Object.freeze({ model, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, durationMs: 0 });
 
 const failed = (error: string, sessionId: string | null, usage: AgentRunUsage): AgentRunResult =>
   Object.freeze({ status: "failed", error, sessionId, usage });
 
-/** Maps the SDK's per-model usage onto North's flat usage record. */
+/**
+ * Maps the SDK's per-model usage onto North's flat usage record.
+ * `inputTokens` counts cache reads and writes too (as it always has); the two
+ * cache fields break them out so a caller can price them at their own rate.
+ */
 export function usageOf(result: SDKResultMessage, model: string): AgentRunUsage {
   const models = Object.values(result.modelUsage ?? {});
+  const total = (pick: (m: (typeof models)[number]) => number): number => models.reduce((sum, m) => sum + pick(m), 0);
   return Object.freeze({
     model,
-    inputTokens: models.reduce((sum, m) => sum + m.inputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens, 0),
-    outputTokens: models.reduce((sum, m) => sum + m.outputTokens, 0),
+    inputTokens: total((m) => m.inputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens),
+    outputTokens: total((m) => m.outputTokens),
+    cacheReadTokens: total((m) => m.cacheReadInputTokens),
+    cacheWriteTokens: total((m) => m.cacheCreationInputTokens),
     costUsd: result.total_cost_usd ?? 0,
     durationMs: result.duration_ms ?? 0,
   });
@@ -228,15 +250,17 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     const role = this.deps.roles.get(input.role);
     if (!role) return withRunMeta(failed(`Unknown role "${input.role}"`, null, zeroUsage("unknown")), input, 0);
-    if (!isTaskType(input.taskType)) return withRunMeta(failed(`Unknown task type "${input.taskType}"`, null, zeroUsage(resolveModel(role.model))), input, 0);
+    if (!isTaskType(input.taskType)) return withRunMeta(failed(`Unknown task type "${input.taskType}"`, null, zeroUsage(resolveModel(role.model, profileOf(this.deps)))), input, 0);
     const started = this.now();
     const result = await this.stream(input, role, input.taskType);
     return withRunMeta(result, input, elapsedMinutes(this.now() - started));
   }
 
   private async stream(input: AgentRunInput, role: RoleDefinition, taskType: TaskType): Promise<AgentRunResult> {
-    const model = resolveModel(role.model);
+    const model = resolveModel(role.model, profileOf(this.deps));
     try {
+      // the company's config dir first: a crafted company id is refused before anything is created
+      await mkdir(companyConfigDir(configRootOf(this.deps), input.companyId), { recursive: true, mode: 0o700 });
       await mkdir(taskWorkspace(this.deps.workspaceRoot, input.taskId), { recursive: true });
       const options = buildQueryOptions(input, role, this.deps);
       const { user } = buildTaskPrompt(input, role, input.vars ?? {});

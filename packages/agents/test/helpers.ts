@@ -48,5 +48,8 @@ export function makeDeps(roles: ReadonlyMap<string, RoleDefinition>, auditLog: T
       auditLog.push(entry);
     },
     workspaceRoot: "/tmp/north-workspaces",
+    profile: "production",
+    gatewayBaseUrl: "http://127.0.0.1:4310",
+    configRoot: "/tmp/north-agent-config",
   };
 }

@@ -3,7 +3,7 @@ import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types";
 
 export type MockScript = (input: AgentRunInput) => AgentRunResult;
 
-const zeroUsage = (model = "mock") => Object.freeze({ model, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 1 });
+const zeroUsage = (model = "mock") => Object.freeze({ model, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, durationMs: 1 });
 
 /**
  * Deterministic runtime for tests and the smoke loop (ADR 0004). Scripts are

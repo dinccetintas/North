@@ -70,8 +70,13 @@ export interface AgentRunInput {
 
 export interface AgentRunUsage {
   readonly model: string;
+  /** All input tokens of the run; the SDK runtime counts cache reads and writes in here too. */
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Tokens served from the prompt cache (priced at the cache-read rate). Optional at the type level only, so hand-built results stay valid: read with `?? 0`. The SDK runtime and the mock always set it. */
+  readonly cacheReadTokens?: number;
+  /** Tokens written to the prompt cache. Optional like `cacheReadTokens`. */
+  readonly cacheWriteTokens?: number;
   readonly costUsd: number;
   readonly durationMs: number;
 }

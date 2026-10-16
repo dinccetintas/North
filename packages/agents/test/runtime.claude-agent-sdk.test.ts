@@ -1,8 +1,9 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HookInput, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { outputJsonSchema } from "@north/core";
-import { auditHook, buildQueryOptions, mapResult, type ToolAuditEntry, type ToolCallTrace } from "../src/runtime/claude-agent-sdk";
-import { MEMORY_SEARCH_TOOL } from "../src/runtime/tool-policy";
+import { auditHook, buildQueryOptions, mapResult, memorySearchTool, usageOf, type ClaudeAgentSdkDeps, type ToolAuditEntry, type ToolCallTrace } from "../src/runtime/claude-agent-sdk";
+import { memorySearchTool as memorySearchToolModule, type MemoryHit } from "../src/runtime/memory-tool";
+import { allowedToolsFor, MEMORY_SEARCH_TOOL } from "../src/runtime/tool-policy";
 import type { RoleDefinition } from "../src/roles/schema";
 import { loadTestRoles, makeDeps, makeInput, requireRole } from "./helpers";
 
@@ -121,7 +122,7 @@ describe("mapResult", () => {
   it("maps a success with valid structured output, including usage", () => {
     const result = mapResult(successResult(output), "market_report", "claude-sonnet-5-5");
     expect(result).toMatchObject({ status: "succeeded", sessionId: "sess-1", actions: [] });
-    expect(result.usage).toEqual({ model: "claude-sonnet-5-5", inputTokens: 115, outputTokens: 50, costUsd: 0.42, durationMs: 1234 });
+    expect(result.usage).toEqual({ model: "claude-sonnet-5-5", inputTokens: 115, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 5, costUsd: 0.42, durationMs: 1234 });
   });
 
   it("fails when the structured output does not match the task schema", () => {
@@ -178,5 +179,160 @@ describe("B6-5 onToolCall (OBS-1): the worker's tracer sees every PreToolUse dec
     const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
     await hook?.(preToolUse("WebSearch"), "tu-1", signal());
     expect(traces).toMatchObject([{ toolName: "WebSearch", decision: "allow", traceId: "trace-2" }]);
+  });
+});
+
+/** The deps without a gateway: the pre-Task-12 shape the worker still builds. */
+const withoutGateway = (): ClaudeAgentSdkDeps => {
+  const { gatewayBaseUrl, ...rest } = makeDeps(roles);
+  void gatewayBaseUrl;
+  return rest;
+};
+
+describe("SEC-1 / TST-1 query options", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("engineering runs sandboxed, with no unsandboxed commands and the npm registry only", () => {
+    const options = buildQueryOptions(makeInput({ role: "engineering", taskType: "prd" }), requireRole(roles, "engineering"), makeDeps(roles));
+    expect(options.sandbox).toEqual({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: false,
+      network: { allowedDomains: ["registry.npmjs.org"] },
+    });
+  });
+
+  it("no other role gets a sandbox block, because none of them can run a shell", () => {
+    for (const role of roles.values()) {
+      if (role.role === "engineering") continue;
+      expect(buildQueryOptions(makeInput({ role: role.role }), role, makeDeps(roles)), role.role).not.toHaveProperty("sandbox");
+    }
+  });
+
+  it("research gets an explicit tools list without Bash or Write, no skills, and skill shell execution off", () => {
+    const options = buildQueryOptions(makeInput(), requireRole(roles, "research"), makeDeps(roles));
+    expect(options.tools).toEqual(["WebSearch", "WebFetch"]);
+    expect(options.tools).not.toContain("Bash");
+    expect(options.tools).not.toContain("Write");
+    expect(options.skills).toEqual([]);
+    expect(options.settings).toEqual({ disableSkillShellExecution: true });
+  });
+
+  it("tools is the allowed built-ins of every role: the allow-list minus the mcp entries", () => {
+    for (const role of roles.values()) {
+      const options = buildQueryOptions(makeInput({ role: role.role }), role, makeDeps(roles));
+      expect(options.tools, role.role).toEqual(allowedToolsFor(role).filter((name) => !name.startsWith("mcp__")));
+    }
+    const engineering = buildQueryOptions(makeInput({ role: "engineering" }), requireRole(roles, "engineering"), makeDeps(roles));
+    expect(engineering.tools).toEqual(["Read", "Glob", "Grep", "Write", "Edit", "MultiEdit", "Bash"]);
+    expect(buildQueryOptions(makeInput({ role: "chief_of_staff" }), requireRole(roles, "chief_of_staff"), makeDeps(roles)).tools).toEqual([]);
+  });
+
+  it("production routes by alias: sonnet at medium for research, opus at xhigh for engineering", () => {
+    const research = buildQueryOptions(makeInput(), requireRole(roles, "research"), makeDeps(roles));
+    expect([research.model, research.effort]).toEqual(["claude-sonnet-5-5", "medium"]);
+    const engineering = buildQueryOptions(makeInput({ role: "engineering" }), requireRole(roles, "engineering"), makeDeps(roles));
+    expect([engineering.model, engineering.effort]).toEqual(["claude-opus-5-5", "xhigh"]);
+  });
+
+  it("the smoke profile routes research to haiku at low effort", () => {
+    const options = buildQueryOptions(makeInput(), requireRole(roles, "research"), { ...makeDeps(roles), profile: "smoke" });
+    expect([options.model, options.effort]).toEqual(["claude-haiku-5-5", "low"]);
+  });
+
+  it("the profile defaults to production when the deps carry none", () => {
+    const { profile, ...rest } = makeDeps(roles);
+    void profile;
+    const options = buildQueryOptions(makeInput(), requireRole(roles, "research"), rest);
+    expect([options.model, options.effort]).toEqual(["claude-sonnet-5-5", "medium"]);
+  });
+
+  it("the subprocess env points at the gateway with a placeholder key and a per-company config dir", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-host");
+    const deps = { ...makeDeps(roles), subprocessEnv: { PATH: "/usr/bin" } };
+    const env = buildQueryOptions(makeInput({ companyId: "company-7" }), requireRole(roles, "research"), deps).env ?? {};
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:4310",
+      ANTHROPIC_API_KEY: "north-gateway",
+      HOME: "/tmp/north-agent-config/company-7",
+      CLAUDE_CONFIG_DIR: "/tmp/north-agent-config/company-7",
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1",
+    });
+    expect(JSON.stringify(env)).not.toContain("sk-ant-host");
+  });
+
+  it("the config root defaults to agent-config next to the workspace root", () => {
+    const { configRoot, ...rest } = makeDeps(roles);
+    void configRoot;
+    const env = buildQueryOptions(makeInput(), requireRole(roles, "research"), rest).env ?? {};
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/agent-config/company-1");
+  });
+
+  it("without a gateway the host key still passes through (until the worker wires one) and warns once", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-host");
+    const warn = vi.fn();
+    const env = buildQueryOptions(makeInput(), requireRole(roles, "research"), { ...withoutGateway(), warn }).env ?? {};
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-host");
+    expect(env).not.toHaveProperty("ANTHROPIC_BASE_URL");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("no model gateway configured: the model key is exposed to the agent subprocess");
+  });
+
+  it("a crafted company id cannot reach outside the config root", () => {
+    expect(() => buildQueryOptions(makeInput({ companyId: "../../etc" }), requireRole(roles, "research"), makeDeps(roles))).toThrow(/company id/);
+  });
+
+  it("attaches a session store scoped to the run's company only when session entries are provided", async () => {
+    const research = requireRole(roles, "research");
+    expect(buildQueryOptions(makeInput(), research, makeDeps(roles))).not.toHaveProperty("sessionStore");
+    expect(buildQueryOptions(makeInput(), research, makeDeps(roles))).not.toHaveProperty("sessionStoreFlush");
+
+    const appended: Array<{ sessionId: string; fromSeq: number }> = [];
+    const sessionEntries: NonNullable<ClaudeAgentSdkDeps["sessionEntries"]> = {
+      append: async (sessionId, _subpath, entries, fromSeq) => (appended.push({ sessionId, fromSeq }), fromSeq + entries.length),
+      read: async () => [],
+      companyOf: async (sessionId) => (sessionId === "foreign" ? "company-2" : null),
+    };
+    const options = buildQueryOptions(makeInput(), research, { ...makeDeps(roles), sessionEntries });
+    expect(options.sessionStoreFlush).toBe("batched");
+    const store = options.sessionStore;
+    expect(store).toBeDefined();
+    await store?.append({ projectKey: "p", sessionId: "s1" }, [{ type: "user", uuid: "u1" }]);
+    expect(appended).toEqual([{ sessionId: "s1", fromSeq: 0 }]);
+    await expect(store?.load({ projectKey: "p", sessionId: "foreign" })).rejects.toThrow("belongs to another company");
+  });
+
+  it("routes the session store's warnings to deps.warn", async () => {
+    const warn = vi.fn();
+    const sessionEntries: NonNullable<ClaudeAgentSdkDeps["sessionEntries"]> = { append: async (_s, _p, e, from) => from + e.length, read: async () => [], companyOf: async () => null };
+    const options = buildQueryOptions(makeInput(), requireRole(roles, "research"), { ...makeDeps(roles), sessionEntries, warn });
+    await options.sessionStore?.append({ projectKey: "p", sessionId: "s1" }, [{ type: "user", text: "a\u0000" }]);
+    expect(warn).toHaveBeenCalledWith("session s1: replaced 1 unencodable characters");
+  });
+});
+
+describe("M7 memory tool module and usage", () => {
+  it("memorySearchTool lives in memory-tool.ts and is still re-exported from the adapter", () => {
+    expect(memorySearchTool).toBe(memorySearchToolModule);
+  });
+
+  it("a memory hit may carry the department the db hit has", () => {
+    const hit: MemoryHit = { title: "t", content: "c", kind: "learning", department: null };
+    expect(hit.department).toBeNull();
+  });
+
+  it("usageOf sums the cache read and write tokens across models, and inputTokens still counts them", () => {
+    const base = successResult({});
+    const model = { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 30, cacheCreationInputTokens: 4, webSearchRequests: 0, costUSD: 0, contextWindow: 1, maxOutputTokens: 1 };
+    const result = { ...base, modelUsage: { a: model, b: { ...model, cacheReadInputTokens: 50, cacheCreationInputTokens: 6 } } } as unknown as SDKResultMessage;
+    expect(usageOf(result, "m")).toMatchObject({ cacheReadTokens: 80, cacheWriteTokens: 10, outputTokens: 4, inputTokens: 1 + 30 + 4 + 1 + 50 + 6 });
+  });
+
+  it("usageOf reports zero cache tokens when the result carries no model usage", () => {
+    const bare = { ...successResult({}), modelUsage: undefined } as unknown as SDKResultMessage;
+    expect(usageOf(bare, "m")).toMatchObject({ cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
 });
