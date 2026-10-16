@@ -2,6 +2,7 @@ export * from "./models";
 export * from "./tiers";
 export * from "./authority/index";
 export * from "./budget/guard";
+export * from "./budget/test-run";
 export * from "./decisions/index";
 export * from "./tasks/lifecycle";
 export * from "./tasks/types";
