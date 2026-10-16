@@ -1,9 +1,11 @@
 import { batchPayload, spendProfile, type ActionSpec } from "./action";
-import { classify, type ClassifyReason } from "./classify";
+import { classify, type Classification, type ClassifyReason } from "./classify";
+import { fenceVerdict, type FencePolicy, type FenceTarget } from "./fence";
 import type { Tier } from "../tiers";
 import { wouldExceedBudget, type BudgetState } from "../budget/guard";
 import type { CardDraft } from "../decisions/types";
 import { signalPayload } from "../signals/types";
+import { outreachRefusal, type OutreachContext } from "../outreach/policy";
 
 export interface AutoRule {
   readonly id: string;
@@ -19,9 +21,13 @@ export interface PolicyContext {
   readonly autoRules: readonly AutoRule[];
   /** Default due time for cards opened by this gate, as an ISO timestamp. */
   readonly cardDueAt: string;
+  /** TST-5: the test-account fence and the outside targets this action touches. Absent means no fence is applied. */
+  readonly fence?: { readonly policy: FencePolicy; readonly targets: readonly FenceTarget[] };
+  /** CMP-1: the company's suppressions and sender identity. Absent means the outreach rules are not applied. */
+  readonly outreach?: OutreachContext;
 }
 
-export type GateReason = ClassifyReason | "budget_cap" | "kill_switch" | "auto_rule";
+export type GateReason = ClassifyReason | "budget_cap" | "kill_switch" | "auto_rule" | "test_fence" | "suppressed" | "no_sender_identity";
 
 interface Decided {
   readonly tier: Tier;
@@ -62,6 +68,9 @@ export const REASON_PHRASES: Readonly<Record<GateReason, string>> = Object.freez
   budget_cap: "would exceed the budget cap",
   kill_switch: "is stopped by the kill switch",
   auto_rule: "matches a standing rule",
+  test_fence: "targets an account outside the test fence",
+  suppressed: "would reach a suppressed address",
+  no_sender_identity: "has no sender identity (legal name and postal address)",
 });
 
 const ROLE_WORDS: Readonly<Record<string, string>> = Object.freeze({
@@ -221,18 +230,25 @@ function cardFor(spec: ActionSpec, tier: Tier, reasons: readonly GateReason[], d
 
 const frozen = (reasons: readonly GateReason[]): readonly GateReason[] => Object.freeze([...reasons]);
 
-/**
- * The single chokepoint for external actions (ADR 0001, DEC-1).
- *
- * Order of checks: kill switch → classify → budget cap → auto rule → tier routing.
- */
-export function gate(spec: ActionSpec, ctx: PolicyContext): GateDecision {
-  const { tier: baseTier, reasons: baseReasons } = classify(spec);
+/** A block carries the tier the action was classified at, so the ledger shows what was stopped. */
+const blocked = (tier: Tier, reasons: readonly GateReason[]): GateDecision => Object.freeze({ kind: "block", tier, reasons: frozen(reasons) });
 
-  if (ctx.killSwitchActive) {
-    return Object.freeze({ kind: "block", tier: baseTier, reasons: frozen([...baseReasons, "kill_switch"]) });
-  }
+/** TST-5: a block when a fence is in force and any target of the action is outside it; null otherwise. */
+function fenceBlock(ctx: PolicyContext, classified: Classification): GateDecision | null {
+  if (!ctx.fence) return null;
+  const verdict = fenceVerdict(ctx.fence.targets, ctx.fence.policy);
+  return verdict.allowed ? null : blocked(classified.tier, [...classified.reasons, "test_fence"]);
+}
 
+/** CMP-1: a block when the outreach rules refuse the send (suppressed recipient, no sender identity); null otherwise. */
+function outreachBlock(spec: ActionSpec, ctx: PolicyContext, classified: Classification): GateDecision | null {
+  if (!ctx.outreach) return null;
+  const refusal = outreachRefusal(spec, ctx.outreach);
+  return refusal ? blocked(classified.tier, [...classified.reasons, refusal]) : null;
+}
+
+/** Budget cap, then the tier decides: K3 card, K2 auto rule or card, K1 notify, K0 run. */
+function route(spec: ActionSpec, ctx: PolicyContext, baseTier: Tier, baseReasons: readonly GateReason[]): GateDecision {
   let tier = baseTier;
   const reasons: GateReason[] = [...baseReasons];
 
@@ -262,4 +278,18 @@ export function gate(spec: ActionSpec, ctx: PolicyContext): GateDecision {
   }
 
   return Object.freeze({ kind: "run", tier, reasons: frozen(reasons) });
+}
+
+/**
+ * The single chokepoint for external actions (ADR 0001, DEC-1).
+ *
+ * Order of checks: kill switch → test fence (TST-5) → outreach policy (CMP-1)
+ * → budget cap → auto rule → tier routing. The pure classification runs first
+ * so that every block reports the tier of what it stopped. A block is final:
+ * no auto rule and no card can rescue a stopped action.
+ */
+export function gate(spec: ActionSpec, ctx: PolicyContext): GateDecision {
+  const classified = classify(spec);
+  if (ctx.killSwitchActive) return blocked(classified.tier, [...classified.reasons, "kill_switch"]);
+  return fenceBlock(ctx, classified) ?? outreachBlock(spec, ctx, classified) ?? route(spec, ctx, classified.tier, classified.reasons);
 }

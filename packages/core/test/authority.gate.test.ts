@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { gate, ActionSpecSchema, type ActionSpec, type PolicyContext } from "../src/authority/index";
+import { classify, gate, ActionSpecSchema, FencePolicySchema, type ActionSpec, type FencePolicy, type FenceTarget, type PolicyContext } from "../src/authority/index";
 import type { BudgetState } from "../src/budget/guard";
+import type { OutreachContext, SenderIdentity } from "../src/outreach/policy";
 
 const spec = (over: Partial<ActionSpec>): ActionSpec =>
   ActionSpecSchema.parse({ kind: "research", companyId: "c1", agentRole: "growth", description: "Start a $10/day test campaign", ...over });
@@ -105,5 +106,154 @@ describe("DEC-1 gate(): the single chokepoint", () => {
     expect(gate(spec({ kind: "ads.start", amountUsd: 10, category: "tools" }), ctx({ autoRules: [rule], budgets: [{ ...ads, category: "tools" }] })).kind).toBe("card");
     expect(gate(spec({ kind: "ads.start", amountUsd: 10, category: "ads" }), ctx({ autoRules: [{ ...rule, active: false }] })).kind).toBe("card");
     expect(gate(spec({ kind: "contract.sign" }), ctx({ autoRules: [{ ...rule, kind: "contract.sign" }] })).kind).toBe("card");
+  });
+});
+
+const fencePolicy = (over: Partial<FencePolicy> = {}): FencePolicy => FencePolicySchema.parse({ enabled: true, metaAdAccounts: ["act_1"], ...over });
+const fenced = (targets: readonly FenceTarget[], policy: FencePolicy = fencePolicy()): Pick<PolicyContext, "fence"> => ({ fence: { policy, targets } });
+const adAccount = (id: string): FenceTarget => ({ kind: "meta_ad_account", id });
+
+const identity: SenderIdentity = { legalName: "Acme Ltd", postalAddress: "1 Main Street, Springfield" };
+const outreach = (over: Partial<OutreachContext> = {}): Pick<PolicyContext, "outreach"> => ({ outreach: { suppressed: [], senderIdentity: identity, ...over } });
+const mail = (to: string, over: Partial<ActionSpec> = {}): ActionSpec =>
+  spec({ kind: "email.send.first_contact", agentRole: "sales", payload: { to, subject: "Hello" }, ...over });
+const adsStart = (over: Partial<ActionSpec> = {}): ActionSpec => spec({ kind: "ads.start", amountUsd: 10, category: "ads", ...over });
+
+describe("TST-5 gate(): the test-account fence", () => {
+  it("TST-5 blocks an action aimed outside the fence, with the classified tier and the test_fence reason last", () => {
+    const action = adsStart();
+    const decision = gate(action, ctx(fenced([adAccount("act_9")])));
+    expect(decision).toMatchObject({ kind: "block", tier: "K2" });
+    expect(decision.reasons).toEqual([...classify(action).reasons, "test_fence"]);
+  });
+
+  it("TST-5 lets the same action through to its card when every target is inside the fence", () => {
+    const inside = gate(adsStart(), ctx(fenced([adAccount("act_1")])));
+    expect(inside.kind).toBe("card");
+    expect(inside).toEqual(gate(adsStart(), ctx()));
+  });
+
+  it("TST-5 one target outside is enough: every target must be on the allow-list", () => {
+    expect(gate(adsStart(), ctx(fenced([adAccount("act_1"), adAccount("act_9")]))).reasons).toContain("test_fence");
+  });
+
+  it("TST-5 a disabled fence and an absent fence are both no-ops", () => {
+    const outside = [adAccount("act_9")];
+    expect(gate(adsStart(), ctx(fenced(outside, fencePolicy({ enabled: false })))).kind).toBe("card");
+    expect(gate(adsStart(), ctx()).kind).toBe("card");
+  });
+
+  it("TST-5 blocks a recipient outside the allowed domains, and a Vercel project without the prefix", () => {
+    const policy = fencePolicy({ recipientDomains: ["example.test"] });
+    const real = gate(mail("mara@real-customer.com"), ctx(fenced([{ kind: "recipient", email: "mara@real-customer.com" }], policy)));
+    expect(real).toMatchObject({ kind: "block" });
+    expect(real.reasons).toContain("test_fence");
+    const own = gate(mail("mara@example.test"), ctx(fenced([{ kind: "recipient", email: "mara@example.test" }], policy)));
+    expect(own.kind).toBe("card");
+    const project = gate(spec({ kind: "deploy.preview" }), ctx(fenced([{ kind: "vercel_project", name: "prod-site" }])));
+    expect(project).toMatchObject({ kind: "block", tier: "K1" });
+  });
+
+  it("TST-5 blocks even a K0 action aimed outside the fence", () => {
+    expect(gate(spec({ kind: "research" }), ctx(fenced([adAccount("act_9")])))).toMatchObject({ kind: "block", tier: "K0" });
+  });
+
+  it("TST-5 a fence block keeps the K3 tier of what it stopped", () => {
+    expect(gate(spec({ kind: "contract.sign" }), ctx(fenced([adAccount("act_9")])))).toMatchObject({ kind: "block", tier: "K3" });
+  });
+
+  it("TST-5 an auto rule never rescues a fenced action", () => {
+    const rule = { id: "r1", kind: "ads.start" as const, maxAmountUsd: 50, category: "ads" as const, active: true };
+    const open = gate(adsStart(), ctx({ autoRules: [rule] }));
+    expect(open).toMatchObject({ kind: "run", autoRuleId: "r1" });
+    const shut = gate(adsStart(), ctx({ autoRules: [rule], ...fenced([adAccount("act_9")]) }));
+    expect(shut.kind).toBe("block");
+    expect(shut.reasons).not.toContain("auto_rule");
+    expect("autoRuleId" in shut).toBe(false);
+  });
+
+  it("TST-5 the fence answers before the budget cap, and the kill switch answers before the fence", () => {
+    const overCap = adsStart({ amountUsd: 25 });
+    const fencedOverCap = gate(overCap, ctx(fenced([adAccount("act_9")])));
+    expect(fencedOverCap.reasons).toContain("test_fence");
+    expect(fencedOverCap.reasons).not.toContain("budget_cap");
+    const stopped = gate(adsStart(), ctx({ killSwitchActive: true, ...fenced([adAccount("act_9")]) }));
+    expect(stopped.reasons).toContain("kill_switch");
+    expect(stopped.reasons).not.toContain("test_fence");
+  });
+
+  it("TST-5 returns frozen decisions and leaves its inputs as they were", () => {
+    const action = adsStart();
+    const context = ctx(fenced([adAccount("act_9")]));
+    const before = JSON.stringify({ action, context });
+    const decision = gate(action, context);
+    expect(Object.isFrozen(decision)).toBe(true);
+    expect(Object.isFrozen(decision.reasons)).toBe(true);
+    expect(JSON.stringify({ action, context })).toBe(before);
+  });
+});
+
+describe("CMP-1 gate(): the outreach policy", () => {
+  it("CMP-1 blocks a send to a suppressed address, with the classified tier and the suppressed reason last", () => {
+    const action = mail("mara@example.test");
+    const decision = gate(action, ctx(outreach({ suppressed: ["mara@example.test"] })));
+    expect(decision).toMatchObject({ kind: "block", tier: "K2" });
+    expect(decision.reasons).toEqual([...classify(action).reasons, "suppressed"]);
+  });
+
+  it("CMP-1 blocks a suppressed domain and a reply to a suppressed address", () => {
+    const domain = gate(mail("mara@example.test"), ctx(outreach({ suppressed: ["Example.TEST"] })));
+    expect(domain.reasons).toContain("suppressed");
+    const reply = gate(spec({ kind: "email.send.reply", agentRole: "sales", payload: { to: "mara@example.test", subject: "Re: Hello" } }), ctx(outreach({ suppressed: ["mara@example.test"] })));
+    expect(reply).toMatchObject({ kind: "block" });
+    expect(reply.reasons).toContain("suppressed");
+  });
+
+  it("CMP-1 blocks a batch when any one recipient is suppressed", () => {
+    const batch = mail("a@example.test", { payload: { recipients: ["a@example.test", "b@example.test"], batchId: "batch-1", subject: "Hello" } });
+    expect(gate(batch, ctx(outreach({ suppressed: ["b@example.test"] }))).reasons).toContain("suppressed");
+  });
+
+  it("CMP-1 blocks a send when the company has no sender identity", () => {
+    const decision = gate(mail("mara@example.test"), ctx(outreach({ senderIdentity: null })));
+    expect(decision).toMatchObject({ kind: "block", tier: "K2" });
+    expect(decision.reasons).toContain("no_sender_identity");
+    expect(decision.reasons).not.toContain("suppressed");
+  });
+
+  it("CMP-1 refuses a recipient it cannot read as one address", () => {
+    expect(gate(mail("not an address"), ctx(outreach())).reasons).toContain("suppressed");
+  });
+
+  it("CMP-1 lets a clean send with an identity go on to its card, and an absent context is a no-op", () => {
+    const clean = gate(mail("mara@example.test"), ctx(outreach({ suppressed: ["other@example.test"] })));
+    expect(clean.kind).toBe("card");
+    expect(clean).toEqual(gate(mail("mara@example.test"), ctx()));
+  });
+
+  it("CMP-1 leaves kinds that do not write to a person alone", () => {
+    const strict = ctx(outreach({ suppressed: ["example.test"], senderIdentity: null }));
+    expect(gate(spec({ kind: "deploy.preview" }), strict).kind).toBe("notify");
+    expect(gate(spec({ kind: "research" }), strict).kind).toBe("run");
+  });
+
+  it("CMP-1 an auto rule never rescues a suppressed send", () => {
+    const rule = { id: "r3", kind: "email.send.first_contact" as const, active: true };
+    expect(gate(mail("mara@example.test"), ctx({ autoRules: [rule] })).kind).toBe("run");
+    const shut = gate(mail("mara@example.test"), ctx({ autoRules: [rule], ...outreach({ suppressed: ["mara@example.test"] }) }));
+    expect(shut.kind).toBe("block");
+    expect(shut.reasons).not.toContain("auto_rule");
+  });
+
+  it("CMP-1 the fence answers before the outreach policy", () => {
+    const both = gate(mail("mara@example.test"), ctx({ ...fenced([adAccount("act_9")]), ...outreach({ suppressed: ["mara@example.test"] }) }));
+    expect(both.reasons).toContain("test_fence");
+    expect(both.reasons).not.toContain("suppressed");
+  });
+
+  it("CMP-1 the outreach policy answers before the budget cap, and the kill switch answers before it", () => {
+    const stopped = gate(mail("mara@example.test"), ctx({ killSwitchActive: true, ...outreach({ senderIdentity: null }) }));
+    expect(stopped.reasons).toContain("kill_switch");
+    expect(stopped.reasons).not.toContain("no_sender_identity");
   });
 });
