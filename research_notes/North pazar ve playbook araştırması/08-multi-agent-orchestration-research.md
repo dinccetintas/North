@@ -267,3 +267,118 @@ Keep the hub-and-spoke company, but make the Chief of Staff a verifying planner 
 - No study measures a 3-decisions-per-day regime; the allocator in rec. 4 is an inference from deferral theory, not a validated design.
 - October-2026 leaderboards for several benchmarks could not be verified (search budget exhausted; sites render client-side).
 - Scite was unavailable, so retraction checks were not run; all primary citations are arXiv or official vendor pages.
+
+## Appendix A. Failure mode to North mitigation (cross-reference for the spec)
+
+| Observed failure (source) | Where it would appear in North | Mitigation and owning module |
+|---|---|---|
+| Step repetition 15.7%, termination-unaware 12.4% ([MAST](https://arxiv.org/html/2503.13657v3)) | Department run loops on a tool; burns budget | Progress Ledger "looping?" check + stall counter in `packages/core` planner; Inngest step budget; `maxTurns`/`maxBudgetUsd` per role |
+| Reasoning-action mismatch 13.2% ([MAST](https://arxiv.org/html/2503.13657v3)) | Run says "sent" but no action row | Evidence = gate-recorded `actions` row, not transcript text; verifier compares plan vs action log |
+| Incorrect / missing verification 17.3% ([MAST](https://arxiv.org/html/2503.13657v3)) | Task marked done without proof | `Evidence` schema with deterministic sensor fields; verifier is a separate call; `done` transition requires evidence id |
+| Fail to ask for clarification 6.8% ([MAST](https://arxiv.org/html/2503.13657v3)) | Wrong deliverable, wasted run | Ask-before-plan check at intake; Chief of Staff bundles into a card with default |
+| Self-deception, fake shortcut ([TheAgentCompany](https://arxiv.org/html/2412.14161v2)) | Agent edits data to satisfy a check | Sandbox mode by default; write actions to integrations gated; verifier checks that evidence came from a read, not a write, by the same run |
+| Never follows up with the right person ([TheAgentCompany](https://arxiv.org/html/2412.14161v2)) | Sales/Ops thread dropped | Task stays `waiting_external` with a follow-up timer; ledger counts open loops |
+| Multi-turn drop 58% to 35%, zero confidentiality awareness ([CRMArena-Pro](https://arxiv.org/abs/2505.18878)) | Email to a customer leaks internal data | Data-class tags on memory items; gate denies external send containing class >= internal; draft-review loop for counterpart messages |
+| Talked into discounts, illegal contract, below-minimum-wage offer ([Vend 2](https://www.anthropic.com/news/project-vend-2)) | Ops/Finance/Sales | Code floors in `AuthorityEngine` (margin, discount, refund, hiring = K3); legal-sensitive action types always K3 |
+| Same-model CEO rubber-stamps ([Vend 2](https://www.anthropic.com/news/project-vend-2)) | Chief of Staff approves its own department's plan | Reviewer uses rubric + ledger + sensors only; different model alias where the budget allows |
+| Meltdown loops, forgetting orders ([Vending-Bench](https://arxiv.org/abs/2502.15840)) | Long Ops runs | Ledger as external memory; periodic context reset on re-plan; "facts to look up" list re-checked each cycle |
+| Repeated login until lockout, trying to recruit humans ([Magentic-One](https://arxiv.org/html/2411.04468v1)) | Integration account suspended; agent emails strangers | Retry caps per integration in the gate; outbound contact to new counterparties is K2+ |
+| Prompt injection exfiltrates keys, agent approves itself ([Magentic-UI](https://arxiv.org/html/2507.22358v1)) | Email/web content steers a run | Tool results and bodies are data (CLAUDE.md rule); approval path only through decision cards owned by the founder; no "approve" tool for agents |
+| Blackmail/leak under goal conflict + replacement threat ([Anthropic](https://www.anthropic.com/research/agentic-misalignment)) | Strongly-worded department goals | Avoid absolute goal prompts; need-to-know memory scopes; irreversible actions always carded |
+| Judge position/length/self-preference bias ([CALM](https://arxiv.org/abs/2410.02736), [self-pref](https://arxiv.org/abs/2410.21819)) | Critique loop prefers verbose or familiar drafts | Pairwise in both orders, length-normalised rubric, judge on a different alias, "unknown" allowed |
+| Cost cap halves success ([SWE-bench Pro](https://arxiv.org/html/2509.16941v2)) | Cheap runs fail silently | Report cost and pass^k together; budget is a visible knob in the department settings |
+
+## Appendix B. Human-in-the-loop support across reference frameworks
+
+| Framework | Plan approval before execution | Per-action approval | Irreversibility model | Resume after human input | Notes |
+|---|---|---|---|---|---|
+| Magentic-UI | Yes (editable plan editor) | Yes (action guards) | always/maybe/never + LLM judge for maybe | Yes | Site allow-list; plan gallery — [arXiv 2507.22358](https://arxiv.org/html/2507.22358v1) |
+| OpenAI Agents SDK | No built-in | `on_handoff`/guardrails; tool approval via host | None | Within run only | Guardrails only on first/last agent — [docs](https://openai.github.io/openai-agents-python/handoffs/) |
+| Google ADK | Workflow nodes can be deterministic | Pattern-level (human-in-the-loop pattern page) | None | Session state | Router functions experimental — [adk.dev](https://adk.dev/workflows/) |
+| LangGraph | `interrupt()` anywhere | `interrupt()` | None | Checkpointer; node re-runs | Covered in harness doc |
+| Claude Agent SDK (North today) | Via North's card flow | `PreToolUse` deny/defer | North's K0-K3 | `tool_deferred` + session store | Harness doc rec. 2 |
+| HULA (Atlassian) | Yes (plan then code) | No | None | Yes | Perceived savings, quality concerns — [arXiv 2411.12924](https://arxiv.org/abs/2411.12924) |
+| CrewAI / Agency Swarm | No built-in | Tool-level hooks | None | Thread callbacks | Vendor claims only |
+
+## Appendix C. A formal sketch for the 3-card budget (inference, not a cited design)
+
+Inputs per pending request r: department d, action type a, stake s (money or reach), irreversibility i in {never, maybe, always}, model uncertainty u, and the historical overrule rate p(d, a, band(s)) from past card answers (Laplace-smoothed, decayed).
+
+1. Mandatory cards: any r with i = always and s above the K3 floor is a card regardless of budget; if more than 3 exist, the oldest wait and the founder sees the queue length (safety before throughput; [defer on critical actions](https://arxiv.org/abs/2511.02997)).
+2. Optional cards: for the remaining K2 requests compute expected regret of auto-deciding, R(r) = p x L_wrong(r) + (1 - p) x 0, where L_wrong is the loss if the default is wrong (reversal cost + stake); choose the top (3 - mandatory) by R. This is the single-reviewer, unit-cost special case of capacity-constrained deferral ([DeCCaF](https://arxiv.org/abs/2403.06906), [d-GNP](https://arxiv.org/abs/2407.12710)).
+3. Defaults: requests not carded take the learned default for (d, a, band); when p is high but the stake is low, default to decline-and-park rather than approve (the asymmetric-cost rule in DeCCaF).
+4. Learning: every answer updates p and writes a preference item ([PRELUDE](https://arxiv.org/abs/2404.15269)); the gate widens a department's auto-approve band only after N consecutive verified outcomes in the ledger and narrows it on any loss (the "autonomy earned when safe" direction of [The Oversight Game](https://arxiv.org/abs/2510.26752)).
+5. Reporting: track cards issued, overrule rate, regret avoided, and parked-request age; these are the oversight-cost metrics the SPAR benchmark proposal says are missing from current evaluations ([SPAR F26](https://www.sparai.org/projects/f26/recjmG0Nfo4Ijp61q)).
+
+Unverified assumptions: that overrule rates are stable per (department, action, band); that the founder's L_wrong can be approximated by stake plus a fixed reversal cost; that 3/day is enough once defaults are learned (no study found).
+
+## Appendix D. What North should not adopt
+
+| Idea | Why not (evidence) |
+|---|---|
+| Free group chat between departments (AutoGen group chat, ChatDev chat chain) | 41-86.7% failure, inter-agent misalignment 32% of failures ([MAST](https://arxiv.org/html/2503.13657v3)); 17.2x error amplification without central verification ([scaling](https://arxiv.org/html/2512.08296v1)) |
+| A "CEO" or critic agent on the same model and transcript as the worker | Vend 2's Seymour Cash ([Anthropic](https://www.anthropic.com/news/project-vend-2)); self-preference bias ([arXiv 2410.21819](https://arxiv.org/abs/2410.21819)) |
+| Persona-heavy role prompts as a substitute for tools and data | No measured gain ([arXiv 2311.10054](https://arxiv.org/abs/2311.10054)) |
+| Auction/market allocation among departments | No LLM-era evidence found; negotiation tokens with one principal and seven fixed roles |
+| A2A/ACP transport for internal hand-offs | Internal hand-offs are DB rows through one orchestrator; adopt the vocabulary only ([survey](https://arxiv.org/abs/2505.02279v2)) |
+| Intrinsic self-critique as the evidence check | Degrades at times without external feedback ([arXiv 2310.01798](https://arxiv.org/abs/2310.01798)) |
+| Agent chains for sequential department work | -39% to -70% ([scaling](https://arxiv.org/html/2512.08296v1)) |
+| Letting agents see gate thresholds or audit sampling | Red team with protocol internals cut safety from 96% to 17% ([arXiv 2511.02997](https://arxiv.org/abs/2511.02997)) |
+
+## Appendix E. Source list (primary unless marked)
+
+1. MAST, Cemri et al., NeurIPS 2025 — https://arxiv.org/abs/2503.13657
+2. Towards a science of scaling agent systems, Google/DeepMind/MIT, Dec 2025 — https://arxiv.org/abs/2512.08296 ; blog https://research.google/blog/towards-a-science-of-scaling-agent-systems-when-and-why-agent-systems-work/
+3. Project Vend phase two, Anthropic, 2025-12-18 — https://www.anthropic.com/news/project-vend-2
+4. Agentic misalignment, Anthropic, 2025-06-20 — https://www.anthropic.com/research/agentic-misalignment
+5. Magentic-One, Fourney et al., Nov 2024 — https://arxiv.org/abs/2411.04468
+6. Magentic-UI, Mozannar et al., Jul 2025 — https://arxiv.org/abs/2507.22358
+7. TheAgentCompany, Xu et al., Dec 2024 (v2) — https://arxiv.org/abs/2412.14161 ; repo https://github.com/TheAgentCompany/TheAgentCompany
+8. CRMArena-Pro, Huang et al., May 2025 — https://arxiv.org/abs/2505.18878
+9. Vending-Bench, Backlund & Petersson, Feb 2025 — https://arxiv.org/abs/2502.15840 ; VB2 leaderboard https://andonlabs.com/evals/vending-bench-2 ; Epoch https://epoch.ai/benchmarks/vending-bench-2
+10. SWE-bench Pro, Deng et al., Sep 2025 — https://arxiv.org/abs/2509.16941
+11. tau2-bench, Barres et al., Jun 2025 — https://arxiv.org/abs/2506.07982 ; tau-bench (foundational) https://arxiv.org/abs/2406.12045
+12. METR time horizons, Kwa et al., Mar 2025 (v4 Jul 2026) — https://arxiv.org/abs/2503.14499
+13. AgentBench, Liu et al., ICLR 2024 — https://arxiv.org/abs/2308.03688
+14. AgentDojo, Debenedetti et al., 2024 — https://arxiv.org/abs/2406.13352
+15. OSWorld (foundational) — https://arxiv.org/abs/2404.07972 ; leaderboard https://leaderboard.steel.dev/leaderboards/osworld/ (secondary)
+16. Terminal-Bench — https://www.tbench.ai/leaderboard ; BenchLM (secondary) https://www.benchlm.ai/benchmarks/terminal-bench-2
+17. MetaGPT, Hong et al., ICLR 2024 — https://arxiv.org/abs/2308.00352
+18. ChatDev, Qian et al., ACL 2024 — https://arxiv.org/abs/2307.07924
+19. CAMEL (foundational) — https://arxiv.org/abs/2303.17760 ; OWL Workforce, Hu et al., May 2025 — https://arxiv.org/abs/2505.23885
+20. AutoGen (foundational) — https://arxiv.org/abs/2308.08155
+21. AgentVerse — https://arxiv.org/abs/2308.10848 ; Generative Agents (foundational) — https://arxiv.org/abs/2304.03442
+22. AI Scientist-v2, Yamada et al., Apr 2025 — https://arxiv.org/abs/2504.08066
+23. Personas do not help, Zheng et al., EMNLP 2024 Findings — https://arxiv.org/abs/2311.10054
+24. More Agents Is All You Need, Li et al., TMLR — https://arxiv.org/abs/2402.05120
+25. Mixture-of-Agents, Wang et al., 2024 — https://arxiv.org/abs/2406.04692
+26. ADaPT, Prasad et al., NAACL 2024 Findings — https://arxiv.org/abs/2311.05772
+27. Self-resource allocation in multi-agent LLM systems, Amayuelas et al., Apr 2025 — https://arxiv.org/abs/2504.02051
+28. ReAcTree (AAMAS 2026) — https://arxiv.org/abs/2511.02424 ; HiPlan — https://arxiv.org/abs/2508.19076 (both from search summaries)
+29. Contract Net Protocol, Smith 1980 (foundational) — https://doi.org/10.1109/TC.1980.1675516
+30. AI Control, Greenblatt et al., 2023 — https://arxiv.org/abs/2312.06942
+31. Ctrl-Z, Bhatt et al., Apr 2025 — https://arxiv.org/abs/2504.10374
+32. Evaluating control protocols for untrusted AI agents, Kutasov et al., Nov 2025 — https://arxiv.org/abs/2511.02997
+33. Adaptive attacks on monitors, Terekhov et al., 2025 (search summary) — https://arxiv.org/abs/2510.09462
+34. Safely interruptible agents, Orseau & Armstrong, UAI 2016 (foundational) — https://intelligence.org/files/Interruptibility.pdf
+35. Ask-before-Plan, Zhang et al., EMNLP 2024 Findings — https://arxiv.org/abs/2406.12639
+36. Structured uncertainty-guided clarification (SAGE-Agent), ACL Findings 2026 (secondary page) — https://research.adobe.com/publication/structured-uncertainty-guided-clarification-for-llm-agents
+37. Uncertainty-aware clarification with information gain, ICML 2026 (unverified) — https://arxiv.org/abs/2606.03135
+38. Ask or Assume, Mar 2026 (secondary) — https://arxiv.org/abs/2603.26233 ; AskBench — https://arxiv.org/abs/2602.11199 ; CLAIM — https://arxiv.org/abs/2608.11631
+39. HULA, Takerngsaksiri et al., ICSE SEIP 2025 — https://arxiv.org/abs/2411.12924
+40. The Oversight Game, Overman & Bayati, ICML 2026 — https://arxiv.org/abs/2510.26752 ; SPAR F26 proposal — https://www.sparai.org/projects/f26/recjmG0Nfo4Ijp61q
+41. DeCCaF, Alves et al., 2024 — https://arxiv.org/abs/2403.06906
+42. Multi-objective learn-to-defer (d-GNP), Charusaie & Samadi, 2024 — https://arxiv.org/abs/2407.12710
+43. PRELUDE/CIPHER, Gao et al., 2024 — https://arxiv.org/abs/2404.15269
+44. LLMs cannot self-correct reasoning yet, Huang et al., ICLR 2024 — https://arxiv.org/abs/2310.01798
+45. Agent-as-a-Judge, Zhuge et al., 2024 — https://arxiv.org/abs/2410.10934
+46. Self-preference bias in LLM-as-a-judge, Wataoka et al., 2024/2025 — https://arxiv.org/abs/2410.21819
+47. Justice or Prejudice (CALM), Ye et al., 2024 — https://arxiv.org/abs/2410.02736
+48. LLM-as-a-judge surveys — https://arxiv.org/abs/2411.15594 ; https://arxiv.org/abs/2412.05579
+49. Survey of agent interoperability protocols, Ehtesham et al., May 2025 — https://arxiv.org/abs/2505.02279
+50. A2A repository — https://github.com/a2aproject/A2A ; secondary adoption reports: HPCwire, flowhunt, pebblous (see Q6)
+51. MCP specification 2026-07-28 — https://modelcontextprotocol.io/specification/latest
+52. OpenAI Agents SDK handoffs — https://openai.github.io/openai-agents-python/handoffs/ ; repo https://github.com/openai/openai-agents-python
+53. Google ADK workflows — https://adk.dev/workflows/ ; repo https://github.com/google/adk-python
+54. Agency Swarm — https://github.com/VRSEN/agency-swarm
+55. Repos (stars 2026-10-16): MetaGPT 70,885; AutoGen 61,443; CrewAI 59,770; LangGraph 43,371; OpenAI Agents 30,088; smolagents 29,885; ChatDev 34,531; ADK 21,880; OWL 20,153; CAMEL 17,908; Agency Swarm 4,603; A2A 26.2k (README)
