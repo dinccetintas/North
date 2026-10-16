@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DIGEST_TRUNCATION_MARKER, formatMemoryDigest, listMemoryItems, memoryDigest, searchMemory, writeMemoryItems } from "../src/memory";
+import { DEFAULT_DIGEST_CHARS, DIGEST_TRUNCATION_MARKER, formatMemoryDigest, listMemoryItems, memoryDigest, searchMemory, writeMemoryItems, type MemoryItemRecord } from "../src/memory";
 import { saveClarifications } from "../src/theses";
 import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
@@ -61,5 +61,25 @@ describe("memory repository (MEM)", () => {
 
   it("formatMemoryDigest handles a company without a thesis", () => {
     expect(formatMemoryDigest(null, [], 500)).toBe("# Thesis\n(no thesis yet)");
+  });
+});
+
+describe("memory digest cap (LRN-6)", () => {
+  it("LRN-6 the default digest cap is 8000 characters", () => {
+    expect(DEFAULT_DIGEST_CHARS).toBe(8000);
+  });
+
+  it("LRN-6 formatMemoryDigest cuts a 9,000-character item to the cap and ends with the truncation marker", () => {
+    const item: MemoryItemRecord = {
+      id: "00000000-0000-4000-8000-000000000001",
+      kind: "learning",
+      title: "Long note",
+      content: "x".repeat(9000),
+      createdByRole: "research",
+      createdAt: "2026-10-16T00:00:00.000Z",
+    };
+    const digest = formatMemoryDigest(null, [item], DEFAULT_DIGEST_CHARS);
+    expect(digest.length).toBeLessThanOrEqual(DEFAULT_DIGEST_CHARS);
+    expect(digest.endsWith(DIGEST_TRUNCATION_MARKER)).toBe(true);
   });
 });

@@ -42,6 +42,11 @@ export interface AgentRunInput {
   readonly role: string;
   readonly taskType: string;
   readonly instructions: string;
+  /**
+   * The db digest (`memoryDigest` in `@north/db`: thesis plus newest active, unexpired memory), already capped at
+   * `DEFAULT_DIGEST_CHARS` (8000) with a truncation marker. The prompt builder renders it inside `<company_memory>`
+   * as data, delimiters stripped; it is never trusted as instructions.
+   */
   readonly memoryDigest: string;
   readonly workspaceDir: string;
   /** JSON schema the result must satisfy (Agent SDK outputFormat). */

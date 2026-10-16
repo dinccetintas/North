@@ -28,7 +28,8 @@ export interface MemoryItemRecord {
 export const DEFAULT_SEARCH_LIMIT = 8;
 /** Size of a `gte-small` embedding, the `memory_items.embedding` column and the `search_memory_hybrid` argument. */
 export const EMBEDDING_DIMENSIONS = 384;
-export const DEFAULT_DIGEST_CHARS = 6000;
+/** Cap on the digest every agent run receives inside `<company_memory>`; the cut is marked with `DIGEST_TRUNCATION_MARKER`. */
+export const DEFAULT_DIGEST_CHARS = 8000;
 export const DIGEST_TRUNCATION_MARKER = "\n…[memory digest truncated]";
 const DIGEST_ITEM_LIMIT = 100;
 
@@ -106,7 +107,7 @@ export async function searchMemoryHybrid(
   return parseHits(data);
 }
 
-/** Newest active memory items of the company (default 100), used by the digest and the memory page. */
+/** Newest active, unexpired memory items of the company (default 100), used by the digest and the memory page. */
 export async function listMemoryItems(db: DbClient, companyId: string, limit: number = DIGEST_ITEM_LIMIT): Promise<readonly MemoryItemRecord[]> {
   const id = UuidSchema.parse(companyId);
   const n = z.number().int().min(1).max(500).parse(limit);
@@ -115,6 +116,8 @@ export async function listMemoryItems(db: DbClient, companyId: string, limit: nu
     .select("id, kind, title, content, created_by_role, created_at")
     .eq("company_id", id)
     .eq("status", "active")
+    // PostgREST reserves "." and ":" inside or= values, so the timestamp is double-quoted.
+    .or(`valid_until.is.null,valid_until.gt."${new Date().toISOString()}"`)
     .order("created_at", { ascending: false })
     .limit(n);
   if (error) throw dbError("Could not list memory items", error);

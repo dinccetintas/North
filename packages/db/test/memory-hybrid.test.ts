@@ -158,7 +158,7 @@ describe("LRN-7 hybrid memory search", () => {
     expect(fullText.map((h) => h.department).sort()).toEqual([null, "sales"]);
   });
 
-  it("a retired or expired item is excluded from the full-text and the hybrid search, a retired one from the listing; a future expiry is not excluded", async () => {
+  it("a retired or expired item is excluded from the full-text and the hybrid search and from the listing (so from the digest); a future expiry is not excluded", async () => {
     const { owner, companyId } = await freshCompany("hybrid-retired");
     const [live, retired, expired, later] = await seed(companyId, [
       { kind: "learning", title: "Live", content: "The narwhal subject line works." },
@@ -178,7 +178,9 @@ describe("LRN-7 hybrid memory search", () => {
     expect(ids(await searchMemoryHybrid(owner.client, companyId, "something else entirely", axis(11))).sort()).toEqual(wanted);
     const listed = (await listMemoryItems(owner.client, companyId)).map((i) => i.id);
     expect(listed).toContain(live);
+    expect(listed).toContain(later);
     expect(listed).not.toContain(retired);
+    expect(listed).not.toContain(expired);
   });
 
   it("RLS: another owner finds nothing through either leg", async () => {
