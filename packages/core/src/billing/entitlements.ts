@@ -161,6 +161,17 @@ function project(entitlement: Entitlement, event: BillingEvent, now: Date): Enti
   }
 }
 
+/**
+ * An update or delete for a subscription other than the one the entitlement
+ * follows (a late delete of the previous subscription after a re-subscribe)
+ * must not touch the current one. `created` always adopts the new
+ * subscription; a trial with no subscription adopts whatever it sees first.
+ */
+function concernsAnotherSubscription(entitlement: Entitlement, event: BillingEvent): boolean {
+  if (event.type !== "customer.subscription.updated" && event.type !== "customer.subscription.deleted") return false;
+  return entitlement.stripeSubscriptionId !== null && event.data.object.id !== entitlement.stripeSubscriptionId;
+}
+
 type StatusFields = Pick<Entitlement, "status" | "cancelAt" | "endedAt" | "retentionUntil" | "purgeDue" | "periodStart" | "periodEnd" | "lastEventCreated">;
 const statusFields = (e: Entitlement): StatusFields => ({ status: e.status, cancelAt: e.cancelAt, endedAt: e.endedAt, retentionUntil: e.retentionUntil, purgeDue: e.purgeDue, periodStart: e.periodStart, periodEnd: e.periodEnd, lastEventCreated: e.lastEventCreated });
 
@@ -171,6 +182,7 @@ const statusFields = (e: Entitlement): StatusFields => ({ status: e.status, canc
  * `invoice.paid`), but never moves the status, the period or the end dates.
  */
 export function applyBillingEvent(entitlement: Entitlement, event: BillingEvent, now: Date): Entitlement {
+  if (concernsAnotherSubscription(entitlement, event)) return entitlement;
   const projected = project(entitlement, event, now);
   const older = entitlement.lastEventCreated !== null && event.created < entitlement.lastEventCreated;
   return Object.freeze(older ? { ...projected, ...statusFields(entitlement) } : { ...projected, lastEventCreated: event.created });

@@ -146,6 +146,21 @@ describe("BIL-1 entitlement projection: pure, ordered, never regressing", () => 
     expect(entitlementTransition(ended, back)).toBe("reactivated");
   });
 
+  it("an update or delete for a subscription the entitlement no longer follows changes nothing", () => {
+    const first = applyBillingEvent(trial, subscriptionEvent("customer.subscription.created"), now);
+    const ended = applyBillingEvent(first, subscriptionEvent("customer.subscription.deleted", { status: "canceled" }, unix("2026-11-10T11:59:00.000Z")), now);
+    const second = applyBillingEvent(ended, subscriptionEvent("customer.subscription.created", { id: "sub_2" }, unix("2026-11-12T08:00:00.000Z")), now);
+    expect(second).toMatchObject({ status: "active", stripeSubscriptionId: "sub_2" });
+    // A delete or cancellation of the old subscription, delivered late or replayed under a new event id, must not end the new one.
+    const lateDelete = applyBillingEvent(second, subscriptionEvent("customer.subscription.deleted", { status: "canceled" }, unix("2026-11-13T08:00:00.000Z")), now);
+    expect(lateDelete).toEqual(second);
+    const lateUpdate = applyBillingEvent(second, subscriptionEvent("customer.subscription.updated", { cancel_at_period_end: true }, unix("2026-11-13T08:00:00.000Z")), now);
+    expect(lateUpdate).toEqual(second);
+    // The followed subscription still applies, and a trial with no subscription adopts the first update it sees.
+    expect(applyBillingEvent(second, subscriptionEvent("customer.subscription.deleted", { id: "sub_2", status: "canceled" }, unix("2026-11-14T08:00:00.000Z")), now).status).toBe("ended");
+    expect(applyBillingEvent(trial, subscriptionEvent("customer.subscription.updated"), now)).toMatchObject({ status: "active", stripeSubscriptionId: "sub_1" });
+  });
+
   it("a Stripe status of unpaid, incomplete_expired or paused ends the entitlement; incomplete changes nothing", () => {
     const active = applyBillingEvent(trial, subscriptionEvent("customer.subscription.created"), now);
     for (const status of ["unpaid", "incomplete_expired", "paused"]) {
