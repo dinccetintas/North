@@ -11,7 +11,11 @@ export const MEMORY_RESULT_MAX_CHARS = 6000;
 /** Last thing in the results body when the cap cut off hits or part of one. */
 export const MEMORY_RESULTS_TRUNCATION_MARKER = "…[memory results truncated]";
 
-const HIT_ELLIPSIS = "…";
+/** Most characters of any one hit field that `stripDelimiters` ever scans, whatever the size of the stored row. */
+const RAW_FIELD_MAX_CHARS = 4 * MEMORY_HIT_MAX_CHARS;
+/** Most characters of a failure message handed to the agent. */
+const ERROR_MAX_CHARS = 300;
+const ELLIPSIS = "…";
 const NO_MATCH = "No matching memory.";
 
 /** One memory item returned by the host's search. */
@@ -37,11 +41,20 @@ function clip(text: string, max: number, ending: string): string {
   return text.slice(0, end) + ending;
 }
 
+/** Delimiter-free text of at most `RAW_FIELD_MAX_CHARS` scanned characters; clipping first is safe, a prefix of text cannot gain a delimiter. */
+function safeText(value: string): string {
+  return stripDelimiters(clip(value, RAW_FIELD_MAX_CHARS, ""));
+}
+
+/** Header field on one line: whitespace runs (newlines included) become one space, so it cannot start a second header. */
+function headerField(value: string): string {
+  return safeText(value).replace(/\s+/g, " ").trim();
+}
+
 function renderHit(hit: MemoryHit): string {
-  const kind = stripDelimiters(hit.kind);
-  const department = stripDelimiters(hit.department ?? "").trim() || "company";
-  const content = clip(stripDelimiters(hit.content), MEMORY_HIT_MAX_CHARS, HIT_ELLIPSIS);
-  return `## ${stripDelimiters(hit.title)} (${kind}, ${department})\n${content}`;
+  const department = headerField(hit.department ?? "") || "company";
+  const content = clip(safeText(hit.content), MEMORY_HIT_MAX_CHARS, ELLIPSIS);
+  return `## ${headerField(hit.title)} (${headerField(hit.kind)}, ${department})\n${content}`;
 }
 
 /**
@@ -68,7 +81,7 @@ export function memorySearchTool(input: AgentRunInput, deps: MemoryToolDeps) {
         const hits = await deps.memorySearch(input.companyId, text);
         return { content: [{ type: "text" as const, text: renderMemoryHits(hits) }] };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = clip(safeText(error instanceof Error ? error.message : String(error)), ERROR_MAX_CHARS, ELLIPSIS);
         return { content: [{ type: "text" as const, text: `memory_search failed: ${message}` }], isError: true };
       }
     },

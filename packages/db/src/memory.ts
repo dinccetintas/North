@@ -107,7 +107,7 @@ export async function searchMemoryHybrid(
   return parseHits(data);
 }
 
-/** Newest active, unexpired memory items of the company (default 100), used by the digest and the memory page. */
+/** Newest active, unexpired memory items of the company (default 100), used by the digest and the worker services. */
 export async function listMemoryItems(db: DbClient, companyId: string, limit: number = DIGEST_ITEM_LIMIT): Promise<readonly MemoryItemRecord[]> {
   const id = UuidSchema.parse(companyId);
   const n = z.number().int().min(1).max(500).parse(limit);

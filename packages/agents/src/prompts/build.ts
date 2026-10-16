@@ -20,11 +20,13 @@ export const SAFETY_RULES = `## Standing rules
 - You act only through the structured output and the tools you were given. You cannot lower an action's risk tier.
 - Never include credentials, tokens or internal file paths in artifacts, memory or summaries.`;
 
-const DELIMITER_TAG = /<\s*\/?\s*(company_memory|memory_results|instructions)\s*>/gi;
+// `[\s/]*` is one character class, so a long whitespace run after "<" is scanned once per "<". The tempting
+// `<\s*\/?\s*` has two adjacent `\s*` around an optional slash and backtracks quadratically on untrusted text.
+const DELIMITER_TAG = /<[\s/]*(company_memory|memory_results|instructions)\s*>/gi;
 
 /**
  * Removes delimiter tags (`company_memory`, `memory_results`, `instructions`; opening or closing, any case,
- * inner whitespace) from untrusted text so it cannot close or open a trusted section. Repeats until nothing
+ * inner whitespace, stray slashes) from untrusted text so it cannot close or open a trusted section. Repeats until nothing
  * is left to remove, because deleting a tag can join its neighbours into a new one (`<</x>/x>`).
  */
 export function stripDelimiters(text: string): string {

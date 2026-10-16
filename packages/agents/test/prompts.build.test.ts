@@ -77,6 +77,19 @@ describe("LRN-6 stripDelimiters and standing rules", () => {
     expect(stripDelimiters("<memory_<company_memory>results>")).toBe("");
   });
 
+  it("LRN-6 also removes a delimiter with extra slashes before its name", () => {
+    expect(stripDelimiters("a<//company_memory>b< / / instructions >c")).toBe("abc");
+  });
+
+  it("LRN-6 strips in linear time: a long whitespace run after '<' does not backtrack quadratically", () => {
+    const run = " ".repeat(50_000);
+    const inputs = [`<${run}company_memory>`, `<${run}`, `<${run}company_memory`, `<${run}/`.repeat(3)];
+    const started = performance.now();
+    const outputs = inputs.map((input) => stripDelimiters(input));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(outputs).toEqual(["", inputs[1], inputs[2], inputs[3]]);
+  });
+
   it("LRN-6 leaves other tags and text alone", () => {
     expect(stripDelimiters("<b>bold</b> memory_results <memory_resultsx>")).toBe("<b>bold</b> memory_results <memory_resultsx>");
   });
