@@ -1,4 +1,4 @@
-import { PAUSED_REASONS, type PausedReason } from "@north/core";
+import { PAUSED_REASONS, SenderIdentitySchema, type PausedReason, type SenderIdentity } from "@north/core";
 import { z } from "zod";
 import type { DbClient } from "./client";
 import { entitlementErrorFrom } from "./entitlements";
@@ -235,4 +235,32 @@ export function archiveCompany(db: DbClient, companyId: string): Promise<Company
 /** RET-1, worker only: a new subscription before the purge reverses the archive (`active`, switch off, reason and `archived_at` cleared). */
 export function unarchiveCompany(db: DbClient, companyId: string): Promise<CompanySummary> {
   return updateCompanyState(db, companyId, { status: "active", kill_switch_active: false }, "restore");
+}
+
+/**
+ * CMP-1: who the company is in the words the law wants at the foot of every
+ * outreach email, or null unless both the legal name and the postal address
+ * are set and the outreach rules would print them (an empty or too short
+ * value counts as unset, so the send is refused rather than footed badly).
+ * Null too for a company that is missing or not visible under RLS.
+ */
+export async function getSenderIdentity(db: DbClient, companyId: string): Promise<SenderIdentity | null> {
+  const id = z.uuid().parse(companyId);
+  const { data, error } = await db.from("companies").select("legal_name, postal_address").eq("id", id).maybeSingle();
+  if (error) throw dbError("Could not read the sender identity", error);
+  const identity = SenderIdentitySchema.safeParse({ legalName: data?.legal_name, postalAddress: data?.postal_address });
+  return identity.success ? Object.freeze(identity.data) : null;
+}
+
+/**
+ * CMP-1: sets the sender identity. The owner does this as themselves (the
+ * two columns are granted to owners, 0019); the worker may too. The identity
+ * is validated by the same schema the outreach rules read it with.
+ */
+export async function setSenderIdentity(db: DbClient, companyId: string, identity: SenderIdentity): Promise<void> {
+  const id = z.uuid().parse(companyId);
+  const parsed = SenderIdentitySchema.parse(identity);
+  const { data, error } = await db.from("companies").update({ legal_name: parsed.legalName, postal_address: parsed.postalAddress }).eq("id", id).select("id").maybeSingle();
+  if (error) throw dbError("Could not set the sender identity", error);
+  if (!data) throw new DbError(`Company ${id} not found or not yours to change`);
 }

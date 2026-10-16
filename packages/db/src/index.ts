@@ -35,5 +35,6 @@ export * from "./usage";
 export * from "./exports";
 export * from "./publicPages";
 export * from "./purge";
+export * from "./suppressions";
 export { generateEncryptionKey, sealSecret, openSecret, encryptionKey, type SealedSecret } from "./secrets";
 export type { Database, Json, Tables, TablesInsert, TablesUpdate } from "./types";

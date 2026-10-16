@@ -4,6 +4,7 @@ import { DbError } from "../src/errors";
 import { EXPORTS_BUCKET, exportStoragePath, requestExport } from "../src/exports";
 import { listUserStoragePaths, purgeOwner, PurgeRefusedError } from "../src/purge";
 import { recordAction } from "../src/actions";
+import { addSuppression } from "../src/suppressions";
 import { createOwnerWithCompany, deleteTestUser, endEntitlement, raw, service, type OwnedCompany } from "./fixtures";
 
 /** RET-1 (ADR 0016): the smoke-owner cleanup path the worker's purgeOwner and the harnesses follow: storage objects, the function, the auth user. */
@@ -15,7 +16,8 @@ describe("purge repository (the one delete path)", () => {
     owned = await createOwnerWithCompany("purge");
     witness = await createOwnerWithCompany("purge-witness");
     await createArtifact(service, { companyId: owned.companyId, kind: "prd", title: "The PRD", markdown: "# PRD", createdByRole: "strategy_product" });
-    await recordAction(service, { companyId: owned.companyId, taskId: null, agentRole: "research", kind: "research", tier: "K0", description: "Read the market", status: "executed" });
+    const read = await recordAction(service, { companyId: owned.companyId, taskId: null, agentRole: "research", kind: "research", tier: "K0", description: "Read the market", status: "executed" });
+    await addSuppression(service, { companyId: owned.companyId, email: "opted-out@example.test", reason: "opt_out", sourceActionId: read });
     await createArtifact(service, { companyId: witness.companyId, kind: "prd", title: "Witness PRD", markdown: "# Witness", createdByRole: "strategy_product" });
     await recordAction(service, { companyId: witness.companyId, taskId: null, agentRole: "research", kind: "research", tier: "K0", description: "Witness reads", status: "executed" });
   });
@@ -52,7 +54,7 @@ describe("purge repository (the one delete path)", () => {
       expect((await raw.storage.from(bucket).remove(names)).error).toBeNull();
     }
     const counts = await purgeOwner(service, owned.owner.id, "smoke");
-    expect(counts).toMatchObject({ companies: 1, artifacts: 1, actions: 1, theses: 1, credit_entries: 1, exports: 1, entitlements: 1, users: 1 });
+    expect(counts).toMatchObject({ companies: 1, artifacts: 1, actions: 1, theses: 1, credit_entries: 1, exports: 1, entitlements: 1, users: 1, suppressions: 1 });
     expect(Object.isFrozen(counts)).toBe(true);
     expect((await raw.auth.admin.deleteUser(owned.owner.id)).error).toBeNull();
     expect((await raw.from("companies").select("id").eq("id", owned.companyId)).data).toEqual([]);

@@ -646,10 +646,12 @@ export type Database = {
           created_at: string;
           id: string;
           kill_switch_active: boolean;
+          legal_name: string | null;
           name: string;
           onboarding_step: string;
           owner_id: string;
           paused_reason: string | null;
+          postal_address: string | null;
           public_page_enabled: boolean;
           sentry_project_slug: string | null;
           slug: string;
@@ -662,10 +664,12 @@ export type Database = {
           created_at?: string;
           id?: string;
           kill_switch_active?: boolean;
+          legal_name?: string | null;
           name: string;
           onboarding_step?: string;
           owner_id: string;
           paused_reason?: string | null;
+          postal_address?: string | null;
           public_page_enabled?: boolean;
           sentry_project_slug?: string | null;
           slug: string;
@@ -677,10 +681,12 @@ export type Database = {
           created_at?: string;
           id?: string;
           kill_switch_active?: boolean;
+          legal_name?: string | null;
           name?: string;
           onboarding_step?: string;
           owner_id?: string;
           paused_reason?: string | null;
+          postal_address?: string | null;
           public_page_enabled?: boolean;
           sentry_project_slug?: string | null;
           slug?: string;
@@ -1626,6 +1632,52 @@ export type Database = {
             columns: ["converted_task_id"];
             isOneToOne: false;
             referencedRelation: "tasks";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      suppressions: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          domain: string | null;
+          email: string;
+          id: string;
+          reason: string;
+          source_action_id: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          domain?: never;
+          email: string;
+          id?: string;
+          reason: string;
+          source_action_id?: string | null;
+        };
+        Update: {
+          company_id?: string;
+          created_at?: string;
+          domain?: never;
+          email?: string;
+          id?: string;
+          reason?: string;
+          source_action_id?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "suppressions_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "suppressions_source_action_id_fkey";
+            columns: ["source_action_id"];
+            isOneToOne: false;
+            referencedRelation: "actions";
             referencedColumns: ["id"];
           },
         ];
