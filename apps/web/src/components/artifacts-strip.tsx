@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { stripArtifacts } from "@/lib/artifact-strip";
 import { artifactKindLabel } from "@/lib/labels";
 
 export interface ArtifactStripItem {
@@ -6,13 +7,12 @@ export interface ArtifactStripItem {
   readonly kind: string;
   readonly title: string;
   readonly version: number;
+  readonly createdAt: string;
 }
 
-export const ARTIFACT_STRIP_LIMIT = 6;
-
-/** The latest artifacts, each linking to its page. */
+/** The latest artifacts (a recent incident report pinned first), each linking to its page. */
 export function ArtifactsStrip({ slug, artifacts }: { slug: string; artifacts: readonly ArtifactStripItem[] }) {
-  const latest = artifacts.slice(0, ARTIFACT_STRIP_LIMIT);
+  const latest = stripArtifacts(artifacts, new Date());
   return (
     <div data-testid="artifacts-strip">
       {latest.length === 0 ? (
