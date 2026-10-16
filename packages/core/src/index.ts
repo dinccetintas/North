@@ -34,3 +34,4 @@ export * from "./billing/dispatch";
 export * from "./export/types";
 export * from "./brief/portfolio";
 export * from "./public-page";
+export * from "./outreach/index";
