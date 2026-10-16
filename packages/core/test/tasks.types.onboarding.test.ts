@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentOutputSchema, PlanOutputSchema, TASK_OWNER, TASK_TYPES, outputJsonSchema } from "../src/tasks/types";
+import { AgentOutputSchema, MEMORY_KINDS, MemoryDraftSchema, PlanOutputSchema, TASK_OWNER, TASK_TYPES, outputJsonSchema } from "../src/tasks/types";
 import { ClarifyingQuestionsSchema, fallbackQuestions, GoalInputSchema, nextOnboardingStep, BudgetInputSchema } from "../src/onboarding";
 
 describe("task types and output contracts", () => {
@@ -18,6 +18,14 @@ describe("task types and output contracts", () => {
     expect(() => PlanOutputSchema.parse({ summary: "s", rationale: "r", tasks: [] })).toThrow();
     const plan = PlanOutputSchema.parse({ summary: "s", rationale: "r", tasks: [{ taskType: "market_report", title: "t", metricKey: "artifacts", expectedDelta: 1, costEstimateUsd: 0.5 }] });
     expect(plan.tasks[0]?.input).toBe("");
+  });
+
+  it("LRN-7 preference is a memory kind: the founder's standing preferences are stored and validated like any other memory", () => {
+    expect(MEMORY_KINDS).toContain("preference");
+    expect(MemoryDraftSchema.parse({ kind: "preference", title: "Tone", content: "Plain words." }).kind).toBe("preference");
+    expect(() => MemoryDraftSchema.parse({ kind: "rumour", title: "Tone", content: "Plain words." })).toThrow();
+    const out = AgentOutputSchema.parse({ summary: "s", artifacts: [], memory: [{ kind: "preference", title: "Tone", content: "Plain words." }] });
+    expect(out.memory[0]?.kind).toBe("preference");
   });
 
   it("produces a JSON schema per task type", () => {

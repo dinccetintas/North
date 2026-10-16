@@ -10,6 +10,9 @@ export interface MemoryHit {
   readonly kind: MemoryKind;
   readonly title: string;
   readonly content: string;
+  /** The staff department the item belongs to; null for company-wide memory. */
+  readonly department: string | null;
+  /** Higher is better: ts_rank for the full-text search, the fused RRF score for the hybrid one. */
   readonly rank: number;
 }
 
@@ -23,6 +26,8 @@ export interface MemoryItemRecord {
 }
 
 export const DEFAULT_SEARCH_LIMIT = 8;
+/** Size of a `gte-small` embedding, the `memory_items.embedding` column and the `search_memory_hybrid` argument. */
+export const EMBEDDING_DIMENSIONS = 384;
 export const DEFAULT_DIGEST_CHARS = 6000;
 export const DIGEST_TRUNCATION_MARKER = "\n…[memory digest truncated]";
 const DIGEST_ITEM_LIMIT = 100;
@@ -35,7 +40,18 @@ const MemoryItemRowSchema = z.object({
   created_by_role: z.string(),
   created_at: z.string(),
 });
-const MemoryHitRowSchema = z.object({ id: z.string(), kind: z.enum(MEMORY_KINDS), title: z.string(), content: z.string(), rank: z.number() });
+const MemoryHitRowSchema = z.object({
+  id: z.string(),
+  kind: z.enum(MEMORY_KINDS),
+  title: z.string(),
+  content: z.string(),
+  department: z.string().nullable(),
+  rank: z.number(),
+});
+const SearchQuerySchema = z.string().trim().min(1).max(500);
+const SearchLimitSchema = z.number().int().min(1).max(50);
+/** Finite numbers only (zod rejects NaN and Infinity), exactly one per embedding dimension. */
+const EmbeddingSchema = z.array(z.number()).length(EMBEDDING_DIMENSIONS);
 
 /** Persists memory drafts produced by an agent run; returns the new ids in input order. */
 export async function writeMemoryItems(
@@ -54,17 +70,43 @@ export async function writeMemoryItems(
   return Object.freeze(data.map((row) => row.id));
 }
 
-/** Ranked full-text search (title + content) through the `search_memory` SQL function. */
-export async function searchMemory(db: DbClient, companyId: string, query: string, limit: number = DEFAULT_SEARCH_LIMIT): Promise<readonly MemoryHit[]> {
-  const id = UuidSchema.parse(companyId);
-  const q = z.string().trim().min(1).max(500).parse(query);
-  const n = z.number().int().min(1).max(50).parse(limit);
-  const { data, error } = await db.rpc("search_memory", { p_company_id: id, p_query: q, p_limit: n });
-  if (error) throw dbError("Could not search memory", error);
-  return Object.freeze((data ?? []).map((row) => Object.freeze(MemoryHitRowSchema.parse(row))));
+function parseSearchArgs(companyId: string, query: string, limit: number): { readonly id: string; readonly q: string; readonly n: number } {
+  return { id: UuidSchema.parse(companyId), q: SearchQuerySchema.parse(query), n: SearchLimitSchema.parse(limit) };
 }
 
-/** Newest memory items of the company (default 100), used by the digest and the memory page. */
+function parseHits(rows: readonly unknown[] | null): readonly MemoryHit[] {
+  return Object.freeze((rows ?? []).map((row) => Object.freeze(MemoryHitRowSchema.parse(row))));
+}
+
+/** Ranked full-text search (title + content) through the `search_memory` SQL function; active, unexpired items only. */
+export async function searchMemory(db: DbClient, companyId: string, query: string, limit: number = DEFAULT_SEARCH_LIMIT): Promise<readonly MemoryHit[]> {
+  const { id, q, n } = parseSearchArgs(companyId, query, limit);
+  const { data, error } = await db.rpc("search_memory", { p_company_id: id, p_query: q, p_limit: n });
+  if (error) throw dbError("Could not search memory", error);
+  return parseHits(data);
+}
+
+/**
+ * Hybrid search (LRN-7): Reciprocal Rank Fusion of the full-text rank and the cosine rank of `embedding`
+ * through `search_memory_hybrid`. A null `embedding` (no embedder reachable) is the full-text `searchMemory`,
+ * so a caller never has to know whether the Edge Function is up.
+ */
+export async function searchMemoryHybrid(
+  db: DbClient,
+  companyId: string,
+  query: string,
+  embedding: readonly number[] | null,
+  limit: number = DEFAULT_SEARCH_LIMIT,
+): Promise<readonly MemoryHit[]> {
+  if (embedding === null) return searchMemory(db, companyId, query, limit);
+  const { id, q, n } = parseSearchArgs(companyId, query, limit);
+  const vector = EmbeddingSchema.parse(embedding);
+  const { data, error } = await db.rpc("search_memory_hybrid", { p_company_id: id, p_query: q, p_embedding: JSON.stringify(vector), p_limit: n });
+  if (error) throw dbError("Could not search memory", error);
+  return parseHits(data);
+}
+
+/** Newest active memory items of the company (default 100), used by the digest and the memory page. */
 export async function listMemoryItems(db: DbClient, companyId: string, limit: number = DIGEST_ITEM_LIMIT): Promise<readonly MemoryItemRecord[]> {
   const id = UuidSchema.parse(companyId);
   const n = z.number().int().min(1).max(500).parse(limit);
@@ -72,6 +114,7 @@ export async function listMemoryItems(db: DbClient, companyId: string, limit: nu
     .from("memory_items")
     .select("id, kind, title, content, created_by_role, created_at")
     .eq("company_id", id)
+    .eq("status", "active")
     .order("created_at", { ascending: false })
     .limit(n);
   if (error) throw dbError("Could not list memory items", error);

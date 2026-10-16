@@ -133,3 +133,67 @@ describe("M7 schema: suppressions and sender identity (CMP-1)", () => {
     expect((await raw.from("suppressions").delete().eq("id", witnessRow)).error?.message).toMatch(/append-only/);
   });
 });
+
+/**
+ * 0021_m7_memory_embeddings.sql (LRN-7): the new memory_items columns and
+ * their checks; the queue's depth function is a service-role-only door.
+ */
+describe("M7 schema: memory items, embeddings and the embedding queue (LRN-7)", () => {
+  let owned: OwnedCompany;
+  let ownerRaw: RawClient;
+
+  beforeAll(async () => {
+    owned = await createOwnerWithCompany("schema-m7-memory");
+    ownerRaw = owned.owner.client as unknown as RawClient;
+  });
+
+  afterAll(async () => {
+    await deleteTestUser(owned.owner);
+  });
+
+  const memory = (overrides: Record<string, unknown> = {}) => ({ company_id: owned.companyId, kind: "learning", title: "A lesson", content: "Short and plain.", ...overrides });
+  const unit = (i: number): string => JSON.stringify(Array.from({ length: 384 }, (_, j) => (j === i ? 1 : 0)));
+
+  it("LRN-7 memory_items: a new row is active, has no department, no expiry, no embedding and an empty provenance", async () => {
+    const { data, error } = await raw.from("memory_items").insert(memory()).select("status, department, valid_until, embedding, provenance").single();
+    expect(error).toBeNull();
+    expect(data).toEqual({ status: "active", department: null, valid_until: null, embedding: null, provenance: {} });
+  });
+
+  it("LRN-7 memory_items: status is active or retired, and the kind list gained preference without losing the five", async () => {
+    expect((await raw.from("memory_items").insert(memory({ status: "retired" }))).error).toBeNull();
+    expect((await raw.from("memory_items").insert(memory({ status: "archived" }))).error?.message).toMatch(/memory_items_status_check/);
+    for (const kind of ["thesis", "persona", "decision", "learning", "doc", "preference"]) {
+      expect((await raw.from("memory_items").insert(memory({ kind }))).error).toBeNull();
+    }
+    expect((await raw.from("memory_items").insert(memory({ kind: "rumour" }))).error?.message).toMatch(/memory_items_kind_check/);
+    expect((await raw.from("memory_items").insert(memory({ provenance: { source: "retro", task_id: "t1" }, department: "growth" }))).error).toBeNull();
+  });
+
+  it("LRN-7 memory_items: department is 1 to 60 characters and provenance is a JSON object of at most 8 KB", async () => {
+    expect((await raw.from("memory_items").insert(memory({ department: "x".repeat(60) }))).error).toBeNull();
+    expect((await raw.from("memory_items").insert(memory({ department: "" }))).error?.message).toMatch(/memory_items_department_check/);
+    expect((await raw.from("memory_items").insert(memory({ department: "x".repeat(61) }))).error?.message).toMatch(/memory_items_department_check/);
+    expect((await raw.from("memory_items").insert(memory({ provenance: ["retro"] }))).error?.message).toMatch(/memory_items_provenance_check/);
+    expect((await raw.from("memory_items").insert(memory({ provenance: { note: "y".repeat(9000) } }))).error?.message).toMatch(/memory_items_provenance_check/);
+    expect((await raw.from("memory_items").insert(memory({ provenance: { note: "y".repeat(4000) } }))).error).toBeNull();
+  });
+
+  it("LRN-7 memory_items: the embedding is exactly 384 numbers and the owner cannot write it", async () => {
+    const { data } = await raw.from("memory_items").insert(memory()).select("id").single();
+    const id = (data as { id: string }).id;
+    expect((await raw.from("memory_items").update({ embedding: unit(0) }).eq("id", id)).error).toBeNull();
+    expect((await raw.from("memory_items").update({ embedding: JSON.stringify([1, 0, 0]) }).eq("id", id)).error?.message).toMatch(/384 dimensions/);
+    const stored = await raw.from("memory_items").select("embedding").eq("id", id).single();
+    expect(JSON.parse((stored.data as { embedding: string }).embedding)).toHaveLength(384);
+    expect((await ownerRaw.from("memory_items").update({ embedding: unit(1) }).eq("id", id).select("id")).error?.code).toBe("42501");
+  });
+
+  it("LRN-7 embedding_queue_depth: a count for the service role, permission denied for owners and signed-out callers", async () => {
+    const depth = await raw.rpc("embedding_queue_depth");
+    expect(depth.error).toBeNull();
+    expect(typeof depth.data).toBe("number");
+    expect((await ownerRaw.rpc("embedding_queue_depth")).error?.code).toBe("42501");
+    expect((await (anon as unknown as RawClient).rpc("embedding_queue_depth")).error?.code).toBe("42501");
+  });
+});

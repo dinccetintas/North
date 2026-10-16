@@ -34,7 +34,7 @@ describe("memory repository (MEM)", () => {
   it("searchMemory finds an item by a word in its content, ranked", async () => {
     const hits = await searchMemory(owned.owner.client, owned.companyId, "zebra");
     expect(hits.length).toBe(1);
-    expect(hits[0]).toMatchObject({ kind: "learning", title: "Pricing signal" });
+    expect(hits[0]).toMatchObject({ kind: "learning", title: "Pricing signal", department: null });
     expect(hits[0]?.rank).toBeGreaterThan(0);
     expect(await searchMemory(owned.owner.client, owned.companyId, "spaceship")).toEqual([]);
     await expect(searchMemory(owned.owner.client, owned.companyId, "   ")).rejects.toThrow();

@@ -126,7 +126,7 @@ export const OutputFilesSchema = z
     message: `files exceed ${MAX_OUTPUT_TOTAL_BYTES} bytes in total`,
   });
 
-export const MEMORY_KINDS = ["thesis", "persona", "decision", "learning", "doc"] as const;
+export const MEMORY_KINDS = ["thesis", "persona", "decision", "learning", "doc", "preference"] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
 
 export const ArtifactDraftSchema = z.object({

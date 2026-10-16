@@ -1276,34 +1276,47 @@ export type Database = {
           content: string;
           created_at: string;
           created_by_role: string;
-          embedding: string | null;
+          department: string | null;
+          embedding: unknown;
           id: string;
           kind: string;
+          provenance: NonNullable<Json>;
           search: unknown;
+          status: string;
           title: string;
+          valid_until: string | null;
+          memory_embedding_input: string | null;
         };
-        ComputedFields: never;
+        ComputedFields: "memory_embedding_input";
         Insert: {
           company_id: string;
           content: string;
           created_at?: string;
           created_by_role?: string;
-          embedding?: string | null;
+          department?: string | null;
+          embedding?: unknown;
           id?: string;
           kind: string;
+          provenance?: NonNullable<Json>;
           search?: never;
+          status?: string;
           title: string;
+          valid_until?: string | null;
         };
         Update: {
           company_id?: string;
           content?: string;
           created_at?: string;
           created_by_role?: string;
-          embedding?: string | null;
+          department?: string | null;
+          embedding?: unknown;
           id?: string;
           kind?: string;
+          provenance?: NonNullable<Json>;
           search?: never;
+          status?: string;
           title?: string;
+          valid_until?: string | null;
         };
         Relationships: [
           {
@@ -1962,6 +1975,10 @@ export type Database = {
         Args: { p_ref: string; p_user_id: string };
         Returns: string;
       };
+      embedding_queue_depth: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
       first_contact_addresses: { Args: { p_payload: Json }; Returns: string[] };
       grant_trial_entitlement: {
         Args: { p_user_id: string };
@@ -1977,6 +1994,15 @@ export type Database = {
       };
       lock_outreach_held: {
         Args: { p_addresses: string[]; p_company: string };
+        Returns: string;
+      };
+      memory_embedding_input: {
+        Args: {
+          m: Omit<
+            Database["public"]["Tables"]["memory_items"]["Row"],
+            Database["public"]["Tables"]["memory_items"]["ComputedFields"]
+          >;
+        };
         Returns: string;
       };
       open_first_contact_card: {
@@ -2009,6 +2035,24 @@ export type Database = {
         Args: { p_company_id: string; p_limit?: number; p_query: string };
         Returns: {
           content: string;
+          department: string;
+          id: string;
+          kind: string;
+          rank: number;
+          title: string;
+        }[];
+      };
+      search_memory_hybrid: {
+        Args: {
+          p_company_id: string;
+          p_embedding: unknown;
+          p_limit?: number;
+          p_query: string;
+          p_rrf_k?: number;
+        };
+        Returns: {
+          content: string;
+          department: string;
           id: string;
           kind: string;
           rank: number;
