@@ -170,6 +170,45 @@ export type Database = {
           },
         ];
       };
+      agent_session_entries: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          entry: NonNullable<Json>;
+          id: number;
+          seq: number;
+          session_id: string;
+          subpath: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          entry: NonNullable<Json>;
+          id?: never;
+          seq: number;
+          session_id: string;
+          subpath?: string;
+        };
+        Update: {
+          company_id?: string;
+          created_at?: string;
+          entry?: NonNullable<Json>;
+          id?: never;
+          seq?: number;
+          session_id?: string;
+          subpath?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "agent_session_entries_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "companies";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       agents: {
         Row: {
           company_id: string;
