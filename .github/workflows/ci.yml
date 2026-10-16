@@ -22,9 +22,11 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r lint
       - run: pnpm -r test
+      - run: pnpm test:scripts
+      # ADR 0015: the web may read NEXT_PUBLIC_SENTRY_DSN (a public DSN), so SENTRY_DSN is matched only when no `_` precedes it.
       - name: Worker-only secrets never appear in the web app
         run: |
-          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|SENTRY_DSN" apps/web/src
+          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_CONNECT_CLIENT_SECRET|LANGFUSE_SECRET_KEY|(^|[^_])SENTRY_DSN" apps/web/src
       - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
         run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
       - name: Worker image carries no env files, workspaces or sandbox sites
@@ -35,4 +37,67 @@ jobs:
         run: pnpm test:integration
         env:
           REQUIRE_INTEGRATION: "1"
+      - name: Worker integration test (the purge against the stack, ADR 0016)
+        run: |
+          eval "$(cd packages/db && npx supabase status -o env | sed -n 's/^API_URL=/export SUPABASE_URL=/p; s/^SERVICE_ROLE_KEY=/export SUPABASE_SERVICE_ROLE_KEY=/p')"
+          pnpm --filter @north/worker exec vitest run test/purge.test.ts
+        env:
+          REQUIRE_INTEGRATION: "1"
       - run: pnpm smoke
+
+  # ADR 0015: the whole proof in CI, sandbox + mock, no hosted service and no key: every smoke (M1–M6) and the Playwright flows.
+  e2e:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      INTEGRATIONS_MODE: sandbox
+      AGENT_RUNTIME: mock
+      INNGEST_DEV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start local Supabase
+        run: pnpm db:start
+      - name: Env files for the local stack (sandbox + mock; the web gets public values only)
+        run: |
+          status="$(cd packages/db && npx supabase status -o env)"
+          val() { printf '%s\n' "$status" | sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" | head -1; }
+          url="$(val API_URL)"; anon="$(val ANON_KEY)"; service="$(val SERVICE_ROLE_KEY)"
+          echo "::add-mask::$service"
+          printf 'NEXT_PUBLIC_APP_URL=http://localhost:3100\nNEXT_PUBLIC_SUPABASE_URL=%s\nNEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=%s\nINNGEST_DEV=1\nINTEGRATIONS_MODE=sandbox\n' "$url" "$anon" > apps/web/.env.local
+          printf 'NEXT_PUBLIC_APP_URL=http://localhost:3100\nSUPABASE_URL=%s\nSUPABASE_SERVICE_ROLE_KEY=%s\nINNGEST_DEV=1\nINTEGRATIONS_MODE=sandbox\nAGENT_RUNTIME=mock\nWORKER_PORT=3101\n' "$url" "$service" > apps/worker/.env
+          { echo "SUPABASE_URL=$url"; echo "SUPABASE_ANON_KEY=$anon"; echo "SUPABASE_SERVICE_ROLE_KEY=$service"; } >> "$GITHUB_ENV"
+      - name: Start web, worker and the Inngest Dev Server in the background
+        run: nohup pnpm dev > dev.log 2>&1 &
+      - name: Wait for the three health URLs
+        run: |
+          for url in http://localhost:3101/health http://localhost:8288 http://localhost:3100/api/health; do
+            for i in $(seq 1 120); do curl -fsS -o /dev/null "$url" && break; sleep 2; done
+            curl -fsS -o /dev/null "$url" || { echo "not up: $url"; tail -n 200 dev.log; exit 1; }
+          done
+      - run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      - name: Validate (typecheck, lint, unit, integration, every smoke M1–M6)
+        run: pnpm validate
+        env:
+          REQUIRE_INTEGRATION: "1"
+          REQUIRE_SMOKE_M1: "1"
+      - run: pnpm e2e
+        env:
+          CI: "1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-evidence
+          if-no-files-found: ignore
+          path: |
+            apps/web/playwright-report
+            docs/evidence/M6/ci-*.png
+            dev.log
