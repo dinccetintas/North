@@ -194,7 +194,8 @@ and 6 screenshot judgments through Batch.
 | **Total (budget with margin)** | ~4M / 0.3M / 0.2M | **$5.34 ($7)** | **$2.31 ($2.75)** | **$0.40 ($0.45)** |
 
 Engineering is about 70% of the production cost: output tokens at $20/MTok, with effort
-`xhigh` on the `coder` alias. The role caps bound a run at $18.50 in the worst case.
+`xhigh` on the `coder` alias. The `max_budget_usd` caps of the five roles in this journey
+bound a run at $16.50 in the worst case.
 
 ### 4. Staging topology
 
@@ -229,9 +230,9 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
 
 | Provider | Safe test surface | What others do | Watch out |
 | --- | --- | --- | --- |
-| Meta Ads + Instagram | Sandbox ad account: Marketing API → Tools; one per app; no funding source; ads never deliver [45]. Standard Access for app role holders, no App Review [44] | System-user token on the sandbox account; Instagram publishing to a private test business account owned by the founder | Calls at any access level hit production data [43]. A wrong account id spends real money, hence the fence. Advanced Access needs Business Verification: "a few days", up to weeks; community reports exceed 30 days [47][60] |
+| Meta Ads + Instagram | Sandbox ad account: Marketing API → Tools; one per app; no funding source; ads never deliver [45]. Standard Access for app role holders, no App Review [44] | System-user token on the sandbox account; Instagram publishing to a private test business account owned by the founder; test users get any permission while the app is in Development mode [46] | Calls at any access level hit production data [43]. A wrong account id spends real money, hence the fence. Advanced Access needs Business Verification: "a few days", up to weeks; community reports exceed 30 days [47][60] |
 | Stripe | General sandboxes, one for CI separate from local; test clocks for billing [48][49] | `stripe sandbox create` provisions keys for agents [48] | Connect platform sandboxes cannot link to connected-account sandboxes [48], so OUT-2 Connect read stays a manual test |
-| Gmail (send) | New Google account as the founder's test inbox; OAuth app in Testing with ≤100 test users [51] | Send only to fenced recipients (Resend receiving addresses) | Consent and refresh token expire every 7 days in Testing [51]. `gmail.send` is sensitive, `gmail.readonly` restricted [52]. Publishing needs verification |
+| Gmail (send) | New Google account as the founder's test inbox; OAuth app in Testing with ≤100 test users [51] | Send only to fenced recipients (Resend receiving addresses) | Consent and refresh token expire every 7 days in Testing [51]. `gmail.readonly` is restricted [52]; `gmail.send` is reported as sensitive (unverified). Publishing needs verification |
 | GitHub | Free org `north-e2e-…` with unlimited private repos [42] | Staging OAuth app scoped to the test org; repos deleted by the weekly purge | OAuth consent with 2FA cannot be automated. The founder consents once on staging, and the encrypted token (ADR 0008) persists |
 | Vercel (user's deploy target) | Founder's Pro team, projects prefixed `e2e-` | Delete projects in the weekly purge | A Hobby account for test sites is a gray zone under the non-commercial rule [22] |
 | Google Ads | Test manager account + test client accounts; pending developer token works; no billing; no metrics [53][54] | Same OAuth client as production | Up to 50 test accounts; deleted after a year idle [53] |
@@ -330,7 +331,7 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
 | 1 | Anthropic workspace `north-test`, API key, spend limit $50 | Console → Workspaces, Billing [3] | usage | minutes; new orgs may start in a lower Evaluation tier [3] | GitHub env `staging`/`acceptance`, Fly staging `ANTHROPIC_API_KEY` |
 | 2 | Vercel staging environment, `VERCEL_TOKEN`, automation bypass secret | Project → Environments; Deployment Protection [20][23] | in Pro | minutes | GitHub env; Playwright env `VERCEL_AUTOMATION_BYPASS_SECRET` |
 | 3 | Supabase `north-staging`: URL, publishable key, service role key, DB password, `SUPABASE_ACCESS_TOKEN` | new free org [25] | $0 | minutes | Vercel staging (public), Fly staging, GitHub env |
-| 4 | Fly app + `FLY_API_TOKEN` (deploy token for that app) | `fly launch`, `fly tokens create deploy` | ~$6 | minutes; card required [30] | GitHub env |
+| 4 | Fly app + `FLY_API_TOKEN` (deploy token for that app) | `fly launch`, `fly tokens create deploy` | ~$6 | minutes; no free tier [30] | GitHub env |
 | 5 | Inngest staging event + signing keys | Inngest environments [32] | $0 | minutes | Vercel staging, Fly staging |
 | 6 | Langfuse staging keys; Sentry DSNs (reuse) | langfuse.com, sentry.io | $0 | minutes | Fly staging |
 | 7 | Resend: verified `staging.<domain>`, API key, SMTP creds for Supabase, receiving address | resend.com [35][36] | $0 | DNS propagation, hours | Fly staging, Supabase Auth SMTP, GitHub env (`E2E_RESEND_KEY`) |
@@ -349,8 +350,8 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
 - **Spend.** A prompt regression or runaway loop can spend fast. Back the guard and the role
   caps with the server-enforced workspace limit [3]. The SDK's own cost figure is an estimate
   [4].
-- **Real-world side effects.** Meta sandbox calls go to production endpoints [43], and a
-  test could approve its own K2 card. The fence must default-deny, and acceptance must use a
+- **Real-world side effects.** Marketing API calls at any access level run against
+  production data [43], and a test could approve its own K2 card. The fence must default-deny, and acceptance must use a
   fresh company so the 3-card quota (CLAUDE.md #4) holds on wall-clock time. The staging
   clock must stay `wall`, as the production check asserts.
 - **Cassette drift and leakage.** Cassettes hold prompts and outputs. They contain only
@@ -368,7 +369,7 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
   start fits Inngest's request timeout and the kill switch still stops a live Agent SDK
   subprocess within 5 s (a T3 assertion).
 - **Pricing claims to verify.** Higgsfield plan prices and Inngest Free environments are
-  unverified. The Fly 4 GB shared-CPU price is derived, not published [30].
+  unverified; the Fly hourly figure applies our own ams markup to the published price [30].
 
 ## Open questions for the founder
 
@@ -379,8 +380,8 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
 4. Is a Haiku-only nightly plus a biweekly Sonnet run enough fidelity, or should the nightly
    use the `staging` profile ($80+/month)?
 5. Should staging track `main` on every merge, or a `staging` branch you promote?
-6. Which identity owns the Meta, Google and GitHub test accounts? Meta requires a real
-   person behind the developer account.
+6. Which identity owns the Meta, Google and GitHub test accounts: you personally, or a
+   North company identity?
 7. May golden cassettes (synthetic prompts and outputs) be committed to the repo?
 8. What is the monthly Higgsfield credit cap, and is video generation in scope for nightly
    runs or only at acceptance?
