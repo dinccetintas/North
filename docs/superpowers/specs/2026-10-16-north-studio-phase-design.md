@@ -1,11 +1,12 @@
 # North studio phase (M7-M13): design
 
-Status: design approved by the founder on 2026-10-16 in conversation; this written spec
-awaits the founder's review. Inputs: the founder's brief of 2026-10-16, four rounds of
-answers (section 2), and seven research documents in `docs/research/`
+Status: design approved by the founder on 2026-10-16 in conversation; the continuous
+learning loop (section 5.11) was added the same day at the founder's request; this
+written spec awaits the founder's review. Inputs: the founder's brief of 2026-10-16, five
+rounds of answers (section 2), and eight research documents in `docs/research/`
 (`agent-harness-best-practices.md`, `startup-playbook-and-journey.md`,
 `dept-design-frontend.md`, `dept-engineering.md`, `dept-marketing.md`, `dept-sales.md`,
-`real-testing-strategy.md`). Those documents hold the sources; this spec holds the
+`real-testing-strategy.md`, `continuous-learning-and-memory.md`). Those documents hold the sources; this spec holds the
 decisions. Base architecture: `docs/superpowers/specs/2026-10-14-north-architecture-design.md`.
 
 ## 1. Intent
@@ -22,6 +23,10 @@ founder's verdict is that the staff is not yet good enough to make a founder suc
   flowing back into company memory.
 - Quality is proven by real tests: Playwright driving the deployed app like a real
   user, with real Claude, not fixtures. "Done" means the founder logs in and it works.
+- Agents, departments and the company must learn. What separates a day-old company
+  from a ten-year-old one is the experience of its staff, so every outcome, critique,
+  review answer and failure must become a lesson the next run can use, and only
+  companies that apply what they learned survive.
 
 Success for this phase:
 
@@ -34,6 +39,9 @@ Success for this phase:
   revision after at most two comment rounds, in at least 70% of review items.
 - One full founder journey (idea to live site to campaign draft) costs at most $8 of
   Claude on the production profile, and dev/test spend stays under $100 a month.
+- Learning is measured: nightly with-and-without-lessons runs on the golden tasks show a
+  positive delta for every department with active lessons, and no lesson whose harmful
+  count exceeds its helpful count stays active.
 
 ## 2. Founder decisions (2026-10-16)
 
@@ -58,6 +66,7 @@ Success for this phase:
 | Journey | Validation before building: the first 24 hours produce evidence about customers, not a PRD and an investor deck. This changes M1's acceptance. |
 | Waitlist | In the user's own Supabase project. |
 | Review budget | 5 items and 10 minutes a day, two digests, a 24-hour default. |
+| Learning | A continuous learning loop at three scopes: company, department and cross-company playbooks. Built on pgvector in the user's Supabase, no memory library. Cross-company sharing is off by default and asked in one line at onboarding. Founder comments and preferences become active lessons at once, with undo. Departments read each other's lessons inside a company. Tactics expire after 90 days unless renewed by helpful applications. |
 
 ## 3. What the research changed
 
@@ -84,6 +93,16 @@ Success for this phase:
 - **Budget fits.** About $45 of Claude a month covers per-PR smoke runs, nightly staging
   runs and two acceptance runs, if tests use cheaper model profiles and replay recorded
   runs.
+- **No memory library fits.** Every hosted memory service and every open-source option
+  either leaves the user's Supabase, owns its own table with row-level security off,
+  needs a second database, or is no longer maintained. The products that ship learning
+  in 2026 share one shape: short records with provenance, an index loaded every session,
+  the rest fetched on demand, and an offline consolidation a human can review. North
+  copies the shape on pgvector. The literature agrees on the mechanism (a short lesson
+  distilled from a trajectory plus its outcome, stored with evidence, retrieved by task,
+  counted when it helps) and on the failure modes: self-rewritten playbooks collapse,
+  under 0.1% poisoned records can steer an agent, and no published guidance lets an agent
+  edit its own instructions without a human in the loop.
 
 ## 4. Approach and roadmap
 
@@ -94,12 +113,12 @@ then departments in the founder's order.
 
 | Milestone | Scope | Acceptance (T4 live, on staging) |
 | --- | --- | --- |
-| M7 Ground truth | SEC-1/2, CMP-1, Meta version, model profiles and test budget guard, model gateway with record/replay, real-Claude smoke per PR, staging, test-account fence, nightly journey | Today's journey (sign up, idea, research, PRD, site, campaign draft, kill switch) runs on staging with real Claude; a gap report lists what is weak, with evidence |
-| M8 Studio | Skill library and lock, persona catalog and team proposal, studio loop with critic, variants, review queue, comments and versions, live work view, agent chat, validation-first onboarding order | A brand kit arrives as 3 variants with critic scores; the founder picks one, pins two comments, gets a new version with a diff; a chat preference lands in memory; cards stay at most 3 |
-| M9 Design + Frontend | Brand Designer, Art Director, Frontend Engineer, Motion & 3D Engineer, Design Critic; engineering sandbox; Supabase connection; Next.js landing with waitlist | From an idea: real SVG logo files, 3 site directions with screenshots, a pick, a build in the user's repo, critic gates green, go-live card, live URL, a test signup row found in the user's Supabase |
-| M10 Research + Strategy | ICP options, assumption map with pre-set thresholds, interview kit and synthesis, positioning, pricing test, demand readout, journey stage strip, gate context on K2 cards | A company cannot reach the go-live card without a readout against its own thresholds; interview evidence only from real calendar events, notes or replies |
-| M11 Marketing | Creative pipeline (Higgsfield on the user's account, Recraft trials, Remotion), Meta paused-first campaigns, Instagram, TikTok drafts, YouTube with vidIQ, SEO briefs, LinkedIn/X, marketing critic | A creative set is generated, critiqued, picked, uploaded paused to the Meta sandbox ad account, previewed on the K2 card, and started on approval; disclosure flags set |
-| M12 Sales | Apollo, Hunter, Exa and email verification behind North tools, deliverability guard, region rule sets, sequences, pipeline, Cal.com | A verified, compliant first-contact batch to test inboxes; a reply moves the lead; an opt-out writes a suppression; a booking moves it to meeting |
+| M7 Ground truth | SEC-1/2, CMP-1, Meta version, model profiles and test budget guard, model gateway with record/replay, real-Claude smoke per PR, staging, test-account fence, nightly journey, memory as data and the in-database embedding pipeline (LRN-6, LRN-7) | Today's journey (sign up, idea, research, PRD, site, campaign draft, kill switch) runs on staging with real Claude; a gap report lists what is weak, with evidence |
+| M8 Studio | Skill library and lock, persona catalog and team proposal, studio loop with critic, variants, review queue, comments and versions, live work view, agent chat, validation-first onboarding order, the lesson model, hot-path extractors, the retrieval contract, the Design retro, the Memory screen and the learning evals (LRN-1..5, LRN-8, LRN-10) | A brand kit arrives as 3 variants with critic scores; the founder picks one, pins two comments, gets a new version with a diff; a chat preference lands in memory and the next brand run receives it as a lesson; a week later the Design retro proposes lessons with evidence; cards stay at most 3 |
+| M9 Design + Frontend | Brand Designer, Art Director, Frontend Engineer, Motion & 3D Engineer, Design Critic; engineering sandbox; Supabase connection; Next.js landing with waitlist; persona brief lines and rubric overrides derived from lessons (LRN-9) | From an idea: real SVG logo files, 3 site directions with screenshots, a pick, a build in the user's repo, critic gates green, go-live card, live URL, a test signup row found in the user's Supabase |
+| M10 Research + Strategy | ICP options, assumption map with pre-set thresholds, interview kit and synthesis, positioning, pricing test, demand readout, journey stage strip, gate context on K2 cards; the Research retro; the cross-company playbook design (LRN-11) | A company cannot reach the go-live card without a readout against its own thresholds; interview evidence only from real calendar events, notes or replies |
+| M11 Marketing | Creative pipeline (Higgsfield on the user's account, Recraft trials, Remotion), Meta paused-first campaigns, Instagram, TikTok drafts, YouTube with vidIQ, SEO briefs, LinkedIn/X, marketing critic; the Marketing retro; the first North playbook entries after review | A creative set is generated, critiqued, picked, uploaded paused to the Meta sandbox ad account, previewed on the K2 card, and started on approval; disclosure flags set |
+| M12 Sales | Apollo, Hunter, Exa and email verification behind North tools, deliverability guard, region rule sets, sequences, pipeline, Cal.com; the Sales retro; sales-source lessons never promoted cross-company (LRN-12) | A verified, compliant first-contact batch to test inboxes; a reply moves the lead; an opt-out writes a suppression; a booking moves it to meeting |
 | M13 Thirty-day live run | The founder's own idea (the GCC Function Health-style app) on production for 30 days | The SPEC M6 acceptance, now with the studio: decisions and reviews only, measured in the ledger |
 
 Each milestone gets `docs/plans/M<n>.md` with its acceptance test before code starts
@@ -295,16 +314,115 @@ New migrations from `0019`; RLS on every table; append-only tables reject update
 | `critiques` (append-only) | M8 | artifact version, rubric id and version, scores, hard results, tool evidence paths, model alias |
 | `agent_run_events` (append-only) | M8 | section 5.6 |
 | `agent_threads`, `agent_messages`; `memory_items.kind` + `preference` | M8 | section 5.7 |
+| `memory_items`: `department`, `embedding halfvec(384)`, `search`, `provenance`, `status`, `valid_until`, kind `preference`; the never-written `vector(1536)` column dropped | M7 | section 5.11 |
+| `lessons`; `lesson_events`, `lesson_applications` (append-only); `rubric_overrides`; `companies.share_learnings` | M8 | section 5.11 |
+| `north.playbook_entries`, `north.playbook_candidates` (append-only) | M10 | no `company_id`; section 5.11 |
 | `connections.kind` `oauth|api_key` | M11 | pasted keys |
 | `lead_verifications`, `pipeline_events` (append-only); lead `country`, `source_provider`, `source_url`, `signal`, `lawful_basis` | M12 | sales |
 
-New task types: `assumption_map`, `interview_kit` (M8); `design_directions`,
+New task types: `assumption_map`, `interview_kit`, `department_retro` (M8); `design_directions`,
 `design_critique`, `revise_artifact` (M8-M9; `screen_designs` is replaced);
 `interview_synthesis`, `positioning`, `pricing_test`, `demand_readout` (M10);
 `creative_brief`, `ad_variant_set`, `video_script`, `content_calendar`, `seo_brief`,
 `critic_report` (M11); `reply_triage`, `pipeline_review` (M12). New action kinds:
 `generation.spend`, `ads.creative.upload` (K1, paused objects),
 `social.upload.draft` (K1), `video.metadata.update` (K1 inside an approved plan).
+
+### 5.11 Continuous learning and memory (LRN-1..12)
+
+What North learns is the **lesson**, not the transcript: a short statement with a
+scope, a kind, at least one evidence reference that already exists in North's tables,
+a code-computed confidence, an expiry, and counts of the runs it helped and hurt. No
+memory library is adopted (section 3); everything is pgvector in the user's Supabase
+under RLS, in `packages/db`, with the pure rules in `packages/core/src/learning/`.
+
+**Three scopes.**
+
+| Scope | Who reads it | Who writes it | Crosses companies |
+| --- | --- | --- | --- |
+| Company | every persona of that company | extractors, retros, the founder | never |
+| Department | every persona of that company, the owning department ranked first | that department's retro and critic, the founder | never |
+| North playbook | every persona, read-only, as a separate section; a company can turn it off | the monthly promotion job plus North review | only as aggregated, scrubbed patterns from opted-in companies |
+
+**Data model (migration 0019+).** `lessons` (`scope`, `department`, `persona`,
+`task_types`, `kind` in `preference|fact|rule|tactic|anti_pattern|rubric_weight`,
+`statement` of at most 400 characters, `rationale`, `evidence` as typed references a SQL
+function checks against the company, `confidence`, `source` in
+`retro|review|ledger|escalation|chat|founder|playbook`, `status` in
+`candidate|active|superseded|retired`, `supersedes`, `valid_from`, `valid_until`,
+`embedding halfvec(384)`, a generated `search` tsvector). Content is immutable; only
+`status` and `valid_until` change, through `lesson_transition()`, which also appends to
+`lesson_events`. `lesson_applications` (append-only) records which run received which
+lesson and, later, the outcome `helpful|harmful|neutral` with its reference.
+`rubric_overrides` holds founder-approved weight changes per rubric criterion with the
+lesson and review item that caused them. `memory_items` gains `department`, an
+embedding, provenance, status and the kind `preference`, and loses the never-written
+1536-dimension column. `companies.share_learnings` defaults to false. Playbooks live in a
+separate `north` schema with no `company_id`: `playbook_entries` (versioned, reviewed)
+and append-only `playbook_candidates`.
+
+**Where lessons come from.**
+
+| Signal | Extractor | Kind | Review |
+| --- | --- | --- | --- |
+| A founder comment, variant pick, rejected draft or chat "Add to context" | deterministic hot path, at once | `preference`, `rule` | none: active immediately with undo; the CEO's word is the highest confidence |
+| A decision card answer and an auto rule | deterministic hot path | `rule` | none |
+| A task escalation (AGT-3) | `escalateTask` writes an `anti_pattern` lesson instead of free text | `anti_pattern` | none |
+| A closed ledger window with a channel verdict (PLN-2) | the ledger job | `tactic` | none |
+| Critique scores and applications with outcomes over a week | the weekly `department_retro` task (section below) | any; at most 8 proposals | `memory_suggestion` review item for behaviour-changing kinds (`rule`, `tactic`, `rubric_weight`), at most two a day inside the review budget |
+
+Code verifies every evidence id, Zod-checks the statement and kind, computes the
+confidence, and folds near-duplicates by embedding similarity into a supersession.
+Quoted web, email or tool content is never stored as a lesson (LRN-6).
+
+**The department retro (LRN-3).** A weekly `department_retro` task, scheduled after the
+plan, run by the department's critic persona in a fresh context with read-only tools,
+the Haiku tier and a per-run cap, with `outputSchema` set to the retro schema. Its input
+is data: the week's critiques, review answers, lesson applications with outcomes, failed
+tasks, ledger windows, and the active lessons it may supersede. It proposes at most 8
+lessons and any rubric weight changes; code files them. The brief says "3 lessons
+proposed, 1 needs your answer". The Chief of Staff's own retro covers planning, which
+is where PLN-2's revisions come from. Design gets its retro in M8; each later
+department gets one when it lands.
+
+**How a lesson changes the next run (LRN-4, LRN-9).** `buildMemoryContext({ companyId,
+department, persona, taskType, budgetChars })` returns a digest of about 8,000
+characters: thesis and clarifications, the five newest decisions, the department's
+founder preferences, the top eight lessons ranked by scope, confidence, recency and task
+type match, then the North playbook section. The runtime injects it inside a data block
+and records every injected lesson in `lesson_applications`. The `memory_search` tool
+becomes hybrid (full text plus vector, reciprocal rank fusion) and gains a read-only
+`lessons_for_task` sibling. A lesson may also propose a line in a persona's brief or a
+rubric weight override; those are versioned and need the founder's answer before they
+apply, and the eval in section 8 proves them. Agents never edit their own skills or
+briefs; monthly with-and-without evals on North skills and persona briefs land as a
+pull request reviewed by `north-security-reviewer`.
+
+**Lifecycle (LRN-5).** `preference` and `fact` do not expire. `rule` and `tactic` expire
+after 90 days and `anti_pattern` after 60, each helpful application extending the
+window. A lesson whose harmful count exceeds its helpful count is retired automatically.
+Retired and superseded lessons stay readable with their events. Undo is a transition
+back with the reason `founder_undo`.
+
+**Cross-company playbooks (LRN-11, LRN-12).** Monthly, a North job clusters active
+lessons from companies that opted in, keeps clusters with at least three companies,
+scrubs each into a pattern with counts (deterministic rejects first, then a Haiku-tier
+rewrite), blocks any lesson whose evidence touches leads, outreach, replies or the
+pipeline, and writes candidates. A North reviewer approves, edits or rejects on an admin
+screen; approval writes a versioned entry. Agents read entries only; a company can turn
+playbook reading off. Opt-in is one line at onboarding, off by default, and stated in
+the privacy policy.
+
+**Memory screen (LRN-8).** `/c/[slug]/memory` with tabs Lessons (status, department,
+confidence, "applied n, helped m, hurt k", evidence links), Memory (thesis, decisions,
+preferences, documents) and Playbooks (read-only). Each lesson has Undo, Edit (which
+creates a superseding lesson) and a "What changed" panel listing the runs that received
+it and their outcomes.
+
+**Measurement (LRN-10).** The nightly golden runs gain a with-and-without-lessons
+dimension; the delta, the lesson hit rate and the harmful rate go to Langfuse. A lesson
+that helped on three nights joins the regression suite; a regression retires it. The
+judge is pinned and is never the department's own critic.
 
 ## 6. Departments
 
@@ -489,7 +607,8 @@ comments. Chat is a bottom sheet from any agent or artifact.
 | Fly staging worker | 6 |
 | GitHub Actions overage if the repository is private | 6 |
 | Supabase, Inngest, Langfuse, Sentry, Resend free tiers | 0 |
-| **Total** (Vercel Pro booked to production) | **72** |
+| Learning: weekly department retros on the Haiku tier, with-and-without-lessons evals; embeddings at $0 inside Supabase | 8 |
+| **Total** (Vercel Pro booked to production) | **80** |
 
 Estimates from published prices: about $5.70-7.20 for a full design cycle and about
 $4.50 for a landing build on the production profile. `agent_runs` measurements replace
@@ -563,20 +682,35 @@ These join `docs/SPEC.md` as a "Faz 2" table in M7 and are used in commits and t
 | SLS-2 | Verification and the deliverability guard | M12 |
 | SLS-3 | Sequences approved per batch; follow-ups K1 and auto-cancelled | M12 |
 | SLS-4 | Pipeline events and Cal.com bookings | M12 |
+| LRN-1 | Every lesson carries at least one verified evidence reference and a code-computed confidence; no evidence, no lesson | M8 |
+| LRN-2 | Lessons are scoped to a company or a department under RLS; nothing crosses companies except through the playbook flow | M8 |
+| LRN-3 | A weekly department retro by the critic persona (fresh context, read-only tools) proposes lessons; behaviour-changing kinds go through the review queue | M8 Design; M10-M12 the others |
+| LRN-4 | Every run records the lessons it received; outcomes are attributed back per lesson | M8 |
+| LRN-5 | Lessons expire, are superseded or retired automatically; retired lessons stay readable with provenance; undo exists | M8 |
+| LRN-6 | Memory enters a run as data in a bounded block; extractors treat transcripts, tool results and quoted content as untrusted | M7 |
+| LRN-7 | Hybrid full-text plus vector retrieval with embeddings generated inside Supabase; typed retrieval by department and task type | M7 pipeline, M8 contract |
+| LRN-8 | A Memory screen shows lessons, provenance, applications and outcomes, with undo and edit by supersession | M8 basic, M9 full |
+| LRN-9 | Persona brief lines and rubric weight overrides derived from lessons are proposed, versioned and founder-approved | M9 |
+| LRN-10 | Nightly with-and-without-lessons evals report the delta, hit rate and harmful rate; a regression retires the lesson | M8 |
+| LRN-11 | Cross-company playbooks are opt-in, aggregated across at least three companies, scrubbed, reviewed by North before activation, read-only to agents | M10 design, M11 entries |
+| LRN-12 | No lesson with sales-source evidence (lead providers, outreach, replies, pipeline) is ever promoted cross-company | M12 |
 
 ## 13. Glossary additions (`CONTEXT.md`)
 
 Persona, Department, Review Dial, Skill, Skill Lock, Studio Loop, Variant, Critique,
 Rubric, Hard Gate, Review Item, Review Queue, Review Budget, Comment, Run Event, Agent
 Thread, Model Profile, Model Gateway, Cassette, Test Fence, Gate Context, Suppression,
-Journey Stage.
+Journey Stage, Lesson, Lesson Application, Lesson Event, Department Retro, Memory
+Context, Rubric Override, Playbook, Playbook Entry, Playbook Candidate.
 
 ## 14. ADRs to write
 
 0017 staging topology and the test-account fence; 0018 vendored skills and per-persona
 mounting; 0019 the model gateway and sandboxed agent execution; 0020 the review queue
 outside the decision quota; 0021 validation-first onboarding (changes M1's acceptance);
-0022 vendor MCP servers as read-only agent tools; 0023 user-pasted API keys.
+0022 vendor MCP servers as read-only agent tools; 0023 user-pasted API keys; 0024
+lessons on pgvector and the learning loop (no memory library); 0025 cross-company
+playbooks: opt-in, aggregated, reviewed.
 
 ## 15. Out of scope this phase
 
@@ -601,10 +735,23 @@ pages; AI-generated people; GSAP; LinkedIn automation of any kind.
 - **Founder-held access.** Weekly Google re-consent and 2FA on test accounts.
 - **Interview reluctance.** A founder who skips calls weakens the evidence; North says so
   on the gate card and offers a labelled survey fallback.
+- **Self-reinforcing bad lessons.** A wrong lesson that matches the critic's bias gets
+  applied, scored helpful by the same critic, and renewed. Ledger deltas and founder
+  answers outrank critic scores, and the nightly eval uses a pinned judge, not the critic.
+- **Memory poisoning.** Web pages, emails and tool results reach the retro. Evidence ids
+  must exist in North's tables, quoted content is never stored as a lesson,
+  behaviour-changing kinds need a founder answer, and memory enters runs as data.
+- **Context collapse.** A model rewriting the whole lesson set shortens it. Lessons are
+  rows, updates are supersessions, and consolidation is clustering plus supersede.
+- **Leakage by inference through playbooks.** A scrubbed pattern can still hint at one
+  tenant's strategy. Three-company minimum, counts only, North review, opt-in off by
+  default, no sales sources, and a company can turn playbook reading off.
 
 ## 17. Open items (non-blocking)
 
 Whether the repository is private (Actions minutes); whether the founder has Google
 Workspace (an Internal OAuth app may avoid the 7-day expiry); which identity owns the
 test accounts; whether golden cassettes may be committed; the Gulf rule sets, researched
-in M12; a trademark screen before the go-live card.
+in M12; a trademark screen before the go-live card; who besides the founder reviews
+North playbook candidates in M11; whether `voyage-4-lite` replaces `gte-small` for
+embeddings, decided by golden-task recall.
