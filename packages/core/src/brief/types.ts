@@ -86,6 +86,13 @@ const Escalation = z.object({ title: z.string().min(1).max(200) });
 export const BRIEF_BLOCK_REASONS = ["subscription_ended", "credits_exhausted"] as const;
 export type BriefBlockReason = (typeof BRIEF_BLOCK_REASONS)[number];
 
+/** BIL-2: this month's agent cost against the plan price (`usageRatio`), named in the Spend section. */
+const UsageLine = z.object({
+  ratio: z.number().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  priceUsd: z.number().nonnegative(),
+});
+
 export const BriefSchema = z.object({
   day: DAY_SCHEMA,
   companyName: z.string().min(1).max(200),
@@ -106,6 +113,8 @@ export const BriefSchema = z.object({
   }),
   today: z.array(TodayTask).max(BRIEF_LIST_MAX.today),
   spend: z.array(Spend).max(BRIEF_LIST_MAX.spend),
+  /** Null (the default, so earlier rows still parse) when there is no usage row or the plan has no price. */
+  usage: UsageLine.nullable().default(null),
   signals: z.array(Signal).max(BRIEF_LIST_MAX.signals),
   escalations: z.array(Escalation).max(BRIEF_LIST_MAX.escalations),
   /** Words of the rendered markdown; at most BRIEF_MAX_WORDS. */
@@ -113,6 +122,6 @@ export const BriefSchema = z.object({
 });
 export type Brief = z.infer<typeof BriefSchema>;
 
-/** What the worker gathers; `composeBrief` trims it and counts the words. */
-export type BriefInput = Omit<Brief, "wordCount">;
+/** What the worker gathers; `composeBrief` trims it and counts the words. `usage` may be left out. */
+export type BriefInput = Omit<Brief, "wordCount" | "usage"> & { readonly usage?: Brief["usage"] };
 export type BriefSignal = Brief["signals"][number];

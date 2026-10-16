@@ -29,6 +29,8 @@ const BriefViewSchema = z.object({
   }),
   today: z.array(z.object({ taskId: Text(64), title: Text(200), role: Text(40), status: Text(40) })).max(20),
   spend: z.array(z.object({ category: Text(40), spentTodayUsd: z.number(), dailyCapUsd: z.number(), spentTotalUsd: z.number(), totalCapUsd: z.number() })).max(10),
+  /** Absent in briefs cached before the usage line existed. */
+  usage: Text(200).nullable().default(null),
   signals: z.array(z.object({ id: Text(64), title: Text(200), source: Text(40), score: z.number(), status: Text(40), statusWord: Text(60) })).max(20),
   escalations: z.array(Text(200)).max(20),
 });

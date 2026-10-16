@@ -128,6 +128,20 @@ describe("D6-5 brief hour and the blocked line (BRF-1, BIL-1, BIL-2)", () => {
     expect(briefMarkdown(brief).split("\n")[1]).toMatch(/paused: subscription ended/);
   });
 
+  it("BIL-2: the brief names this month's usage against the plan price; a trial (no price) has no usage line", async () => {
+    await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");
+    expect((state.briefs[0]?.content as Brief).usage).toBeNull();
+    state.briefs = [];
+    const trial = (await dbModule.getEntitlement({} as never, "user-1"))!;
+    state.entitlements.set("user-1", { ...trial, status: "active", planId: "pro", priceUsd: 299, companyLimit: 3, monthlyCredits: 1000 });
+    state.usage.set("user-1:2026-10", { userId: "user-1", period: "2026-10", creditsUsed: 4, llmCostUsd: 120, sandboxMinutes: 0, alertedAt: null });
+    state.usage.set("user-1:2026-09", { userId: "user-1", period: "2026-09", creditsUsed: 9, llmCostUsd: 290, sandboxMinutes: 0, alertedAt: null });
+    await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");
+    const brief = state.briefs[0]?.content as Brief;
+    expect(brief.usage).toEqual({ ratio: 0.401, costUsd: 120, priceUsd: 299 });
+    expect(briefMarkdown(brief)).toContain("Agents used 40 % of your $299 plan price this month ($120).");
+  });
+
   it("zero credits → waiting for credits; a user's own kill switch shows the stopped line, not a billing one", async () => {
     state.credits.set("user-1", [{ kind: "grant_plan", amount: 300, ref: "trial:user-1", note: "" }, { kind: "adjust", amount: -300, ref: "adjust:drain", note: "" }]);
     await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");

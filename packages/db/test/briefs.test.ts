@@ -10,6 +10,7 @@ const briefFor = (day: string, overrides: Partial<Brief> = {}): Brief => {
     companyName: "Briefs Co",
     stopped: false,
     blocked: null,
+    usage: null,
     yesterday: { outcomes: [], actions: [{ kind: "deploy.production", status: "executed", description: "Site went live" }] },
     metrics: [{ key: "signups", value: 5, previous: 3, measuredAt: "2026-10-18T06:00:00.000Z" }],
     goal: { metricKey: "signups", target: 50, current: 5, dueDate: "2026-12-31" },

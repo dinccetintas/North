@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BLOCKED_WORDS, briefMarkdown, SIGNAL_STATUS_WORDS } from "@north/core/brief/compose";
+import { BLOCKED_WORDS, briefMarkdown, SIGNAL_STATUS_WORDS, usageWords } from "@north/core/brief/compose";
 import type { Brief, BriefBlockReason } from "@north/core/brief/types";
 import { BRIEF_HOUR } from "@north/core/time";
 import { isHttpUrl } from "@north/core/url";
@@ -42,6 +42,8 @@ export interface BriefView {
   readonly decisions: Brief["decisions"];
   readonly today: Brief["today"];
   readonly spend: Brief["spend"];
+  /** BIL-2: "Agents used 40 % of your $299 plan price this month ($120)."; null without a priced plan. */
+  readonly usage: string | null;
   readonly signals: readonly BriefSignalRow[];
   readonly escalations: readonly string[];
 }
@@ -76,6 +78,7 @@ export function briefView(brief: Brief): BriefView {
     decisions: brief.decisions,
     today: brief.today,
     spend: brief.spend,
+    usage: usageWords(brief.usage),
     signals: Object.freeze(brief.signals.map((s) => Object.freeze({ ...s, statusWord: SIGNAL_STATUS_WORDS[s.status] }))),
     escalations: Object.freeze(brief.escalations.map((e) => e.title)),
   });

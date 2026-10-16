@@ -57,6 +57,13 @@ describe("BRF-1 brief view", () => {
     expect(credits.headline).toBe("Morning brief: Acme, 2026-10-20");
   });
 
+  it("BIL-2: carries the month's usage in the brief's own words, and nothing without a price", () => {
+    const priced = briefView(composeBrief({ ...input, usage: { ratio: 0.401, costUsd: 120, priceUsd: 299 } }));
+    expect(priced.usage).toBe("Agents used 40 % of your $299 plan price this month ($120).");
+    expect(briefView(composeBrief(input)).usage).toBeNull();
+    expect(briefView(composeBrief({ ...input, usage: { ratio: 0, costUsd: 0, priceUsd: 0 } })).usage).toBeNull();
+  });
+
   it("renders the sections in the brief's fixed order with the ledger's numbers", () => {
     expect(view.yesterday).toEqual(["signups +1 ($4, meta_ads): Launch test", "deploy.production executed: Publish the landing page", "2 × email.send.first_contact executed"]);
     expect(view.metrics).toEqual([

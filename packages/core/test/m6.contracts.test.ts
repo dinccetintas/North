@@ -245,6 +245,26 @@ describe("BRF-1 the brief's blocked line", () => {
   });
 });
 
+describe("BIL-2 the brief names the month's usage against the plan price", () => {
+  it("renders the ratio as a whole percent at the top of Spend, and nothing when unknown or the price is 0", () => {
+    const usage = { ratio: 0.401, costUsd: 120, priceUsd: 299 };
+    const text = briefMarkdown(composeBrief(input({ usage })));
+    const lines = text.split("\n");
+    expect(lines[lines.indexOf("## Spend") + 1]).toBe("- Agents used 40 % of your $299 plan price this month ($120).");
+    expect(composeBrief(input({ usage })).usage).toEqual(usage);
+    expect(briefMarkdown(composeBrief(input()))).not.toContain("plan price");
+    expect(briefMarkdown(composeBrief(input({ usage: { ratio: 0, costUsd: 0, priceUsd: 0 } })))).not.toContain("plan price");
+  });
+
+  it("BriefSchema carries usage, null by default so M5 and early M6 rows still parse", () => {
+    const brief = composeBrief(input({ usage: { ratio: 1.25, costUsd: 123.75, priceUsd: 99 } }));
+    expect(BriefSchema.safeParse(brief).success).toBe(true);
+    expect(BriefSchema.parse({ ...brief, usage: undefined }).usage).toBeNull();
+    expect(composeBrief(input()).usage).toBeNull();
+    expect(BriefSchema.safeParse({ ...brief, usage: { ratio: -1, costUsd: 0, priceUsd: 99 } }).success).toBe(false);
+  });
+});
+
 describe("the package index exports the M6 contracts", () => {
   it("every shared name is reachable from @north/core", () => {
     const names = [

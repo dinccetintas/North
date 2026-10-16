@@ -65,6 +65,11 @@ export function BriefMetrics({ brief }: { brief: BriefView }) {
 export function BriefSpend({ brief }: { brief: BriefView }) {
   return (
     <BriefSection title="Spend" testId="brief-spend">
+      {brief.usage ? (
+        <p className="mb-1" data-testid="brief-usage">
+          {brief.usage}
+        </p>
+      ) : null}
       {brief.spend.length === 0 ? (
         <Nothing text="No budgets set." />
       ) : (

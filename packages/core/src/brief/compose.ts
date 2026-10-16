@@ -85,6 +85,20 @@ function decisionLines(brief: BriefInput): readonly string[] {
   return [...bullets(rows, "No cards waiting."), `${brief.decisions.deferred} deferred, ${brief.decisions.answeredYesterday} answered yesterday.`];
 }
 
+/** BIL-2: the usage sentence (the email and the panel say the same); null when unknown or the plan has no price. */
+export function usageWords(usage: Brief["usage"] | undefined): string | null {
+  if (!usage || usage.priceUsd <= 0) return null;
+  return `Agents used ${Math.round(usage.ratio * 100)} % of your ${usd(usage.priceUsd)} plan price this month (${usd(usage.costUsd)}).`;
+}
+
+/** The usage line opens Spend; the 40 % alert uses the same ratio. */
+function spendLines(brief: BriefInput): readonly string[] {
+  const words = usageWords(brief.usage);
+  const usage = words ? [words] : [];
+  const budgets = brief.spend.map((s) => `${s.category} ${usd(s.spentTodayUsd)} of ${usd(s.dailyCapUsd)} today (${usd(s.spentTotalUsd)}/${usd(s.totalCapUsd)} total)`);
+  return usage.length + budgets.length === 0 ? ["No budgets set."] : bullets([...usage, ...budgets], "");
+}
+
 const signalLine = (s: BriefSignal): string => `${s.source} ${s.score}, ${SIGNAL_STATUS_WORDS[s.status]}: ${firstWords(s.title, TITLE_WORDS)}`;
 
 /**
@@ -102,7 +116,7 @@ export function briefMarkdown(brief: BriefInput): string {
     ["Metrics", metricLines(brief)],
     ["Decisions", decisionLines(brief)],
     ["Today", bullets(brief.today.map((t) => `${firstWords(t.title, TITLE_WORDS)} (${t.role}, ${t.status})`), "Nothing.")],
-    ["Spend", bullets(brief.spend.map((s) => `${s.category} ${usd(s.spentTodayUsd)} of ${usd(s.dailyCapUsd)} today (${usd(s.spentTotalUsd)}/${usd(s.totalCapUsd)} total)`), "No budgets set.")],
+    ["Spend", spendLines(brief)],
     ["Signals", bullets(brief.signals.map(signalLine), "Nothing.")],
     ["Escalations", bullets(brief.escalations.map((e) => firstWords(e.title, TITLE_WORDS)), "Nothing.")],
   ];
@@ -161,5 +175,5 @@ const clamped = (input: BriefInput): BriefInput => ({
  */
 export function composeBrief(input: BriefInput): Brief {
   const trimmed = trimToBudget(trimToBudget(clamped(input), 1), 0);
-  return Object.freeze({ ...trimmed, wordCount: briefWordCount(trimmed) });
+  return Object.freeze({ ...trimmed, usage: trimmed.usage ?? null, wordCount: briefWordCount(trimmed) });
 }

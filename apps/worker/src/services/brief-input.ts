@@ -1,5 +1,5 @@
-import { ACTION_KINDS, AGENT_ROLES, BRIEF_LIST_MAX, CHANNELS, OUTCOME_METRIC_KEYS, canDispatch, isActive, type ActionKind, type AgentRole, type BriefInput, type Channel, type OutcomeMetricKey } from "@north/core";
-import { creditBalance, getCompanyById, getEntitlementForCompany, latestPlan, listBriefs, listBudgets, listCards, listGoals, listLedgerEntries, listMemoryItems, listPendingCards, listRecentActions, listSignals, metricSeries, type CompanySummary, type DbClient } from "@north/db";
+import { ACTION_KINDS, AGENT_ROLES, BRIEF_LIST_MAX, CHANNELS, OUTCOME_METRIC_KEYS, canDispatch, isActive, usageCostUsd, usageRatio, type ActionKind, type AgentRole, type Brief, type BriefInput, type Channel, type OutcomeMetricKey } from "@north/core";
+import { creditBalance, getCompanyById, getEntitlementForCompany, getUsage, latestPlan, listBriefs, listBudgets, listCards, listGoals, listLedgerEntries, listMemoryItems, listPendingCards, listRecentActions, listSignals, metricSeries, type CompanySummary, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./deferred";
 
@@ -87,6 +87,20 @@ async function blockedLine(db: DbClient, company: CompanySummary): Promise<Brief
   return canDispatch(await creditBalance(db, entitlement.userId)) ? null : { reason: "credits_exhausted" };
 }
 
+/**
+ * BIL-2: this month's agent cost against the plan price, for the Spend
+ * section. The brief's `day` is the owner's local date, so its month is the
+ * usage period. A plan without a price (the trial) or a month without a
+ * usage row has no line.
+ */
+async function usageLine(db: DbClient, companyId: string, day: string): Promise<Brief["usage"]> {
+  const entitlement = await getEntitlementForCompany(db, companyId);
+  if (!entitlement || entitlement.priceUsd <= 0) return null;
+  const usage = await getUsage(db, entitlement.userId, day.slice(0, 7));
+  if (!usage) return null;
+  return { ratio: usageRatio(usage, entitlement.priceUsd), costUsd: usageCostUsd(usage), priceUsd: entitlement.priceUsd };
+}
+
 async function signalsSection(db: DbClient, companyId: string, since: string): Promise<BriefInput["signals"]> {
   const rows = await listSignals(db, companyId, { sinceDays: 14, limit: 100 });
   return rows
@@ -126,6 +140,7 @@ export async function gatherBriefInput(deps: WorkerDeps, companyId: string, day:
     decisions: await decisionsSection(db, companyId, since),
     today: await todaySection(db, companyId),
     spend: await spendSection(db, companyId, day),
+    usage: await usageLine(db, companyId, day),
     signals: await signalsSection(db, companyId, since),
     escalations: await escalationsSection(db, companyId, since),
   });
