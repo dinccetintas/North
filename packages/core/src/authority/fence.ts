@@ -1,6 +1,6 @@
 // TST-5: the test-account fence. Staging runs real adapters, so every outside target must be a test account, or it is blocked.
 import { z } from "zod";
-import { normaliseEmail } from "../outreach/policy";
+import { normaliseEmail, singleAddress } from "../outreach/policy";
 
 /**
  * Which outside accounts a fenced run may touch. While `enabled`, anything not
@@ -35,12 +35,19 @@ const ALLOWED: FenceVerdict = Object.freeze({ allowed: true });
 /** How much of a Stripe key a reason may show: `sk_live_` and no more, so a full key never reaches a log. */
 const STRIPE_PREFIX_SHOWN = 8;
 
-/** True when the address is at an allowed domain or a subdomain of one; an address with no domain never is. */
+/** How much of any other raw value a reason may show. */
+const RAW_VALUE_SHOWN = 80;
+
+/**
+ * True when the recipient is exactly one readable address at an allowed domain
+ * or a subdomain of one. Anything else (none, several, text the rules cannot
+ * read) is not allowed: a list with one test address in it could still reach a
+ * real person.
+ */
 function domainAllowed(email: string, domains: readonly string[]): boolean {
-  const address = normaliseEmail(email);
-  const at = address.lastIndexOf("@");
-  const domain = at < 0 ? "" : address.slice(at + 1);
-  if (domain === "") return false;
+  const address = singleAddress(email);
+  if (address === null) return false;
+  const domain = address.slice(address.lastIndexOf("@") + 1);
   return domains.some((entry) => {
     const allowed = normaliseEmail(entry);
     return allowed !== "" && (domain === allowed || domain.endsWith(`.${allowed}`));
@@ -63,17 +70,22 @@ function isInside(target: FenceTarget, policy: FencePolicy): boolean {
   }
 }
 
+/** A raw value as a reason shows it: on one line and cut short, however much an agent put in it. */
+function shown(raw: string): string {
+  return raw.replace(/\s+/g, " ").slice(0, RAW_VALUE_SHOWN);
+}
+
 /** The value a verdict names for the target. */
 function targetValue(target: FenceTarget): string {
   switch (target.kind) {
     case "meta_ad_account":
-      return target.id;
+      return shown(target.id);
     case "github_owner":
-      return target.login;
+      return shown(target.login);
     case "vercel_project":
-      return target.name;
+      return shown(target.name);
     case "recipient":
-      return target.email;
+      return shown(target.email);
     case "stripe_key":
       return target.prefix.slice(0, STRIPE_PREFIX_SHOWN);
   }
@@ -82,8 +94,9 @@ function targetValue(target: FenceTarget): string {
 /**
  * Whether an action may touch these targets. A disabled fence allows
  * everything. An enabled one allows the action only when every target is on
- * its allow-list (recipients by domain, Vercel projects by prefix); otherwise
- * the reason names the first target that is outside, by kind and value.
+ * its allow-list (recipients by domain, one address each; Vercel projects by
+ * prefix); otherwise the reason names the first target that is outside, by
+ * kind and raw value (one line, cut to 80 characters).
  */
 export function fenceVerdict(targets: readonly FenceTarget[], policy: FencePolicy): FenceVerdict {
   if (!policy.enabled) return ALLOWED;

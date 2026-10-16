@@ -51,6 +51,49 @@ describe("TST-5 test-account fence", () => {
     expect(fenceVerdict([recipient("x@")], p)).toMatchObject({ allowed: false });
   });
 
+  // A fence must fail closed: a recipient that is not exactly one readable address could be anyone, so it is blocked.
+  it("TST-5 a recipient that is not exactly one address is blocked, even when one part is a test address", () => {
+    const p = policy({ recipientDomains: ["resend.app"] });
+    for (const raw of [
+      "real@gmail.com, test@resend.app",
+      "test@resend.app, real@gmail.com",
+      "test@resend.app; real@gmail.com",
+      "test@resend.app, other@resend.app",
+      "real@gmail.com test@resend.app",
+      "Real <real@gmail.com>, Test <test@resend.app>",
+      "<real@gmail.com><test@resend.app>",
+      "real@gmail.com <test@resend.app>",
+      "test@resend.app <real@gmail.com",
+      "<real@gmail.com <test@resend.app>",
+      'real" <test@resend.app>',
+      '"real@gmail.com, test@resend.app',
+      "",
+      "   ",
+      ",",
+    ]) {
+      expect(fenceVerdict([recipient(raw)], p)).toMatchObject({ allowed: false });
+    }
+  });
+
+  it("TST-5 a single address still passes whatever surrounds it", () => {
+    const p = policy({ recipientDomains: ["resend.app"] });
+    for (const raw of ["Ada <test@resend.app>", '"Lovelace, Ada" <test@resend.app>', '"real@gmail.com" <test@resend.app>', " test@resend.app, ", "<TEST@Resend.App>"]) {
+      expect(fenceVerdict([recipient(raw)], p)).toEqual({ allowed: true });
+    }
+  });
+
+  it("TST-5 the reason for a recipient names the raw value, on one line and cut to 80 characters", () => {
+    const p = policy({ recipientDomains: ["resend.app"] });
+    expect(fenceVerdict([recipient("real@gmail.com, test@resend.app")], p)).toEqual({
+      allowed: false,
+      reason: "recipient real@gmail.com, test@resend.app is outside the test fence",
+    });
+    const long = fenceVerdict([recipient(`${"a".repeat(200)}@gmail.com`)], p);
+    expect(long).toEqual({ allowed: false, reason: `recipient ${"a".repeat(80)} is outside the test fence` });
+    const multiline = fenceVerdict([recipient("real@gmail.com,\n\ttest@resend.app")], p);
+    expect(multiline).toEqual({ allowed: false, reason: "recipient real@gmail.com, test@resend.app is outside the test fence" });
+  });
+
   it("TST-5 an empty domain entry never lets a malformed address through", () => {
     const p = policy({ recipientDomains: [""] });
     expect(fenceVerdict([recipient("x@")], p)).toMatchObject({ allowed: false });
