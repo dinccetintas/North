@@ -66,9 +66,14 @@ curl -fsS https://<worker>.fly.dev/health
 `AGENT_RUNTIME` unset (sandbox, mock). The `[[vm]]` block is
 `shared-cpu-2x` / 2 GB for the mock runtime; before the SDK runtime is turned
 on, switch it to `performance-2x` / 4 GB (`fly scale vm performance-2x
---memory 4096`). The worker binds `0.0.0.0`, so the sandbox pages and the
-clock route are never mounted there, and the Stripe webhook only exists once
-`STRIPE_WEBHOOK_SECRET` is set (section 5).
+--memory 4096`). The worker binds `0.0.0.0`, so none of the sandbox routes
+(the sites under `/sandbox/sites/`, the billing pages, the simulation and
+clock routes) is mounted there, which the production check asserts (404),
+and the Stripe webhook only exists once `STRIPE_WEBHOOK_SECRET` is set
+(section 5). On a loopback worker (local, CI) every `/sandbox/*` request and
+a webhook that verifies with the public sandbox secret need a loopback
+`Host` with the worker's port, and a state change a same-origin browser
+context or no browser at all.
 
 ## 4. Vercel (the web)
 
@@ -91,7 +96,17 @@ clock route are never mounted there, and the Stripe webhook only exists once
 
    Never: `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_*`, `ANTHROPIC_API_KEY`,
    `CONNECTIONS_ENCRYPTION_KEY`, any `*_CLIENT_SECRET`, `LANGFUSE_SECRET_KEY`,
-   `RESEND_API_KEY`, `VAPID_PRIVATE_KEY`, `SENTRY_DSN`.
+   `RESEND_API_KEY`, `VAPID_PRIVATE_KEY`, `SENTRY_DSN` (CI fails on any of
+   them in a tracked file of `apps/web` outside the e2e harness).
+
+   The billing redirect page follows a session URL only to
+   `https://checkout.stripe.com/…` or `https://billing.stripe.com/…`, and,
+   while the web's `INTEGRATIONS_MODE` is `sandbox`, to the worker's sandbox
+   billing pages at exactly `SANDBOX_SITE_BASE_URL` (default
+   `http://127.0.0.1:<WORKER_PORT>`, the worker's own default); anything else
+   shows "Billing could not start". Every response carries
+   `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff` and
+   `strict-origin-when-cross-origin` (`next.config.ts`).
 3. Deploy; open `https://<web>/login`; install it from the browser menu on
    Android and with Share → Add to Home Screen on iOS (screens into
    `docs/evidence/M6/`).
@@ -115,7 +130,11 @@ price id lives in code or in an env var.
    `/health` now reports `webhooks.stripe: true`.
 3. Customer portal (Settings → Billing → Customer portal): allow cancellation
    at the period end, invoice history and payment method updates; return URL
-   `https://<web>/settings/billing`.
+   `https://<web>/settings/billing`. Plan switches: upgrades now with
+   proration, **downgrades at the period end** (otherwise an upgrade just
+   before a renewal and a downgrade after it return proration credit; plan
+   credits are granted only for `subscription_create` / `subscription_cycle`
+   invoices, ADR 0014 amendment).
 4. Checkout terms: once `https://<web>/legal/terms` is live, set it as the
    terms of service URL (Settings → Public details) so Checkout collects
    consent (`consent_collection.terms_of_service: required`).
@@ -124,6 +143,9 @@ price id lives in code or in an env var.
    shell for the check; it is never stored.
 6. Changing a price: edit `plans.ts`, run `stripe:setup` again (a new price,
    the lookup key transferred), deploy. Existing subscriptions keep their price.
+   Run `stripe:setup` again too whenever `BILLING_EVENT_TYPES` changes (M6 added
+   `checkout.session.async_payment_succeeded`): `production:check` fails while
+   the endpoint misses an event the worker handles.
 7. The user's own Stripe read (OUT-2) is a separate Connect app: redirect URI
    `https://<web>/api/connections/stripe/callback`, scope `read_only`;
    `fly secrets set STRIPE_CONNECT_CLIENT_ID=<id> STRIPE_CONNECT_CLIENT_SECRET=<secret>`.
@@ -169,22 +191,29 @@ the SDK runtime (section 11).
 ## 10. Verify: the production check (read-only)
 
 ```bash
-STRIPE_READ_KEY=<restricted key> pnpm production:check -- \
+read -rs STRIPE_READ_KEY && export STRIPE_READ_KEY           # optional: the restricted read-only key
+read -rs NORTH_USAGE_READ_KEY && export NORTH_USAGE_READ_KEY # optional: a key that may read usage
+pnpm production:check -- \
   --web https://<web> --worker https://<worker>.fly.dev \
   --supabase https://<ref>.supabase.co --anon-key <publishable key>
+unset STRIPE_READ_KEY NORTH_USAGE_READ_KEY
 ```
 
 It issues no write and holds no service role key. It checks both health lines
-(mode, runtime, webhooks mounted, clock = wall), that an anonymous select on
-`companies` returns nothing, that both buckets refuse an anonymous list and
-are not public, the manifest and the service worker with their content
-types, both Inngest serve endpoints (functions, cloud mode, keys), and the
-Stripe endpoint (exists, enabled, the six event types). `--usage-key` adds
-every user's usage ratio for the month (usage rows are owner-only, so it
-needs a key that may read them; pass it from your shell or skip it). `--json`
-prints the result for the evidence folder. Exit 1 on any failure. It prints
-the mode it found: production stays `sandbox` / `mock` until section 11.
-Run it after every deploy and first in any incident.
+(mode, runtime, webhooks mounted, clock = wall), that the public worker
+mounts no sandbox route (`/sandbox/sites/` and `/sandbox/clock` are 404), that
+an anonymous select on `companies` returns nothing, that both buckets refuse
+an anonymous list and are not public, the manifest and the service worker
+with their content types, both Inngest serve endpoints (functions, cloud
+mode, keys), and the Stripe endpoint (exists, enabled, every billing event
+type). The two keys are read from the environment only: `STRIPE_READ_KEY`
+for the Stripe endpoint and `NORTH_USAGE_READ_KEY` for every user's usage
+ratio of the month (usage rows are owner-only, so it needs a key that may
+read them). There is no flag for either, so neither lands in shell history
+or `ps`; `read -s` keeps them off the screen too, and a check without its key
+is skipped. `--json` prints the result for the evidence folder. Exit 1 on any
+failure. It prints the mode it found: production stays `sandbox` / `mock`
+until section 11. Run it after every deploy and first in any incident.
 
 ## 11. The flip to live (and back)
 
@@ -210,9 +239,14 @@ separately: `stripe:setup` against the live account with `--live`, then
 - The daily `retention-sweep` (04:07 UTC) archives the companies of owners
   past retention, marks `purge_due`, and removes expired export objects. With
   `RETENTION_PURGE_ENABLED` unset it deletes nothing else.
-- The founder purges on request, through the one delete path (storage
-  objects → `purge_owner` → `auth.admin.deleteUser`; a `purge_log` row records
-  a hash of the user id and the counts):
+- The founder purges on request, through the one delete path (`purge_begin`
+  marks the entitlement so nothing can reactivate it → storage objects and the
+  owner's worker workspaces → `purge_owner` → `auth.admin.deleteUser`; a
+  `purge_log` row records a hash of the user id and the counts). A payment that
+  arrives while a purge runs is refused by the database and deleted with the
+  user: refund it in the Stripe Dashboard (the event stays unapplied in the
+  worker log with reason `purging`). Workspaces live on the worker's disk, so
+  run the script on the worker (`fly ssh console`) or with `WORKSPACE_ROOT` set:
   ```bash
   SUPABASE_URL=<url> SUPABASE_SERVICE_ROLE_KEY=<service role key> pnpm purge:due            # lists
   SUPABASE_URL=<url> SUPABASE_SERVICE_ROLE_KEY=<service role key> pnpm purge:due -- --yes   # purges

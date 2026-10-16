@@ -51,6 +51,8 @@ function Today({ brief }: { brief: BriefView }) {
 }
 
 export interface BriefPanelProps {
+  /** The signed-in owner; the offline copy is kept under this id (PWA-1, M6 review L14). Null keeps no copy. */
+  readonly userId: string | null;
   readonly slug: string;
   readonly brief: BriefView | null;
   /** The owner's IANA zone: names the hour the first brief arrives. */
@@ -64,7 +66,7 @@ export interface BriefPanelProps {
  * Composed by core from the ledger (not a model), one row per owner-local day;
  * the sections keep the brief's fixed order and every line is text.
  */
-export function BriefPanel({ slug, brief, timezone, briefHour }: BriefPanelProps) {
+export function BriefPanel({ userId, slug, brief, timezone, briefHour }: BriefPanelProps) {
   if (!brief) {
     return (
       <section className="mt-10" data-testid="brief-empty">
@@ -107,7 +109,7 @@ export function BriefPanel({ slug, brief, timezone, briefHour }: BriefPanelProps
         <BriefEscalations brief={brief} />
         <p className="mono-label text-faint">Written by the {roleTitle("chief_of_staff")} from the ledger, in its name.</p>
       </article>
-      <OfflineBriefCache slug={slug} brief={brief} />
+      {userId ? <OfflineBriefCache userId={userId} slug={slug} brief={brief} /> : null}
     </section>
   );
 }

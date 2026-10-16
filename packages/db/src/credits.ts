@@ -7,9 +7,10 @@ import { UuidSchema } from "./json";
 /**
  * BIL-2 (ADR 0014): credits are an append-only ledger; nothing decrements in
  * place. The worker inserts drafts from core (`trialGrant`, `creditGrantsFor`,
- * `consumeEntry`, `expireEntry`); a ref already present is ignored, so a
- * replayed event or step writes nothing twice. The database refuses a consume
- * below the grace floor (`credit_entries_no_overdraft`).
+ * `releaseEntry`, `expireEntry`); a ref already present is ignored, so a
+ * replayed event or step writes nothing twice. A run's consume is reserved at
+ * dispatch (`reserveCredit`); the database refuses any other consume below the
+ * grace floor (`credit_entries_no_overdraft`).
  */
 export class CreditFloorError extends DbError {
   constructor(message: string, cause?: unknown) {
@@ -36,6 +37,23 @@ export async function insertCreditEntries(db: DbClient, userId: string, drafts: 
   }
   const inserted = new Set((data ?? []).map((r) => r.ref));
   return Object.freeze(rows.map((r) => r.ref).filter((ref) => inserted.has(ref)));
+}
+
+export const CREDIT_RESERVATIONS = ["reserved", "exists", "refused"] as const;
+export type CreditReservation = (typeof CREDIT_RESERVATIONS)[number];
+
+/**
+ * Worker only (L9): the run's `consume` written at dispatch, before the run
+ * starts (`credit_reserve`, under the per-user credits lock): `reserved`,
+ * `exists` (the ref is already there, nothing written) or `refused` (the
+ * balance is 0 or below, nothing written).
+ */
+export async function reserveCredit(db: DbClient, userId: string, ref: string): Promise<CreditReservation> {
+  const id = UuidSchema.parse(userId);
+  const r = z.string().min(1).max(200).parse(ref);
+  const { data, error } = await db.rpc("credit_reserve", { p_user_id: id, p_ref: r });
+  if (error) throw dbError("Could not reserve a credit", error);
+  return z.enum(CREDIT_RESERVATIONS).parse(data);
 }
 
 /** The sum of the user's ledger (`credit_balance`); a stranger's client sums nothing and reads 0. */

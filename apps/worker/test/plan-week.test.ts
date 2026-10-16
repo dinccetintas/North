@@ -156,3 +156,38 @@ describe("planTick (plan-week-cron)", () => {
     expect(await planTick(deps())).toEqual([]);
   });
 });
+
+describe("M6 review L9: the planning run's credit is reserved before anything is planned", () => {
+  /** The fixture runtime, noting the owner's consumes as the run starts. */
+  const watching = (owner: string, seen: string[][]): AgentRuntime => {
+    const inner = fixtureRuntime();
+    return {
+      name: inner.name,
+      run: async (input: AgentRunInput) => {
+        seen.push((state.credits.get(owner) ?? []).filter((e) => e.kind === "consume").map((e) => e.ref));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return inner.run(input);
+      },
+    };
+  };
+
+  it("the run's consume exists before the run starts and is the recorded run's; two concurrent plans at a balance of 1 start one planning run", async () => {
+    const owner = state.companies.get("company-1")!.ownerId;
+    state.credits.set(owner, [{ kind: "grant_plan", amount: 5, ref: `trial:${owner}`, note: "" }]);
+    const seen: string[][] = [];
+    expect((await planWeek(deps(watching(owner, seen)), "company-1")).kind).toBe("created");
+    const consumes = (state.credits.get(owner) ?? []).filter((e) => e.kind === "consume").map((e) => e.ref);
+    const recorded = await (dbModule.recordAgentRun as unknown as { mock: { results: { value: Promise<string> }[] } }).mock.results.at(-1)!.value;
+    expect(seen).toEqual([[`run:${recorded}`]]);
+    expect(consumes).toEqual([`run:${recorded}`]);
+
+    Object.assign(state, emptyState());
+    seedCompany(state, { id: "company-1", slug: "lumen", name: "Lumen", timezone: "Europe/Istanbul" });
+    state.credits.set(owner, [{ kind: "grant_plan", amount: 1, ref: `trial:${owner}`, note: "" }]);
+    const again: string[][] = [];
+    const results = await Promise.all([planWeek(deps(watching(owner, again)), "company-1"), planWeek(deps(watching(owner, again)), "company-1")]);
+    expect(again).toHaveLength(1);
+    expect(results.map((r) => r.kind).sort()).toEqual(["created", "skipped"]);
+    expect(results.find((r) => r.kind === "skipped")).toEqual({ kind: "skipped", skipped: "credits_exhausted" });
+  });
+});

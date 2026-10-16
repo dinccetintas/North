@@ -359,6 +359,7 @@ export type Database = {
           event_id: string;
           id: string;
           payload: NonNullable<Json>;
+          payload_sha256: string | null;
           received_at: string;
           type: string;
           user_id: string | null;
@@ -369,6 +370,7 @@ export type Database = {
           event_id: string;
           id?: string;
           payload: NonNullable<Json>;
+          payload_sha256?: string | null;
           received_at?: string;
           type: string;
           user_id?: string | null;
@@ -378,6 +380,7 @@ export type Database = {
           event_id?: string;
           id?: string;
           payload?: NonNullable<Json>;
+          payload_sha256?: string | null;
           received_at?: string;
           type?: string;
           user_id?: string | null;
@@ -394,6 +397,7 @@ export type Database = {
       };
       billing_sessions: {
         Row: {
+          completed_at: string | null;
           created_at: string;
           error: string | null;
           id: string;
@@ -408,6 +412,7 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          completed_at?: string | null;
           created_at?: string;
           error?: string | null;
           id?: string;
@@ -421,6 +426,7 @@ export type Database = {
           user_id: string;
         };
         Update: {
+          completed_at?: string | null;
           created_at?: string;
           error?: string | null;
           id?: string;
@@ -922,6 +928,7 @@ export type Database = {
           plan_id: string;
           price_usd: number;
           purge_due: boolean;
+          purge_started_at: string | null;
           retention_until: string | null;
           status: string;
           stripe_customer_id: string | null;
@@ -942,6 +949,7 @@ export type Database = {
           plan_id: string;
           price_usd?: number;
           purge_due?: boolean;
+          purge_started_at?: string | null;
           retention_until?: string | null;
           status: string;
           stripe_customer_id?: string | null;
@@ -961,6 +969,7 @@ export type Database = {
           plan_id?: string;
           price_usd?: number;
           purge_due?: boolean;
+          purge_started_at?: string | null;
           retention_until?: string | null;
           status?: string;
           stripe_customer_id?: string | null;
@@ -1839,6 +1848,10 @@ export type Database = {
         };
         Returns: Json;
       };
+      billing_events_sweep_unknown: {
+        Args: { p_before: string };
+        Returns: number;
+      };
       budget_apply: {
         Args: {
           p_category: string;
@@ -1851,6 +1864,10 @@ export type Database = {
         Returns: Json;
       };
       credit_balance: { Args: { p_user_id: string }; Returns: number };
+      credit_reserve: {
+        Args: { p_ref: string; p_user_id: string };
+        Returns: string;
+      };
       grant_trial_entitlement: {
         Args: { p_user_id: string };
         Returns: undefined;
@@ -1861,6 +1878,7 @@ export type Database = {
       };
       owner_local_date: { Args: { p_company_id: string }; Returns: string };
       public_page_view: { Args: { p_slug: string }; Returns: Json };
+      purge_begin: { Args: { p_user_id: string }; Returns: string };
       purge_owner: {
         Args: { p_reason: string; p_user_id: string };
         Returns: Json;

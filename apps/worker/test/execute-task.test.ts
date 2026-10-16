@@ -87,3 +87,39 @@ describe("companyContext hand-overs", () => {
     expect(research.vars["company.name"]).toBe("Lumen");
   });
 });
+
+describe("M6 review L9: dispatch reserves the run's credit before the run starts", () => {
+  const succeed = (runs: { n: number }) => ({
+    name: "mock" as const,
+    run: async (): Promise<AgentRunResult> => {
+      runs.n += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { status: "succeeded", output: { summary: "Report.", artifacts: [{ kind: "market_report", title: "Report", markdown: "# Report" }], memory: [], actions: [], confidence: "medium" }, actions: [], sessionId: "mock-1", usage: { model: "mock", inputTokens: 1, outputTokens: 1, costUsd: 0.5, durationMs: 1 } };
+    },
+  });
+
+  it("twenty concurrent dispatches at a balance of 1 start one run; nineteen are blocked (credits_exhausted) and stay queued; the one consume is the recorded run's", async () => {
+    state.credits.set("user-1", [{ kind: "grant_plan", amount: 1, ref: "trial:user-1", note: "" }]);
+    const runs = { n: 0 };
+    const deps = { ...fakeDeps(state, events), runtime: succeed(runs) };
+    const tasks = Array.from({ length: 20 }, () => seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0 }));
+    const results = await Promise.all(tasks.map((t) => executeTask(deps, t.id)));
+    expect(runs.n).toBe(1);
+    expect(results.filter((r) => r.status === "ran")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "blocked").map((r) => r.reason)).toEqual(Array(19).fill("credits_exhausted"));
+    expect(tasks.filter((t) => state.tasks.get(t.id)?.status === "queued")).toHaveLength(19);
+    const consumes = (state.credits.get("user-1") ?? []).filter((e) => e.kind === "consume");
+    const recorded = await (dbModule.recordAgentRun as unknown as { mock: { results: { value: Promise<string> }[] } }).mock.results.at(-1)!.value;
+    expect(consumes.map((e) => e.ref)).toEqual([`run:${recorded}`]);
+    expect(state.usage.get("user-1:2026-10") ?? state.usage.get(`user-1:${new Date().toISOString().slice(0, 7)}`)).toMatchObject({ creditsUsed: 1, llmCostUsd: 0.5 });
+  });
+
+  it("a runtime that throws gives the reserved credit back (release:<id>) and fails the step", async () => {
+    const deps = { ...fakeDeps(state, events), runtime: { name: "mock" as const, run: async (): Promise<AgentRunResult> => Promise.reject(new Error("runtime down")) } };
+    const task = seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0 });
+    await expect(executeTask(deps, task.id)).rejects.toThrow(/runtime down/);
+    const entries = state.credits.get("user-1") ?? [];
+    expect(entries.map((e) => `${e.kind}:${e.amount}:${e.ref.split(":")[0]}`)).toEqual(["grant_plan:300:trial", "consume:-1:run", "adjust:1:release"]);
+    expect(entries.reduce((s, e) => s + e.amount, 0)).toBe(300);
+  });
+});

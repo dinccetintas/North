@@ -43,6 +43,10 @@ const list = (data: unknown[], hasMore = false) => ({ object: "list", data, has_
 const priceRoute: Route = (call) => ({ status: 200, json: list([{ id: `price_for_${call.query["lookup_keys[]"]}`, object: "price", lookup_key: call.query["lookup_keys[]"] }]) });
 const sessionRoute: Route = () => ({ status: 200, json: { id: "cs_test_a1", object: "checkout.session", url: "https://checkout.stripe.com/c/pay/cs_test_a1#fid" } });
 
+/** The adapter's clock in these tests: `expires_at` is 35 minutes after it (L10). */
+const NOW = new Date("2026-11-02T04:00:00.000Z");
+const EXPIRES_AT = String(NOW.getTime() / 1000 + 35 * 60);
+
 const checkout = {
   customerId: "cus_Q1w2e3r4",
   lookupKey: "north_pro_monthly",
@@ -89,9 +93,9 @@ describe("StripeBilling live adapter (B6-3, BIL-1): recorded request shapes", ()
     expect(calls[1]?.headers["idempotency-key"]).toBe(`north-customer-${USER}`);
   });
 
-  it("createCheckoutSession resolves the price by lookup key and posts the form with the session row id as Idempotency-Key", async () => {
+  it("createCheckoutSession resolves the price by lookup key and posts a card-only form with the session row id as Idempotency-Key", async () => {
     const { calls, fetchImpl } = scripted({ "GET /v1/prices": priceRoute, "POST /v1/checkout/sessions": sessionRoute });
-    const billing = new StripeBilling(config, fetchImpl);
+    const billing = new StripeBilling(config, fetchImpl, () => NOW);
     await expect(billing.createCheckoutSession(checkout)).resolves.toEqual({ url: "https://checkout.stripe.com/c/pay/cs_test_a1#fid", providerRef: "cs_test_a1", sandbox: false });
     expect(calls[0]).toMatchObject({ method: "GET", path: "/v1/prices", query: { "lookup_keys[]": "north_pro_monthly", active: "true", limit: "1" } });
     expect(calls[1]).toMatchObject({ method: "POST", path: "/v1/checkout/sessions" });
@@ -100,10 +104,12 @@ describe("StripeBilling live adapter (B6-3, BIL-1): recorded request shapes", ()
       customer: "cus_Q1w2e3r4",
       "line_items[0][price]": "price_for_north_pro_monthly",
       "line_items[0][quantity]": "1",
+      "payment_method_types[0]": "card",
       client_reference_id: USER,
       success_url: checkout.successUrl,
       cancel_url: checkout.cancelUrl,
       allow_promotion_codes: "true",
+      expires_at: EXPIRES_AT,
       "metadata[north_user_id]": USER,
       "subscription_data[metadata][north_user_id]": USER,
     });
@@ -129,13 +135,26 @@ describe("StripeBilling live adapter (B6-3, BIL-1): recorded request shapes", ()
     expect(calls.some((c) => c.path === "/v1/checkout/sessions")).toBe(false);
   });
 
-  it("createCreditPackSession is a payment checkout tagged with metadata north_pack_id", async () => {
+  it("createCreditPackSession is a card-only payment checkout at the pack's exact price, tagged with metadata north_pack_id (H1)", async () => {
     const { calls, fetchImpl } = scripted({ "GET /v1/prices": priceRoute, "POST /v1/checkout/sessions": sessionRoute });
     const { customerId, clientReferenceId, successUrl, cancelUrl } = checkout;
-    await new StripeBilling(config, fetchImpl).createCreditPackSession({ customerId, clientReferenceId, successUrl, cancelUrl, packId: "pack_100", idempotencyKey: "pack-session-1" });
+    await new StripeBilling(config, fetchImpl, () => NOW).createCreditPackSession({ customerId, clientReferenceId, successUrl, cancelUrl, packId: "pack_100", idempotencyKey: "pack-session-1" });
     expect(calls[0]?.query["lookup_keys[]"]).toBe("north_pack_100");
-    expect(calls[1]?.form).toMatchObject({ mode: "payment", "line_items[0][price]": "price_for_north_pack_100", "metadata[north_pack_id]": "pack_100", "metadata[north_user_id]": USER });
+    expect(calls[1]?.form).toEqual({
+      mode: "payment",
+      customer: "cus_Q1w2e3r4",
+      "line_items[0][price]": "price_for_north_pack_100",
+      "line_items[0][quantity]": "1",
+      "payment_method_types[0]": "card",
+      client_reference_id: USER,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      expires_at: EXPIRES_AT,
+      "metadata[north_user_id]": USER,
+      "metadata[north_pack_id]": "pack_100",
+    });
     expect(calls[1]?.form).not.toHaveProperty("subscription_data[metadata][north_user_id]");
+    expect(calls[1]?.form).not.toHaveProperty("allow_promotion_codes");
     expect(calls[1]?.headers["idempotency-key"]).toBe("pack-session-1");
   });
 
@@ -158,6 +177,24 @@ describe("StripeBilling live adapter (B6-3, BIL-1): recorded request shapes", ()
     expect(calls[0]?.query).toEqual({ customer: "cus_Q1w2e3r4", status: "all", limit: "1" });
     await expect(billing.subscription("../cus")).resolves.toBeNull();
     expect(calls).toHaveLength(3);
+  });
+
+  it("subscription(customer, id) reads that subscription (M1 reconcile): canceled is reported, another customer's or a missing one is null", async () => {
+    const canceled = { id: "sub_9", customer: "cus_Q1w2e3r4", status: "canceled", cancel_at_period_end: false, items: { data: [{ price: { lookup_key: "north_pro_monthly" }, current_period_end: 1_799_000_000 }] } };
+    const answers: { status: number; json: unknown }[] = [
+      { status: 200, json: canceled },
+      { status: 200, json: { ...canceled, customer: "cus_other1" } },
+      { status: 404, json: { error: { type: "invalid_request_error", code: "resource_missing" } } },
+      { status: 500, json: { error: { type: "api_error" } } },
+    ];
+    const { calls, fetchImpl } = scripted({ "GET /v1/subscriptions/sub_9": () => answers.shift()! });
+    const billing = new StripeBilling(config, fetchImpl);
+    await expect(billing.subscription("cus_Q1w2e3r4", "sub_9")).resolves.toEqual({ id: "sub_9", status: "canceled", lookupKey: "north_pro_monthly", periodEnd: new Date(1_799_000_000_000).toISOString(), cancelAtPeriodEnd: false, sandbox: false });
+    await expect(billing.subscription("cus_Q1w2e3r4", "sub_9")).resolves.toBeNull();
+    await expect(billing.subscription("cus_Q1w2e3r4", "sub_9")).resolves.toBeNull();
+    await expect(billing.subscription("cus_Q1w2e3r4", "sub_9")).rejects.toMatchObject({ code: "http_500" });
+    await expect(billing.subscription("cus_Q1w2e3r4", "../sub_9")).resolves.toBeNull();
+    expect(calls.map((c) => c.path)).toEqual(Array(4).fill("/v1/subscriptions/sub_9"));
   });
 });
 

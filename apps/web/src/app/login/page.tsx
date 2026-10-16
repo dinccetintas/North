@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { ClearOfflineBriefs } from "@/components/clear-offline-briefs";
 import { SiteFooter } from "@/components/site-footer";
+import { errorText } from "@/lib/page-errors";
 import { sendMagicLink, signInWithGoogle } from "./actions";
 
 type SearchParams = Promise<{ sent?: string; error?: string; next?: string }>;
@@ -9,9 +11,11 @@ export const metadata = { title: "Sign in" };
 export default async function LoginPage({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const next = params.next && params.next.startsWith("/") ? params.next : "/companies";
+  const error = errorText("login", params.error);
 
   return (
     <main className="flex min-h-screen flex-col bg-bg text-fg">
+      <ClearOfflineBriefs />
       <header className="flex items-center justify-between px-6 py-5">
         <Link href="/" className="font-display text-3xl">
           North
@@ -30,9 +34,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
             Link sent. Check your inbox.
           </p>
         ) : null}
-        {params.error ? (
-          <p className="mono-label mt-8 border border-error bg-error-bg px-3 py-3 text-error" role="alert">
-            {params.error}
+        {error ? (
+          <p className="mono-label mt-8 border border-error bg-error-bg px-3 py-3 text-error" role="alert" data-testid="login-error">
+            {error}
           </p>
         ) : null}
 

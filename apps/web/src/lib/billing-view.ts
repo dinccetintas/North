@@ -182,19 +182,55 @@ export function checkoutConfirmed(session: BillingSessionLike | null, e: Entitle
   return session === null || session.planId === null || e?.planId === session.planId;
 }
 
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]"]);
+/** Stripe's hosted Checkout and billing portal; no other stripe.com host is a billing page. */
+const STRIPE_BILLING_HOSTS: ReadonlySet<string> = new Set(["checkout.stripe.com", "billing.stripe.com"]);
+/** The worker's sandbox checkout and portal pages; its sites (agent-written HTML) share the origin and are never followed. */
+const SANDBOX_BILLING_PATH = "/sandbox/billing/";
 
-/** The worker's session URL is followed only when it is https (Stripe) or the sandbox's loopback http; never credentials, never another scheme. */
-export function safeRedirectUrl(raw: string | null): string | null {
-  if (!raw) return null;
+/** What the go page may follow (`billingRedirectPolicy` in `lib/env.ts` reads it from the server's env). */
+export interface BillingRedirectPolicy {
+  readonly mode: "sandbox" | "live";
+  /** The worker's sandbox origin; null follows no sandbox page. */
+  readonly sandboxOrigin: string | null;
+}
+
+const parseUrl = (raw: string): URL | null => {
   try {
-    const url = new URL(raw);
-    if (url.username !== "" || url.password !== "") return null;
-    if (url.protocol === "https:") return url.href;
-    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) ? url.href : null;
+    return new URL(raw);
   } catch {
     return null;
   }
+};
+
+/**
+ * M6 review L6: the worker's session URL is followed only when it is
+ * Stripe's Checkout or billing portal (https, default port), or, in sandbox
+ * mode, a billing page at exactly the worker's sandbox origin. Never
+ * credentials, another host, port or scheme; anything else is "Billing could
+ * not start". Stripe stays allowed in sandbox mode because the web's mode
+ * only drives the UI and is not flipped with the worker's (runbook §4, §11).
+ */
+export function safeRedirectUrl(raw: string | null, policy: BillingRedirectPolicy): string | null {
+  const url = raw ? parseUrl(raw) : null;
+  if (!url || url.username !== "" || url.password !== "") return null;
+  if (url.protocol === "https:" && url.port === "" && STRIPE_BILLING_HOSTS.has(url.hostname)) return url.href;
+  const sandboxPage = policy.mode === "sandbox" && policy.sandboxOrigin !== null && url.origin === policy.sandboxOrigin && url.pathname.startsWith(SANDBOX_BILLING_PATH);
+  return sandboxPage ? url.href : null;
+}
+
+/** A failed session the page names in its own words (`PAGE_ERRORS.billing`); every other failure reads "Billing could not start". */
+export type BillingFailure = "checkout-open" | "subscribed";
+
+/** The worker's fixed refusals (`BILLING_SESSION_MESSAGES`), recognised by their first sentence; the stored text itself is never shown. */
+const SESSION_FAILURES: readonly (readonly [string, BillingFailure])[] = Object.freeze([
+  ["A checkout is already open.", "checkout-open"],
+  ["You already have a subscription.", "subscribed"],
+]);
+
+/** M6 review L8/L10: why the worker failed a billing session, when it is one the user can act on; null otherwise. */
+export function billingFailure(error: string | null): BillingFailure | null {
+  if (!error) return null;
+  return SESSION_FAILURES.find(([sentence]) => error.startsWith(sentence))?.[1] ?? null;
 }
 
 /** A queued task shows the company's dispatch refusal; the kill switch is explained by its own bar, so it is not repeated per row. */

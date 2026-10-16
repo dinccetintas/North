@@ -15,6 +15,33 @@ import type { TablesUpdate } from "./types";
 export const EXPORTS_BUCKET = "exports";
 /** The signed download link lives at most an hour. */
 export const EXPORT_URL_TTL_SEC = 3600;
+/** M6 review M4: requests per user in 24 hours (failed ones count); `exports_rate_limit` enforces it, one open export at a time too. */
+export const EXPORT_DAILY_CAP = 5;
+/** Free-text columns are cut to this many characters in the export's select (the `export_text` domain, 0015). */
+export const EXPORT_TEXT_MAX_CHARS = 20_000;
+
+export type ExportRefusal = "in_progress" | "daily_cap";
+
+/** The database refused the request (`exports_rate_limit`): an export is already being built, or the day's cap is spent. */
+export class ExportRefusedError extends DbError {
+  constructor(
+    message: string,
+    readonly reason: ExportRefusal,
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = "ExportRefusedError";
+  }
+}
+
+const RefusalSchema = z.object({ code: z.literal("23514"), message: z.string(), hint: z.enum(["export_in_progress", "export_daily_cap"]) });
+
+const exportRefusalFrom = (error: unknown): ExportRefusedError | null => {
+  const parsed = RefusalSchema.safeParse(error);
+  if (!parsed.success) return null;
+  const message = parsed.data.message.replace(/^exports:\s*/, "");
+  return new ExportRefusedError(`${message.charAt(0).toUpperCase()}${message.slice(1)}.`, parsed.data.hint === "export_in_progress" ? "in_progress" : "daily_cap", error);
+};
 
 /** The one object path an export may have; the policy keys on segment 2 (the user id). */
 export function exportStoragePath(userId: string, exportId: string): string {
@@ -86,7 +113,11 @@ const toExport = (row: unknown): ExportRecord => {
   });
 };
 
-/** The owner's client: a `requested` export (the insert policy allows nothing else); the web then sends `export/requested`. */
+/**
+ * The owner's client: a `requested` export (the insert policy allows nothing
+ * else); the web then sends `export/requested`. `ExportRefusedError` while one
+ * is being built or after `EXPORT_DAILY_CAP` requests in 24 hours.
+ */
 export async function requestExport(db: DbClient, input: RequestExportInput): Promise<ExportRecord> {
   const e = RequestExportInputSchema.parse(input);
   const { data, error } = await db
@@ -94,7 +125,7 @@ export async function requestExport(db: DbClient, input: RequestExportInput): Pr
     .insert({ user_id: e.userId, company_id: e.companyId, kind: e.kind, include_archived: e.includeArchived })
     .select(EXPORT_COLUMNS)
     .single();
-  if (error || !data) throw dbError("Could not request an export", error);
+  if (error || !data) throw exportRefusalFrom(error) ?? dbError("Could not request an export", error);
   return toExport(data);
 }
 

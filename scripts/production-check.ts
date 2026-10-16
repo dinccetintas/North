@@ -5,6 +5,7 @@
  * the first step of any incident.
  *
  *   web and worker health lines (mode, runtime, webhooks mounted, clock = wall)
+ *   the public worker mounts no sandbox route: /sandbox/sites/ and /sandbox/clock are 404
  *   an anonymous select on `companies` returns zero rows
  *   both storage buckets refuse an anonymous list and are not public
  *   the manifest and the service worker with the right content types
@@ -13,11 +14,13 @@
  *   every user's usage ratio for the month (only with a key that may read `usage`)
  *
  * Usage:
+ *   [STRIPE_READ_KEY=<restricted read-only key>] [NORTH_USAGE_READ_KEY=<key>] \
  *   pnpm production:check -- --web https://<web> --worker https://<worker> \
- *     --supabase https://<ref>.supabase.co --anon-key <anon key> \
- *     [--stripe-key <restricted read-only key>] [--usage-key <key>] [--json] [--allow-dev-inngest]
- * Env fallbacks: NORTH_WEB_URL, NORTH_WORKER_URL, NEXT_PUBLIC_SUPABASE_URL,
- * NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, STRIPE_READ_KEY, NORTH_USAGE_READ_KEY.
+ *     --supabase https://<ref>.supabase.co --anon-key <anon key> [--json] [--allow-dev-inngest]
+ * Env fallbacks for the flags: NORTH_WEB_URL, NORTH_WORKER_URL,
+ * NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY. The two
+ * secret keys are read from the environment only, never from a flag, so they
+ * stay out of shell history and `ps` (M6 review L11).
  * Exit 1 when any check fails; `skip` and `warn` do not fail.
  */
 import { pathToFileURL } from "node:url";
@@ -104,6 +107,21 @@ export async function workerHealth(c: CheckConfig, f: FetchLike): Promise<CheckR
   return result("worker-health", "pass", detail);
 }
 
+/** Paths a sandbox worker on loopback serves; the public worker (bound to 0.0.0.0) must not have them at all (ADR 0015, M6 review L5). */
+const SANDBOX_PROBES = ["/sandbox/sites/", "/sandbox/clock"] as const;
+
+/** GETs only: each sandbox path must be 404 (not mounted). A 403 means a guarded sandbox route is mounted, which is still a failure. */
+export async function workerSandboxClosed(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
+  const seen: string[] = [];
+  for (const path of SANDBOX_PROBES) {
+    const response = await f(`${c.workerUrl}${path}`, { redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    await response.text();
+    seen.push(`GET ${path} → ${response.status}`);
+  }
+  const ok = seen.every((line) => line.endsWith("→ 404"));
+  return result("worker-no-sandbox", ok ? "pass" : "fail", ok ? seen.join(", ") : `${seen.join(", ")}: sandbox routes are mounted on the public worker (WORKER_HOST must not be loopback there)`);
+}
+
 export async function anonCompanies(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
   const r = await fetchJson(f, `${c.supabaseUrl}/rest/v1/companies?select=id&limit=1`, { headers: anonHeaders(c.anonKey) });
   if (r.status === 200 && Array.isArray(r.json)) return result("anon-companies", r.json.length === 0 ? "pass" : "fail", r.json.length === 0 ? "anonymous select on companies: 0 rows" : "anonymous select on companies returned rows: RLS is off");
@@ -162,9 +180,13 @@ export async function inngestEndpoint(c: CheckConfig, f: FetchLike, which: "web"
   return result(id, "pass", detail);
 }
 
-/** The worker's Stripe endpoint, read with a restricted read-only key: it exists, it is enabled, it receives the six event types. */
+/**
+ * The worker's Stripe endpoint, read with a restricted read-only key: it
+ * exists, it is enabled, and it receives every type in core's
+ * `BILLING_EVENT_TYPES`, the same list `stripe:setup` registers (no copy here).
+ */
 export async function stripeWebhook(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
-  if (!c.stripeKey) return result("stripe-webhook", "skip", "no --stripe-key (a restricted key with webhook endpoints: read)");
+  if (!c.stripeKey) return result("stripe-webhook", "skip", "no STRIPE_READ_KEY in the environment (a restricted key with webhook endpoints: read)");
   const target = `${c.workerUrl}/webhooks/stripe`;
   const r = await stripeCall(f, c.stripeKey, { method: "GET", path: "/webhook_endpoints", query: [["limit", "100"]] });
   if (!r.ok) return result("stripe-webhook", "fail", `GET /v1/webhook_endpoints → ${r.status ?? "network"} ${r.code}`);
@@ -180,7 +202,7 @@ export async function stripeWebhook(c: CheckConfig, f: FetchLike): Promise<Check
 
 /** Every user's inference + sandbox cost over their plan price this month (UTC); at or over the 40 % line is a warning, not a failure. */
 export async function usageRatios(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
-  if (!c.usageKey) return result("usage-ratios", "skip", "no --usage-key (usage rows are owner-only under RLS)");
+  if (!c.usageKey) return result("usage-ratios", "skip", "no NORTH_USAGE_READ_KEY in the environment (usage rows are owner-only under RLS)");
   const period = localMonth("UTC", c.now);
   const headers = anonHeaders(c.usageKey);
   const usage = await fetchJson(f, `${c.supabaseUrl}/rest/v1/usage?period=eq.${period}&select=user_id,llm_cost_usd,sandbox_minutes`, { headers });
@@ -198,6 +220,7 @@ export async function runChecks(c: CheckConfig, f: FetchLike = (input, init) => 
   const checks: readonly [string, () => Promise<CheckResult>][] = [
     ["web-health", () => webHealth(c, f)],
     ["worker-health", () => workerHealth(c, f)],
+    ["worker-no-sandbox", () => workerSandboxClosed(c, f)],
     ["anon-companies", () => anonCompanies(c, f)],
     ...BUCKETS.map((b): [string, () => Promise<CheckResult>] => [`storage-${b}`, () => bucketPrivate(c, f, b)]),
     ["pwa-manifest", () => manifest(c, f)],
@@ -220,11 +243,24 @@ const trimUrl = (value: string | undefined, name: string): string => {
   return v;
 };
 
-/** Flags first, then the environment; the keys are read from the shell and never printed. */
+/** The secret keys and the only place each is read from (M6 review L11: a flag would put it in shell history and `ps`). */
+const KEY_FLAGS: Readonly<Record<string, string>> = Object.freeze({ "--usage-key": "NORTH_USAGE_READ_KEY", "--stripe-key": "STRIPE_READ_KEY" });
+
+/** Refuses a key passed as a flag, naming the flag and its variable, never the value. */
+function refuseKeyFlags(argv: readonly string[]): void {
+  for (const arg of argv) {
+    const flag = arg.split("=", 1)[0] ?? "";
+    const variable = KEY_FLAGS[flag];
+    if (variable) throw new Error(`${flag} is not accepted: a key on the command line lands in shell history and ps; set ${variable} in the environment instead`);
+  }
+}
+
+/** Flags first, then the environment for the URLs and the anon key; the secret keys from the environment only, never printed. */
 export function configFrom(argv: readonly string[], env: NodeJS.ProcessEnv, now = new Date()): CheckConfig & { readonly json: boolean } {
+  refuseKeyFlags(argv);
   const { values } = parseArgs({
     args: [...argv],
-    options: { web: { type: "string" }, worker: { type: "string" }, supabase: { type: "string" }, "anon-key": { type: "string" }, "stripe-key": { type: "string" }, "usage-key": { type: "string" }, json: { type: "boolean" }, "allow-dev-inngest": { type: "boolean" } },
+    options: { web: { type: "string" }, worker: { type: "string" }, supabase: { type: "string" }, "anon-key": { type: "string" }, json: { type: "boolean" }, "allow-dev-inngest": { type: "boolean" } },
     strict: true,
     allowPositionals: false,
   });
@@ -235,8 +271,8 @@ export function configFrom(argv: readonly string[], env: NodeJS.ProcessEnv, now 
     workerUrl: trimUrl(values.worker ?? env.NORTH_WORKER_URL, "--worker"),
     supabaseUrl: trimUrl(values.supabase ?? env.NEXT_PUBLIC_SUPABASE_URL, "--supabase"),
     anonKey,
-    stripeKey: (values["stripe-key"] ?? env.STRIPE_READ_KEY ?? "").trim() || null,
-    usageKey: (values["usage-key"] ?? env.NORTH_USAGE_READ_KEY ?? "").trim() || null,
+    stripeKey: (env.STRIPE_READ_KEY ?? "").trim() || null,
+    usageKey: (env.NORTH_USAGE_READ_KEY ?? "").trim() || null,
     allowDevInngest: values["allow-dev-inngest"] === true,
     json: values.json === true,
     now,

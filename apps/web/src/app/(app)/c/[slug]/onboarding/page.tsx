@@ -3,6 +3,7 @@ import { getOnboardingStep } from "@north/db";
 import type { OnboardingStep } from "@north/core/onboarding";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
+import { errorText } from "@/lib/page-errors";
 import { QuestionsStep } from "./steps/questions-step";
 import { GoalStep } from "./steps/goal-step";
 import { BudgetStep } from "./steps/budget-step";
@@ -19,7 +20,8 @@ type WizardStep = Exclude<OnboardingStep, "thesis" | "done">;
 const toWizardStep = (step: OnboardingStep): WizardStep | "done" => (step === "thesis" ? "questions" : step);
 
 export default async function OnboardingPage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
-  const [{ slug }, { error }] = await Promise.all([params, searchParams]);
+  const [{ slug }, { error: errorCode }] = await Promise.all([params, searchParams]);
+  const error = errorText("onboarding", errorCode);
   const company = await companyBySlug(slug);
   if (!company) notFound();
 

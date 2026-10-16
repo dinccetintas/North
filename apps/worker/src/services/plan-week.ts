@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { PlanOutputSchema, missingRevisionReasons, outputJsonSchema, weekStartLocal, type DispatchBlockReason, type PlanOutput } from "@north/core";
 import { LEADS_COUNT_VAR, LEDGER_REPORT_VAR, PLAN_PREVIOUS_VAR, SITE_URL_VAR, sandboxMinutesOf, type AgentRunResult, type PreviousPlanVar } from "@north/agents";
 import { companyOwnerId, countLeads, createPlanWithTasks, createTask, getProfile, latestPlan, listGoals, listMemoryItems, listSignals, markTaskDone, markTaskFailed, markTaskRunning, recordAgentRun, siteUrls, type PlanRecord, type TaskRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { companyContext, type CompanyContext } from "./company-context";
-import { chargeRun } from "./credits";
+import { chargeRun, releaseRun, reserveRun, type RunReservation } from "./credits";
 import { dispatchAllowed } from "./entitlements";
 import { ledgerReport } from "./plan-report";
 
@@ -57,9 +58,33 @@ export async function planContext(deps: WorkerDeps, companyId: string): Promise<
   return Object.freeze({ ...base, vars: Object.freeze(vars), previous, previousTasks: previous?.tasks.map((t) => ({ taskType: t.taskType })) ?? [], timezone, weekStart: weekStartLocal(timezone, now), notes });
 }
 
-/** The planning run's `agent_runs` row, its trace and, in the same call, its credit and usage (BIL-2). */
-async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null): Promise<void> {
+/** A planning run's id and its credit, reserved before it starts (M6 review L9). */
+interface PlanningCharge {
+  readonly agentRunId: string;
+  readonly reservation: RunReservation;
+}
+
+/** Reserves the next planning run's credit; null when the balance is 0 (nothing starts). */
+async function reservePlanning(deps: WorkerDeps, companyId: string): Promise<PlanningCharge | null> {
+  const agentRunId = randomUUID();
+  const reservation = await reserveRun(deps, companyId, agentRunId);
+  return reservation.ok ? { agentRunId, reservation } : null;
+}
+
+/** A reserved planning run that throws before it is recorded never ran: its credit is released. */
+async function releasedOnThrow<T>(deps: WorkerDeps, charge: PlanningCharge, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (cause) {
+    await releaseRun(deps, charge.agentRunId, charge.reservation);
+    throw cause;
+  }
+}
+
+/** The planning run's `agent_runs` row under its reserved id, its trace and, in the same call, its usage (BIL-2). */
+async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null, charge: PlanningCharge): Promise<void> {
   const agentRunId = await recordAgentRun(deps.db, {
+    id: charge.agentRunId,
     companyId: task.companyId,
     taskId: task.id,
     role: "chief_of_staff",
@@ -74,7 +99,7 @@ async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: Age
     ...(result.status === "failed" ? { error: result.error } : {}),
     traceId,
   });
-  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) });
+  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) }, charge.reservation);
 }
 
 const revisionRetryNote = (missing: readonly string[]): string =>
@@ -82,11 +107,11 @@ const revisionRetryNote = (missing: readonly string[]): string =>
 
 type RunOutcome = { readonly kind: "plan"; readonly plan: PlanOutput; readonly costUsd: number } | { readonly kind: "failed"; readonly error: string } | { readonly kind: "rejected"; readonly missing: readonly string[] };
 
-/** One planning run, parsed and checked against PLN-2; `retryNote` names the missing types on the second attempt. */
-async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanContext, retryNote: string | null): Promise<RunOutcome> {
+/** One planning run under its reserved credit, parsed and checked against PLN-2; `retryNote` names the missing types on the second attempt. */
+async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanContext, retryNote: string | null, charge: PlanningCharge): Promise<RunOutcome> {
   const instructions = [retryNote, context.header, task.input, ...context.notes].filter((line): line is string => line !== null && line.length > 0).join("\n\n");
   const traceId = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: "chief_of_staff", taskType: "plan_week", instructions });
-  const result = await deps.runtime.run({
+  const result = await releasedOnThrow(deps, charge, () => deps.runtime.run({
     companyId: task.companyId,
     taskId: task.id,
     role: "chief_of_staff",
@@ -97,9 +122,9 @@ async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanCont
     outputSchema: outputJsonSchema("plan_week"),
     vars: context.vars,
     ...(traceId ? { traceId } : {}),
-  });
+  }));
   deps.tracer.endRun(traceId, { model: result.usage.model, costUsd: result.usage.costUsd, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, status: result.status });
-  await recordPlanningRun(deps, task, result, result.traceId ?? traceId);
+  await recordPlanningRun(deps, task, result, result.traceId ?? traceId, charge);
   if (result.status !== "succeeded") return { kind: "failed", error: result.status === "failed" ? result.error : "planning cannot wait on a decision" };
   const parsed = PlanOutputSchema.safeParse(result.output);
   if (!parsed.success) return { kind: "failed", error: `plan output invalid: ${parsed.error.issues[0]?.message ?? "schema"}` };
@@ -114,26 +139,40 @@ async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanCont
  * that shrinks a task type without a reason is retried once with the types
  * named, then the planning task fails. The week is the owner's local week;
  * the Monday cron (`planTick`) asks only when the latest plan is older.
- * Dispatch asks first (ADR 0014): a refusal plans nothing.
+ * Dispatch asks first (ADR 0014): a refusal plans nothing; each planning run's
+ * credit is reserved before it starts (M6 review L9), so at a balance of 0
+ * nothing is created and a retry without credits fails the planning task.
  */
 export async function planWeek(deps: WorkerDeps, companyId: string): Promise<PlanWeekResult> {
   const { db } = deps;
   const allowed = await dispatchAllowed(deps, companyId);
   if (!allowed.ok) return { kind: "skipped", skipped: allowed.reason };
-  const context = await planContext(deps, companyId);
-  const goal = (await listGoals(db, companyId)).find((g) => g.status === "active") ?? null;
-  const planningTask = await createTask(db, {
-    companyId,
-    role: "chief_of_staff",
-    taskType: "plan_week",
-    title: `Weekly plan for ${context.weekStart}`,
-    input: goal ? `Active goal: ${goal.metricKey} → ${goal.targetValue} by ${goal.dueDate}` : "No active goal yet; plan the first validation week.",
-    metricKey: goal?.metricKey ?? "artifacts",
+  const first = await reservePlanning(deps, companyId);
+  if (!first) return { kind: "skipped", skipped: "credits_exhausted" };
+  const { context, goal, planningTask } = await releasedOnThrow(deps, first, async () => {
+    const context = await planContext(deps, companyId);
+    const goal = (await listGoals(db, companyId)).find((g) => g.status === "active") ?? null;
+    const planningTask = await createTask(db, {
+      companyId,
+      role: "chief_of_staff",
+      taskType: "plan_week",
+      title: `Weekly plan for ${context.weekStart}`,
+      input: goal ? `Active goal: ${goal.metricKey} → ${goal.targetValue} by ${goal.dueDate}` : "No active goal yet; plan the first validation week.",
+      metricKey: goal?.metricKey ?? "artifacts",
+    });
+    await markTaskRunning(db, planningTask.id);
+    return { context, goal, planningTask };
   });
-  await markTaskRunning(db, planningTask.id);
 
-  let run = await runPlanning(deps, planningTask, context, null);
-  if (run.kind === "rejected") run = await runPlanning(deps, planningTask, context, revisionRetryNote(run.missing));
+  let run = await runPlanning(deps, planningTask, context, null, first);
+  if (run.kind === "rejected") {
+    const retry = await reservePlanning(deps, companyId);
+    if (!retry) {
+      await markTaskFailed(db, planningTask.id, `PLN-2: the plan shrank ${run.missing.join(", ")} without a reason; no credits left for the retry`);
+      return { kind: "skipped", skipped: "credits_exhausted" };
+    }
+    run = await runPlanning(deps, planningTask, context, revisionRetryNote(run.missing), retry);
+  }
   if (run.kind === "rejected") {
     await markTaskFailed(db, planningTask.id, `PLN-2: the plan shrank ${run.missing.join(", ")} without a reason, twice`);
     return { kind: "rejected", taskId: planningTask.id, missing: run.missing };

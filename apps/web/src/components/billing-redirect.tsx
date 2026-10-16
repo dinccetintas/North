@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { billingSessionStateAction, type SessionState } from "@/app/(app)/settings/billing/actions";
 import { AsciiSpinner } from "@/components/ascii-spinner";
+import type { BillingFailure } from "@/lib/billing-view";
+import { errorText } from "@/lib/page-errors";
 
 const POLL_MS = 1_000;
 const MAX_MS = 20_000;
@@ -17,6 +19,7 @@ type View = SessionState["status"] | "timeout";
  */
 export function BillingRedirect({ sessionId, initial }: { sessionId: string; initial: SessionState }) {
   const [view, setView] = useState<View>(initial.status);
+  const [reason, setReason] = useState<BillingFailure | null>(initial.reason ?? null);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,6 +32,7 @@ export function BillingRedirect({ sessionId, initial }: { sessionId: string; ini
       }
       if (state.status === "failed" || state.status === "missing") {
         setView(state.status);
+        setReason(state.reason ?? null);
         return true;
       }
       return false;
@@ -51,9 +55,9 @@ export function BillingRedirect({ sessionId, initial }: { sessionId: string; ini
 
   if (view === "failed" || view === "missing" || view === "timeout") {
     return (
-      <div className="mt-8 border border-error bg-error-bg p-5" data-testid="billing-session-failed" data-reason={view}>
+      <div className="mt-8 border border-error bg-error-bg p-5" data-testid="billing-session-failed" data-reason={view} data-failure={reason ?? undefined}>
         <p className="mono-label text-error">
-          {view === "timeout" ? "Stripe did not answer in time. Nothing was charged." : "Billing could not start. Nothing was charged."}
+          {view === "timeout" ? "Stripe did not answer in time. Nothing was charged." : reason ? errorText("billing", reason) : "Billing could not start. Nothing was charged."}
         </p>
         <Link href="/settings/billing" className="retro-button mt-4 inline-block">
           Back to billing

@@ -4,6 +4,8 @@ import { DbError } from "../src/errors";
 import { createTestUser, deleteTestUser, raw, service, type RawClient, type TestUser } from "./fixtures";
 
 const rand = () => Math.random().toString(36).slice(2, 10);
+/** The sha256 of a raw body the worker stores with the reduced event (L2); its value does not matter here. */
+const HASH = "a".repeat(64);
 
 describe("billing repository (BIL-1: sessions and events)", () => {
   let owner: TestUser;
@@ -51,21 +53,21 @@ describe("billing repository (BIL-1: sessions and events)", () => {
   it("insertBillingEvent is idempotent by the Stripe event id: a duplicate returns the first row and changes nothing", async () => {
     const eventId = `evt_${rand()}`;
     const payload = { id: eventId, type: "invoice.paid", created: 1, data: { object: { id: "in_1" } } };
-    const first = await insertBillingEvent(service, { eventId, type: "invoice.paid", userId: owner.id, payload });
+    const first = await insertBillingEvent(service, { eventId, type: "invoice.paid", userId: owner.id, payload, payloadSha256: HASH });
     expect(first.duplicate).toBe(false);
-    const replay = await insertBillingEvent(service, { eventId, type: "invoice.paid", userId: owner.id, payload: { forged: true } });
+    const replay = await insertBillingEvent(service, { eventId, type: "invoice.paid", userId: owner.id, payload: { forged: true }, payloadSha256: HASH });
     expect(replay).toEqual({ id: first.id, duplicate: true });
     const stored = await getBillingEvent(service, first.id);
     expect(stored).toMatchObject({ id: first.id, eventId, type: "invoice.paid", userId: owner.id, payload, appliedAt: null });
-    const unknown = await insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "customer.subscription.deleted", userId: null, payload: {} });
+    const unknown = await insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "customer.subscription.deleted", userId: null, payload: {}, payloadSha256: HASH });
     expect((await getBillingEvent(service, unknown.id))?.userId).toBeNull();
-    await expect(insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "charge.refunded" as never, userId: null, payload: {} })).rejects.toThrow();
-    await expect(insertBillingEvent(owner.client, { eventId: `evt_${rand()}`, type: "invoice.paid", userId: owner.id, payload: {} })).rejects.toBeInstanceOf(DbError);
+    await expect(insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "charge.refunded" as never, userId: null, payload: {}, payloadSha256: HASH })).rejects.toThrow();
+    await expect(insertBillingEvent(owner.client, { eventId: `evt_${rand()}`, type: "invoice.paid", userId: owner.id, payload: {}, payloadSha256: HASH })).rejects.toBeInstanceOf(DbError);
     expect(await getBillingEvent(owner.client, first.id)).toBeNull();
   });
 
   it("markBillingEventApplied sets applied_at once and reports whether this call did", async () => {
-    const event = await insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "invoice.payment_failed", userId: owner.id, payload: {} });
+    const event = await insertBillingEvent(service, { eventId: `evt_${rand()}`, type: "invoice.payment_failed", userId: owner.id, payload: {}, payloadSha256: HASH });
     expect(await markBillingEventApplied(service, event.id)).toBe(true);
     expect(await markBillingEventApplied(service, event.id)).toBe(false);
     expect((await getBillingEvent(service, event.id))?.appliedAt).toEqual(expect.any(String));

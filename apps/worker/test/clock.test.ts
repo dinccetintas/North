@@ -19,7 +19,10 @@ vi.mock("@north/db", () => fakeDbModule(state));
 const { gateAction } = await import("../src/services/actions");
 
 const START = "2026-10-19T04:00:00.000Z";
-const post = (app: ReturnType<typeof sandboxRoutes>, body?: string) => app.request("/sandbox/clock", { method: "POST", headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body }) });
+/** The worker's own loopback origin, as the smoke's plain `fetch` reaches it (M6 review L4: the Host must be loopback with the worker's port). */
+const SELF = "http://127.0.0.1:3101";
+const post = (app: ReturnType<typeof sandboxRoutes>, body?: string, headers: Record<string, string> = {}) =>
+  app.request(`${SELF}/sandbox/clock`, { method: "POST", headers: { "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body }) });
 
 beforeEach(() => {
   Object.assign(state, emptyState());
@@ -55,12 +58,25 @@ describe("POST /sandbox/clock", () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ ok: true, now: expect.stringMatching(/^2026-10-19T04:00/) });
     expect(clock.now().toISOString().slice(0, 16)).toBe("2026-10-19T04:00");
-    const read = await app.request("/sandbox/clock");
+    const read = await app.request(`${SELF}/sandbox/clock`);
     expect(read.status).toBe(200);
     expect(await read.json()).toMatchObject({ now: expect.stringMatching(/^2026-10-19T04:00/) });
     expect((await post(app, JSON.stringify({ now: "yesterday" }))).status).toBe(400);
     expect((await post(app, "nope")).status).toBe(400);
     expect((await post(app)).status).toBe(400);
+  });
+
+  it("M6 review L4: a cross-site page cannot move the clock (a text/plain JSON or a form), nor can a rebound Host", async () => {
+    const clock = new SimClock();
+    const app = sandboxRoutes(integrations, "127.0.0.1", clock);
+    const body = JSON.stringify({ now: START });
+    expect((await post(app, body, { "content-type": "text/plain", "sec-fetch-site": "cross-site", origin: "https://evil.example" })).status).toBe(403);
+    expect((await post(app, body, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await post(app, body, { host: "rebound.evil.example:3101" })).status).toBe(403);
+    expect((await app.request(`${SELF}/sandbox/clock`, { headers: { host: "rebound.evil.example:3101" } })).status).toBe(403);
+    expect(clock.offsetMs).toBe(0);
+    expect((await post(app, body, { "sec-fetch-site": "same-origin", origin: SELF })).status).toBe(200);
+    expect(clock.now().toISOString().slice(0, 16)).toBe("2026-10-19T04:00");
   });
 
   it("does not exist in live mode, off loopback, or without a simulated clock (404)", async () => {
@@ -80,11 +96,11 @@ describe("POST /sandbox/clock", () => {
     const billing = { clock: () => clock.now(), appUrl: "http://localhost:3100", deliver: async (signed: { eventId: string; body: string; signature: string }, type: string) => (delivered.push(signed.eventId), { eventId: signed.eventId, type, status: 200, response: {}, applied: true, request: signed }) };
     const { customerId } = await integrations.billing.ensureCustomer({ userId: "7a1f0c4e-2b3d-4e5f-8a9b-0c1d2e3f4a5b", email: "ceo@example.test" });
     const paths = [`/sandbox/billing/portal/${customerId}`, "/sandbox/billing/checkout/cs_sandbox_1"];
-    expect((await sandboxRoutes(integrations, "127.0.0.1", clock, billing).request(paths[0]!)).status).toBe(200);
+    expect((await sandboxRoutes(integrations, "127.0.0.1", clock, billing).request(`${SELF}${paths[0]!}`)).status).toBe(200);
     const live = { ...integrations, mode: "live" } as unknown as Integrations;
     for (const app of [sandboxRoutes(live, "127.0.0.1", clock, billing), sandboxRoutes(integrations, "0.0.0.0", clock, billing), sandboxRoutes(integrations, "worker.internal", clock, billing), sandboxRoutes(integrations, "127.0.0.1", clock, null)]) {
-      for (const path of paths) expect((await app.request(path)).status).toBe(404);
-      expect((await app.request(`/sandbox/billing/portal/${customerId}/end`, { method: "POST" })).status).toBe(404);
+      for (const path of paths) expect((await app.request(`${SELF}${path}`)).status).toBe(404);
+      expect((await app.request(`${SELF}/sandbox/billing/portal/${customerId}/end`, { method: "POST" })).status).toBe(404);
     }
     expect(delivered).toEqual([]);
   });

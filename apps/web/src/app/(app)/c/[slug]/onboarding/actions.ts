@@ -17,6 +17,7 @@ import { BUDGET_CATEGORIES } from "@north/core/authority/action";
 import { EVENT } from "@north/core/events";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import { inngest } from "@/inngest/client";
+import { withError, type ErrorCode } from "@/lib/page-errors";
 
 const SlugSchema = z.string().trim().min(1).max(200);
 
@@ -38,19 +39,19 @@ async function loadContext(formData: FormData): Promise<ActionContext> {
   return { db, company, slug: slug.data };
 }
 
-const wizardUrl = (slug: string, error?: string): string =>
-  error ? `/c/${slug}/onboarding?error=${encodeURIComponent(error)}` : `/c/${slug}/onboarding`;
+type WizardError = ErrorCode<"onboarding">;
 
-const errorMessage = (error: unknown, fallback: string): string => (error instanceof Error ? error.message : fallback);
+/** M6 review L8: an error is a code the page maps to its fixed line; the database's message goes to the server log only. */
+const wizardUrl = (slug: string, error?: WizardError): string => (error ? withError(`/c/${slug}/onboarding`, "onboarding", error) : `/c/${slug}/onboarding`);
 
-/** Runs a DB write and returns an error string instead of throwing, so `redirect()` can run outside try/catch. */
-async function attempt(work: () => Promise<void>, fallback: string): Promise<string | null> {
+/** Runs a DB write and returns the step's error code instead of throwing, so `redirect()` can run outside try/catch. */
+async function attempt(work: () => Promise<void>, failure: WizardError): Promise<WizardError | null> {
   try {
     await work();
     return null;
   } catch (error) {
-    console.error("[onboarding]", fallback, error);
-    return errorMessage(error, fallback);
+    console.error("[onboarding]", failure, error);
+    return failure;
   }
 }
 
@@ -67,12 +68,12 @@ export async function answerQuestionsAction(formData: FormData): Promise<void> {
   const { db, company, slug } = await loadContext(formData);
   const parsed = ClarificationAnswersSchema.safeParse(readAnswers(formData));
   if (!parsed.success || parsed.data.length === 0) {
-    redirect(wizardUrl(slug, "Each answer can be at most 1000 characters."));
+    redirect(wizardUrl(slug, "answers-invalid"));
   }
   const failure = await attempt(async () => {
     await saveClarifications(db, company.id, parsed.data);
     await setOnboardingStep(db, company.id, "goal");
-  }, "Could not save your answers");
+  }, "answers-failed");
   redirect(wizardUrl(slug, failure ?? undefined));
 }
 
@@ -85,12 +86,12 @@ export async function saveGoalAction(formData: FormData): Promise<void> {
     dueDate: formData.get("dueDate"),
   });
   if (!parsed.success) {
-    redirect(wizardUrl(slug, "Pick a metric, a target above zero and a due date."));
+    redirect(wizardUrl(slug, "goal-invalid"));
   }
   const failure = await attempt(async () => {
     await createGoal(db, company.id, parsed.data);
     await setOnboardingStep(db, company.id, "budget");
-  }, "Could not save the goal");
+  }, "goal-failed");
   redirect(wizardUrl(slug, failure ?? undefined));
 }
 
@@ -105,12 +106,12 @@ export async function saveBudgetAction(formData: FormData): Promise<void> {
     })),
   );
   if (!parsed.success) {
-    redirect(wizardUrl(slug, "Budgets must be numbers of zero or more."));
+    redirect(wizardUrl(slug, "budget-invalid"));
   }
   const failure = await attempt(async () => {
     await upsertBudgets(db, company.id, parsed.data);
     await setOnboardingStep(db, company.id, "summary");
-  }, "Could not save the budgets");
+  }, "budget-failed");
   redirect(wizardUrl(slug, failure ?? undefined));
 }
 
@@ -120,7 +121,7 @@ export async function approvePlanAction(formData: FormData): Promise<void> {
   const failure = await attempt(async () => {
     await setOnboardingStep(db, company.id, "done");
     await inngest.send({ name: EVENT.companyOnboarded, data: { companyId: company.id } });
-  }, "Could not start the company");
+  }, "start-failed");
   if (failure) redirect(wizardUrl(slug, failure));
   revalidatePath(`/c/${slug}`, "layout");
   redirect(`/c/${slug}`);

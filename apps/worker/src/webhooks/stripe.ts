@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { EVENT, parseBillingEvent, type BillingEvent } from "@north/core";
@@ -93,10 +93,12 @@ async function reemitIfUnapplied(deps: WorkerDeps, billingEventId: string, emit:
  * 413 over `MAX_STRIPE_BODY_BYTES` before the body is read in full; 401 on a
  * bad or stale signature (nothing written); 400 on a known type with a bad
  * shape; 200 `{ ignored }` for any other type (no row); 202 for an event no
- * user owns (stored with `user_id null`, never applied); 200 `{
- * billingEventId, duplicate }` otherwise: idempotent by the Stripe event id,
- * a replay is `duplicate: true` and changes nothing. A new event is stored
- * before `billing/event` asks `apply-billing-event` to project it.
+ * user owns (stored with `user_id null`, never applied, swept after
+ * `UNKNOWN_BILLING_EVENT_DAYS`); 200 `{ billingEventId, duplicate }`
+ * otherwise: idempotent by the Stripe event id, a replay is `duplicate: true`
+ * and changes nothing. A new event is stored before `billing/event` asks
+ * `apply-billing-event` to project it: the reduced event core parsed and the
+ * sha256 of the raw body, never the raw body itself (M6 review L2).
  */
 export function stripeWebhookRoutes(deps: WorkerDeps, options: StripeRouteOptions): Hono {
   const app = new Hono();
@@ -109,7 +111,8 @@ export function stripeWebhookRoutes(deps: WorkerDeps, options: StripeRouteOption
     if (parsed.kind === "ignored") return c.json({ ignored: parsed.type }, 200);
     const { event } = parsed;
     const userId = await resolveBillingUser(deps, event);
-    const stored = await insertBillingEvent(deps.db, { eventId: event.id, type: event.type, userId, payload: json as Record<string, unknown> });
+    const payloadSha256 = createHash("sha256").update(raw).digest("hex");
+    const stored = await insertBillingEvent(deps.db, { eventId: event.id, type: event.type, userId, payload: event as unknown as Record<string, unknown>, payloadSha256 });
     if (stored.duplicate) {
       await reemitIfUnapplied(deps, stored.id, options.emit);
       return c.json({ billingEventId: stored.id, duplicate: true }, 200);

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+import { withError } from "@/lib/page-errors";
 
 const OTP_TYPES: readonly EmailOtpType[] = ["magiclink", "email", "signup", "recovery", "invite", "email_change"];
 
@@ -24,5 +25,5 @@ export async function GET(request: NextRequest) {
     if (!error) return NextResponse.redirect(`${origin}${next}`);
   }
 
-  return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent("That link is invalid or expired.")}`);
+  return NextResponse.redirect(`${origin}${withError("/login", "login", "link-invalid")}`);
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DbClient } from "./client";
 import { DbError, dbError } from "./errors";
 import { UuidSchema } from "./json";
+import { readAllPages } from "./paging";
 
 /**
  * BIL-1 (ADR 0014): one `entitlements` row per user, mapped to core's
@@ -101,33 +102,114 @@ export async function upsertEntitlement(db: DbClient, entitlement: Entitlement):
   return toEntitlement(data);
 }
 
-const MAX_LIST = 1000;
+/** The fields a concurrent writer changes (no timestamp: the trial's are microseconds the ISO form drops); a compare-and-set checks them. */
+export type EntitlementExpectation = Partial<Pick<Entitlement, "status" | "planId" | "stripeCustomerId" | "stripeSubscriptionId" | "lastEventCreated" | "purgeDue">>;
 
-/** `entitlements-tick`: trials past their period end with no subscription, oldest first. */
-export async function listTrialsToEnd(db: DbClient, now: Date): Promise<readonly Entitlement[]> {
-  const { data, error } = await db
-    .from("entitlements")
-    .select(ENTITLEMENT_COLUMNS)
-    .eq("status", "trialing")
-    .is("stripe_subscription_id", null)
-    .lte("period_end", now.toISOString())
-    .order("period_end", { ascending: true })
-    .limit(MAX_LIST);
-  if (error) throw dbError("Could not list trials to end", error);
-  return Object.freeze((data ?? []).map(toEntitlement));
+const EXPECTED_COLUMNS = {
+  status: "status",
+  planId: "plan_id",
+  stripeCustomerId: "stripe_customer_id",
+  stripeSubscriptionId: "stripe_subscription_id",
+  lastEventCreated: "last_event_created",
+  purgeDue: "purge_due",
+} as const satisfies Record<keyof EntitlementExpectation, string>;
+
+/** The row as it was read, as an expectation: every field another writer may have changed since. */
+export const expectationOf = (e: Entitlement): EntitlementExpectation => ({ status: e.status, planId: e.planId, stripeCustomerId: e.stripeCustomerId, stripeSubscriptionId: e.stripeSubscriptionId, lastEventCreated: e.lastEventCreated, purgeDue: e.purgeDue });
+
+/**
+ * Worker only (M6 review L10): writes the entitlement only while its row
+ * still matches `expect`, never a blind upsert of a stale copy. Returns the
+ * row written, or null when the row changed (or does not exist).
+ */
+export async function updateEntitlementIf(db: DbClient, entitlement: Entitlement, expect: EntitlementExpectation): Promise<Entitlement | null> {
+  const e = EntitlementSchema.parse(entitlement);
+  const { user_id: userId, ...row } = toRow(e);
+  let query = db.from("entitlements").update(row).eq("user_id", userId);
+  for (const [field, column] of Object.entries(EXPECTED_COLUMNS) as [keyof EntitlementExpectation, string][]) {
+    if (!(field in expect)) continue;
+    const value = expect[field];
+    query = value === null ? query.is(column, null) : query.eq(column, value as string | number | boolean);
+  }
+  const { data, error } = await query.select(ENTITLEMENT_COLUMNS).maybeSingle();
+  if (error) throw dbError("Could not store entitlement", error);
+  return data ? toEntitlement(data) : null;
 }
 
-/** `retention-sweep`: ended entitlements whose retention has passed, purge-due ones included, oldest first. */
-export async function listRetentionDue(db: DbClient, now: Date): Promise<readonly Entitlement[]> {
-  const { data, error } = await db
-    .from("entitlements")
-    .select(ENTITLEMENT_COLUMNS)
-    .eq("status", "ended")
-    .lte("retention_until", now.toISOString())
-    .order("retention_until", { ascending: true })
-    .limit(MAX_LIST);
-  if (error) throw dbError("Could not list retention due", error);
-  return Object.freeze((data ?? []).map(toEntitlement));
+/** The row changed between the read and the write (a tick, the retention sweep, the customer write): the step retries on a fresh read. */
+export class EntitlementConflictError extends DbError {
+  constructor(userId: string) {
+    super(`Entitlement of ${userId} changed since it was read; not written`);
+    this.name = "EntitlementConflictError";
+  }
+}
+
+/** Worker only: stores the projection of `before` as `after`, refused with `EntitlementConflictError` when the row is no longer `before`. */
+export async function saveEntitlement(db: DbClient, before: Entitlement, after: Entitlement): Promise<Entitlement> {
+  const saved = await updateEntitlementIf(db, after, expectationOf(before));
+  if (!saved) throw new EntitlementConflictError(before.userId);
+  return saved;
+}
+
+/** Every row of an entitlement list, in pages under PostgREST's `max_rows` (the order ends on `user_id`, unique). */
+const allRows = async (what: string, page: (from: number, to: number) => PromiseLike<{ readonly data: readonly unknown[] | null; readonly error: unknown }>): Promise<readonly Entitlement[]> =>
+  Object.freeze((await readAllPages(page, what)).map(toEntitlement));
+
+/**
+ * `entitlements-tick` (M6 review M1): rows following a subscription that is
+ * not ended, whose `cancel_at` (else `period_end`) is at or before `cutoff`
+ * (the tick passes now − 3 days): the webhook that should have moved them
+ * did not come, so the worker asks the provider. Oldest first, every page.
+ */
+export function listEntitlementsToReconcile(db: DbClient, cutoff: Date): Promise<readonly Entitlement[]> {
+  const at = cutoff.toISOString();
+  return allRows("Could not list entitlements to reconcile", (from, to) =>
+    db
+      .from("entitlements")
+      .select(ENTITLEMENT_COLUMNS)
+      .in("status", ["trialing", "active", "past_due", "canceled"])
+      .not("stripe_subscription_id", "is", null)
+      .or(`cancel_at.lte.${at},and(cancel_at.is.null,period_end.lte.${at})`)
+      .order("period_end", { ascending: true })
+      .order("user_id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+/**
+ * `entitlements-tick`'s heal: rows on a priced subscription whose current
+ * period started at or before `startedBefore` (the tick passes now − 24 h,
+ * time for a failed renewal to have gone `past_due`) and is still running:
+ * `active`, or `canceled` at the period end (its period was paid) while
+ * `period_end` and any `cancel_at` are after `now`. Every page.
+ */
+export function listEntitlementsToHeal(db: DbClient, startedBefore: Date, now: Date): Promise<readonly Entitlement[]> {
+  const at = now.toISOString();
+  return allRows("Could not list entitlements to heal", (from, to) =>
+    db
+      .from("entitlements")
+      .select(ENTITLEMENT_COLUMNS)
+      .or(`status.eq.active,and(status.eq.canceled,period_end.gt.${at},or(cancel_at.is.null,cancel_at.gt.${at}))`)
+      .gt("price_usd", 0)
+      .not("stripe_subscription_id", "is", null)
+      .lte("period_start", startedBefore.toISOString())
+      .order("user_id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+/** `entitlements-tick`: trials past their period end with no subscription, oldest first, every page. */
+export function listTrialsToEnd(db: DbClient, now: Date): Promise<readonly Entitlement[]> {
+  return allRows("Could not list trials to end", (from, to) =>
+    db.from("entitlements").select(ENTITLEMENT_COLUMNS).eq("status", "trialing").is("stripe_subscription_id", null).lte("period_end", now.toISOString()).order("period_end", { ascending: true }).order("user_id", { ascending: true }).range(from, to),
+  );
+}
+
+/** `retention-sweep`: ended entitlements whose retention has passed, purge-due ones included, oldest first, every page. */
+export function listRetentionDue(db: DbClient, now: Date): Promise<readonly Entitlement[]> {
+  return allRows("Could not list retention due", (from, to) =>
+    db.from("entitlements").select(ENTITLEMENT_COLUMNS).eq("status", "ended").lte("retention_until", now.toISOString()).order("retention_until", { ascending: true }).order("user_id", { ascending: true }).range(from, to),
+  );
 }
 
 /** Worker only: marks (or clears) that the user's data may be purged. */

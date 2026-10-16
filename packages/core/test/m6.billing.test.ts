@@ -36,6 +36,9 @@ const subscriptionEvent = (type: "customer.subscription.created" | "customer.sub
   return parsed;
 };
 
+/** A 2025-03 invoice line that bills the subscription itself (M3: the plan period comes from it). */
+const planLine = (start: number, end: number) => ({ id: "il_1", amount: 29900, period: { start, end }, parent: { type: "subscription_item_details", subscription_item_details: { subscription: "sub_1", proration: false } } });
+
 const invoiceEvent = (type: "invoice.paid" | "invoice.payment_failed", over: Record<string, unknown> = {}, created = unix("2026-11-01T08:00:05.000Z")): BillingEvent => {
   const parsed = parseBillingEvent({
     id: `evt_${type}_${created}`,
@@ -48,7 +51,8 @@ const invoiceEvent = (type: "invoice.paid" | "invoice.payment_failed", over: Rec
         customer: "cus_1",
         subscription: "sub_1",
         amount_paid: 29900,
-        lines: { object: "list", data: [{ id: "il_1", period: { start: unix("2026-11-01T00:00:00.000Z"), end: unix("2026-12-01T00:00:00.000Z") } }] },
+        billing_reason: "subscription_create",
+        lines: { object: "list", data: [planLine(unix("2026-11-01T00:00:00.000Z"), unix("2026-12-01T00:00:00.000Z"))] },
         ...over,
       },
     },
@@ -62,7 +66,21 @@ const checkoutEvent = (mode: "subscription" | "payment", over: Record<string, un
     id: `evt_checkout_${mode}`,
     type: "checkout.session.completed",
     created: unix("2026-11-01T07:59:00.000Z"),
-    data: { object: { id: `cs_${mode}`, object: "checkout.session", customer: "cus_1", client_reference_id: userId, mode, subscription: mode === "subscription" ? "sub_1" : null, metadata: {}, ...over } },
+    data: {
+      object: {
+        id: `cs_${mode}`,
+        object: "checkout.session",
+        customer: "cus_1",
+        client_reference_id: userId,
+        mode,
+        subscription: mode === "subscription" ? "sub_1" : null,
+        payment_status: "paid",
+        amount_total: mode === "payment" ? 2900 : 29900,
+        currency: "usd",
+        metadata: mode === "payment" ? { north_pack_id: "pack_100" } : {},
+        ...over,
+      },
+    },
   });
   if ("ignored" in parsed) throw new Error("fixture is a known type");
   return parsed;
@@ -175,8 +193,10 @@ describe("BIL-1 entitlement projection: pure, ordered, never regressing", () => 
     const ended = applyBillingEvent(active, subscriptionEvent("customer.subscription.deleted", { status: "canceled" }, unix("2026-11-10T11:59:00.000Z")), now);
     const stale = applyBillingEvent(ended, subscriptionEvent("customer.subscription.updated", { cancel_at_period_end: true, current_period_start: unix("2026-12-01T00:00:00.000Z"), current_period_end: unix("2027-01-01T00:00:00.000Z") }, unix("2026-11-09T08:00:00.000Z")), now);
     expect(stale).toEqual(ended);
-    const same = applyBillingEvent(ended, subscriptionEvent("customer.subscription.updated", {}, unix("2026-11-10T11:59:00.000Z")), now);
-    expect(same.status).toBe("active");
+    // An equal timestamp applies to a live entitlement; the ended one stays ended for the same subscription (M1: its delete is terminal).
+    const canceled = applyBillingEvent(active, subscriptionEvent("customer.subscription.updated", { cancel_at_period_end: true }, unix("2026-11-10T11:59:00.000Z")), now);
+    expect(applyBillingEvent(canceled, subscriptionEvent("customer.subscription.updated", {}, unix("2026-11-10T11:59:00.000Z")), now).status).toBe("active");
+    expect(applyBillingEvent(ended, subscriptionEvent("customer.subscription.updated", {}, unix("2026-11-10T11:59:00.000Z")), now).status).toBe("ended");
     // Stripe does not order subscription.created and invoice.paid: the older one still fills the plan and the ids.
     const paidFirst = applyBillingEvent(trial, invoiceEvent("invoice.paid", {}, unix("2026-11-01T08:00:05.000Z")), now);
     const thenCreated = applyBillingEvent(paidFirst, subscriptionEvent("customer.subscription.created", {}, unix("2026-11-01T08:00:04.000Z")), now);
@@ -193,7 +213,7 @@ describe("BIL-1 entitlement projection: pure, ordered, never regressing", () => 
     expect(isActive(pastDue)).toBe(true);
     const paid = applyBillingEvent(
       pastDue,
-      invoiceEvent("invoice.paid", { lines: { data: [{ period: { start: unix("2026-12-01T00:00:00.000Z"), end: unix("2027-01-01T00:00:00.000Z") } }] } }, unix("2026-12-02T08:00:00.000Z")),
+      invoiceEvent("invoice.paid", { billing_reason: "subscription_cycle", lines: { data: [planLine(unix("2026-12-01T00:00:00.000Z"), unix("2027-01-01T00:00:00.000Z"))] } }, unix("2026-12-02T08:00:00.000Z")),
       now,
     );
     expect(paid).toMatchObject({ status: "active", periodStart: "2026-12-01T00:00:00.000Z", periodEnd: "2027-01-01T00:00:00.000Z" });
@@ -298,11 +318,13 @@ describe("BIL-2 credits are a ledger", () => {
     expect(creditGrantsFor(invoice, applyBillingEvent(active, invoice, now))).toEqual(first);
     const later = { ...active, periodStart: "2026-12-01T00:00:00.000Z", periodEnd: "2027-01-01T00:00:00.000Z" };
     expect(creditGrantsFor(invoice, later)[0]?.ref).toBe("plan:sub_1:2026-11-01T00:00:00.000Z");
-    expect(creditGrantsFor(invoiceEvent("invoice.paid", { lines: { data: [] } }), later)[0]?.ref).toBe("plan:sub_1:2026-12-01T00:00:00.000Z");
+    // M3: no subscription line, no plan period, no grant (no fallback to the entitlement's period).
+    expect(creditGrantsFor(invoiceEvent("invoice.paid", { lines: { data: [] } }), later)).toEqual([]);
     expect(creditGrantsFor(invoiceEvent("invoice.paid", { subscription: null }), { ...active, stripeSubscriptionId: null })).toEqual([]);
     expect(creditGrantsFor(invoiceEvent("invoice.paid", { subscription: null, parent: { subscription_details: { subscription: "sub_7" } } }), active)[0]?.ref).toBe("plan:sub_7:2026-11-01T00:00:00.000Z");
     expect(creditGrantsFor(checkoutEvent("payment"), active)).toEqual([{ kind: "grant_pack", amount: 100, ref: "pack:cs_payment", note: "pack_100" }]);
-    expect(creditGrantsFor(checkoutEvent("payment", { metadata: { north_pack_id: "pack_100" } }), active)[0]?.amount).toBe(100);
+    // H1: no pack id is no pack (no fallback to the first pack); an unknown one neither.
+    expect(creditGrantsFor(checkoutEvent("payment", { metadata: {} }), active)).toEqual([]);
     expect(creditGrantsFor(checkoutEvent("payment", { metadata: { north_pack_id: "pack_999" } }), active)).toEqual([]);
     expect(creditGrantsFor(checkoutEvent("subscription"), active)).toEqual([]);
     expect(creditGrantsFor(invoiceEvent("invoice.payment_failed"), active)).toEqual([]);

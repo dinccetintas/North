@@ -1,5 +1,21 @@
-import { ActionSpecSchema, batchPayload, gate, type ActionKind, type ActionSpec, type GateDecision, type Tier } from "@north/core";
-import { QuotaExceededError, getCard, getKillSwitch, getTask, headActionsForTask, listActiveAutoRules, listBudgets, markTaskWaiting, openCard, recordAction, recordActionTransition, type ActionRecord, type DbClient, type TaskRecord } from "@north/db";
+import { ActionSpecSchema, batchPayload, gate, isActive, type ActionKind, type ActionSpec, type GateDecision, type Tier } from "@north/core";
+import {
+  QuotaExceededError,
+  getCard,
+  getEntitlementForCompany,
+  getKillSwitch,
+  getTask,
+  headActionsForTask,
+  listActiveAutoRules,
+  listBudgets,
+  markTaskWaiting,
+  openCard,
+  recordAction,
+  recordActionTransition,
+  type ActionRecord,
+  type DbClient,
+  type TaskRecord,
+} from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { batchOpenRefusal, batchReuseRefusal, BATCH_MISMATCH } from "./batch-scope";
 import { BudgetCapReachedError } from "./budget-check";
@@ -34,6 +50,22 @@ export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads
 
 /** Kinds only the worker itself may request (M4 review H1, ADR 0012): a resume carries the worker's reason or a card; a cap raise is the collector's card; a signal card is the scan's. An agent asking for them is blocked. */
 export const WORKER_ONLY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.resume", "budget.cap.raise", "signal.pursue"]);
+
+/** Kinds that stop spend: never refused for an ended subscription (M6 review L3). */
+const STOPS_SPEND: ReadonlySet<ActionKind> = new Set(["ads.pause"]);
+export const SUBSCRIPTION_ENDED = "subscription_ended";
+
+/**
+ * M6 review L3: nothing touches the outside world for an owner whose
+ * entitlement has ended, whatever pause the company carries. An unknown
+ * company has no entitlement here; the kill switch refuses it first
+ * (`getKillSwitch` fails closed).
+ */
+async function subscriptionEnded(db: DbClient, companyId: string, kind: ActionKind): Promise<boolean> {
+  if (STOPS_SPEND.has(kind)) return false;
+  const entitlement = await getEntitlementForCompany(db, companyId);
+  return entitlement !== null && !isActive(entitlement);
+}
 
 const specKey = (spec: ActionSpec): string => JSON.stringify({ kind: spec.kind, description: spec.description, amountUsd: spec.amountUsd ?? null, category: spec.category ?? null, payload: spec.payload ?? null });
 const storedSpec = (a: ActionRecord): ActionSpec | null => {
@@ -120,7 +152,7 @@ async function blockWith(db: DbClient, base: RecordBase, payload: Record<string,
 export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpec): Promise<GatedAction> {
   const { db } = deps;
   const action = ActionSpecSchema.parse({ ...raw, companyId: ctx.companyId, agentRole: ctx.agentRole });
-  const [budgets, autoRules, killSwitchActive] = await Promise.all([listBudgets(db, ctx.companyId), listActiveAutoRules(db, ctx.companyId), getKillSwitch(db, ctx.companyId)]);
+  const [budgets, autoRules, killSwitchActive, ended] = await Promise.all([listBudgets(db, ctx.companyId), listActiveAutoRules(db, ctx.companyId), getKillSwitch(db, ctx.companyId), subscriptionEnded(db, ctx.companyId, action.kind)]);
   // The card's deadline and `opened_at` come from the worker's clock (ADR 0011); the database derives the quota day from `opened_at` in the owner's zone.
   const openedAt = deps.clock().toISOString();
   const decision: GateDecision = gate(action, { killSwitchActive, budgets, autoRules, cardDueAt: new Date(deps.clock().getTime() + DEFAULT_CARD_WINDOW_MS).toISOString() });
@@ -134,6 +166,7 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
   // No adapter yet: never open a card for it and never fake a reference (AGT-2).
   if (!INTERNAL_KINDS.has(action.kind) && !ADAPTER_KINDS.has(action.kind)) return blockWith(db, base, payload, "no_adapter", "no adapter for this kind");
   if (WORKER_ONLY_KINDS.has(action.kind) && ctx.origin !== "worker") return blockWith(db, base, payload, "worker_only", `${action.kind} is the platform's own effect; agents cannot request it`);
+  if (ended) return blockWith(db, base, payload, SUBSCRIPTION_ENDED, "the owner's subscription has ended");
   if (decision.kind === "run" || decision.kind === "notify") {
     if (INTERNAL_KINDS.has(action.kind)) {
       const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef: "internal" });
@@ -185,15 +218,16 @@ async function reuseCard(deps: WorkerDeps, ctx: GateContext, action: ActionSpec,
 
 export type PerformOutcome =
   | { readonly ok: true; readonly externalRef: string; readonly sandbox: boolean; readonly meta?: Readonly<Record<string, string>> }
-  | { readonly ok: false; readonly error: string; readonly connectionRequired?: string; readonly capReached?: true; readonly killed?: true };
+  | { readonly ok: false; readonly error: string; readonly connectionRequired?: string; readonly capReached?: true; readonly killed?: true; readonly ended?: true };
 
 const KILLED: PerformOutcome = Object.freeze({ ok: false, error: "kill switch active", killed: true });
+const ENDED: PerformOutcome = Object.freeze({ ok: false, error: "the owner's subscription has ended", ended: true });
 
 /**
  * Loads the pending action and executes its stored spec. Provider failures
  * come back as data so the next step can record them. Under the kill switch
- * nothing is performed (M4 review H4): the row stays pending and the resume
- * re-settles its card.
+ * (M4 review H4) or an ended subscription (M6 review L3) nothing is
+ * performed: the row stays pending and the resume re-settles its card.
  */
 export async function performPending(deps: WorkerDeps, actionId: string): Promise<PerformOutcome> {
   const row = await loadActionRow(deps.db, actionId);
@@ -201,6 +235,7 @@ export async function performPending(deps: WorkerDeps, actionId: string): Promis
   if (row.status !== "pending") return { ok: false, error: `action ${actionId} is ${row.status}, not pending` };
   if (!row.spec) return { ok: false, error: "stored action spec is invalid" };
   if (await getKillSwitch(deps.db, row.companyId)) return KILLED;
+  if (await subscriptionEnded(deps.db, row.companyId, row.spec.kind)) return ENDED;
   try {
     const result = await performAction(deps, row.spec, { decisionCardId: row.decisionCardId });
     return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox, ...(result.meta ? { meta: result.meta } : {}) };
@@ -212,7 +247,7 @@ export async function performPending(deps: WorkerDeps, actionId: string): Promis
 }
 
 export interface CompletedAction {
-  /** `pending` only when the kill switch stopped the perform step: no transition was written. */
+  /** `pending` only when the kill switch or an ended subscription stopped the perform step: no transition was written. */
   readonly status: "executed" | "notified" | "failed" | "pending";
   readonly externalRef: string | null;
 }
@@ -224,7 +259,7 @@ export interface CompletedAction {
  */
 export async function completeAction(deps: WorkerDeps, input: { readonly actionId: string; readonly tier: Tier; readonly outcome: PerformOutcome }): Promise<CompletedAction> {
   if (!input.outcome.ok) {
-    if (input.outcome.killed) return { status: "pending", externalRef: null };
+    if (input.outcome.killed || input.outcome.ended) return { status: "pending", externalRef: null };
     await recordActionTransition(deps.db, { actionId: input.actionId, status: "failed", note: input.outcome.error.slice(0, 500) });
     return { status: "failed", externalRef: null };
   }

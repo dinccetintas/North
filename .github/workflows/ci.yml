@@ -24,9 +24,16 @@ jobs:
       - run: pnpm -r test
       - run: pnpm test:scripts
       # ADR 0015: the web may read NEXT_PUBLIC_SENTRY_DSN (a public DSN), so SENTRY_DSN is matched only when no `_` precedes it.
+      # M6 review L15: every tracked file of apps/web (root configs such as next.config.ts and sentry.*.config.ts
+      # included), not only src/. `git grep` reads tracked files only, so build output, reports and local env files
+      # never match; the excludes say so explicitly. apps/web/e2e is the Playwright harness on the CI runner: it seeds
+      # the local stack with the service role and is never part of the Next build.
+      # git grep exits 0 on a match (fail), 1 on none (pass), anything else when it could not run (fail).
       - name: Worker-only secrets never appear in the web app
         run: |
-          ! grep -rnE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_CONNECT_CLIENT_SECRET|LANGFUSE_SECRET_KEY|(^|[^_])SENTRY_DSN" apps/web/src
+          status=0
+          git grep -nE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_CONNECT_CLIENT_SECRET|LANGFUSE_SECRET_KEY|ANTHROPIC_API_KEY|RESEND_API_KEY|VAPID_PRIVATE_KEY|(^|[^_])SENTRY_DSN" -- apps/web ':(exclude)apps/web/e2e' ':(exclude)apps/web/node_modules' ':(exclude)apps/web/.next' ':(exclude)apps/web/playwright-report*' ':(exclude)apps/web/test-results' || status=$?
+          [ "$status" -eq 1 ]
       - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
         run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
       - name: Worker image carries no env files, workspaces or sandbox sites

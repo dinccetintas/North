@@ -14,6 +14,15 @@ const cellOf = (value: unknown): string => {
   return csvCell(JSON.stringify(value));
 };
 
+/** The header line (with its CRLF) for `columns`. */
+export const csvHeader = (columns: readonly string[]): string => `${columns.map((c) => csvCell(c)).join(",")}\r\n`;
+
+/** One row's line (with its CRLF), the cells in `columns` order. */
+export const csvLine = (row: Readonly<Record<string, unknown>>, columns: readonly string[]): string => `${columns.map((c) => cellOf(row[c])).join(",")}\r\n`;
+
+/** A CSV text without its first line (core's `ledgerCsv` always writes the header). */
+export const withoutHeader = (text: string): string => text.slice(text.indexOf("\r\n") + 2);
+
 export function csvOf(rows: readonly Readonly<Record<string, unknown>>[], columns?: readonly string[]): string {
   const header = columns ?? [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const lines = [header.map((c) => csvCell(c)).join(","), ...rows.map((r) => header.map((c) => cellOf(r[c])).join(","))];

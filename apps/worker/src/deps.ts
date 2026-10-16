@@ -1,4 +1,4 @@
-import { createServiceClient, getKillSwitch, searchMemory, type DbClient } from "@north/db";
+import { createServiceClient, getKillSwitch, searchMemory, type DbClient, type Json } from "@north/db";
 import { loadRoles, minimalSubprocessEnv, MOCK_LLM_RESPONSES, selectLlm, selectRuntime, type AgentRuntime, type LlmClient, type RoleDefinition } from "@north/agents";
 import { selectIntegrations, type Integrations } from "@north/integrations";
 import { workerEnv, type WorkerEnv } from "./env";
@@ -36,6 +36,12 @@ export function capAuditInput(input: unknown): { readonly json: string; readonly
     json = JSON.stringify({ unserializable: true });
   }
   return json.length > AUDIT_INPUT_MAX_CHARS ? { json: json.slice(0, AUDIT_INPUT_MAX_CHARS), truncated: true } : { json, truncated: false };
+}
+
+/** The `audit_tool_calls.input` of one call: the parsed input, or its cut text when it was capped (a cut JSON does not parse). Well inside the 0015 size check. */
+export function auditInput(input: unknown): { readonly value: unknown; readonly truncated: boolean } {
+  const capped = capAuditInput(input);
+  return capped.truncated ? { value: capped.json, truncated: true } : { value: JSON.parse(capped.json) as unknown, truncated: false };
 }
 
 let cached: Promise<WorkerDeps> | null = null;
@@ -83,12 +89,12 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
       memorySearch: async (companyId, query) => searchMemory(db, companyId, query),
       isKilled: async (companyId) => getKillSwitch(db, companyId),
       audit: async (entry) => {
-        const capped = capAuditInput(entry.input);
         const { error } = await db.from("audit_tool_calls").insert({
           company_id: entry.companyId,
           task_id: entry.taskId,
           tool_name: entry.toolName,
-          input: { value: JSON.parse(capped.json), truncated: capped.truncated },
+          // JSON.parse output or a string: valid JSON either way.
+          input: auditInput(entry.input) as NonNullable<Json>,
           decision: entry.decision,
         });
         if (error) throw new Error(`audit insert failed: ${error.message}`);

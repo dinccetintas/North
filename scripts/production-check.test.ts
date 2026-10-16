@@ -90,7 +90,7 @@ describe("production check (OPS-1)", () => {
   it("is green against the deployment the runbook describes, with every check named", async () => {
     const { fetch, calls } = fake(green());
     const results = await runChecks(config(), fetch);
-    expect(results.map((r) => r.id)).toEqual(["web-health", "worker-health", "anon-companies", "storage-artifacts", "storage-exports", "pwa-manifest", "pwa-service-worker", "inngest-web", "inngest-worker", "stripe-webhook", "usage-ratios"]);
+    expect(results.map((r) => r.id)).toEqual(["web-health", "worker-health", "worker-no-sandbox", "anon-companies", "storage-artifacts", "storage-exports", "pwa-manifest", "pwa-service-worker", "inngest-web", "inngest-worker", "stripe-webhook", "usage-ratios"]);
     expect(results.filter((r) => r.status !== "pass")).toEqual([]);
     expect(byId(results, "worker-health").detail).toBe("mode sandbox, runtime mock, webhooks stripe on, sentry on, clock = wall");
     expect(report(config(), results, false)).toContain("production check: green");
@@ -129,6 +129,21 @@ describe("production check (OPS-1)", () => {
     expect(older.status).toBe("pass");
     const drifted = await check("worker-health", { [route]: { json: { ok: true, time: NOW.toISOString(), clock: "2026-12-01T00:00:00Z", webhooks: { stripe: true } } } });
     expect(drifted.status).toBe("fail");
+  });
+
+  it("M6 review L5: the public worker serves no sandbox site and no clock (404); a mounted or guarded route fails", async () => {
+    const closed = await check("worker-no-sandbox", {});
+    expect(closed).toEqual({ id: "worker-no-sandbox", status: "pass", detail: "GET /sandbox/sites/ → 404, GET /sandbox/clock → 404" });
+    const sites = await check("worker-no-sandbox", { [`GET ${WORKER}/sandbox/sites/`]: { text: "<h1>agent page</h1>", headers: { "content-type": "text/html" } } });
+    expect(sites).toMatchObject({ status: "fail" });
+    expect(sites.detail).toContain("GET /sandbox/sites/ → 200");
+    expect(sites.detail).toContain("WORKER_HOST");
+    const clock = await check("worker-no-sandbox", { [`GET ${WORKER}/sandbox/clock`]: { status: 403, json: { error: "sandbox endpoints answer this machine only" } } });
+    expect(clock).toMatchObject({ status: "fail" });
+    expect(clock.detail).toContain("GET /sandbox/clock → 403");
+    const { fetch, calls } = fake(green());
+    await runChecks(config(), fetch);
+    expect(calls.filter((c) => c.url.startsWith(`${WORKER}/sandbox/`)).map((c) => `${c.method} ${c.url}`)).toEqual([`GET ${WORKER}/sandbox/sites/`, `GET ${WORKER}/sandbox/clock`]);
   });
 
   it("an anonymous select on companies must return zero rows (a refusal also passes)", async () => {
@@ -179,6 +194,11 @@ describe("production check (OPS-1)", () => {
     const deaf = await check("stripe-webhook", { [route]: { json: { data: [{ ...endpoint, enabled_events: ["invoice.paid"] }] } } });
     expect(deaf.status).toBe("fail");
     expect(deaf.detail).toContain("customer.subscription.deleted");
+    // The expected list is core's BILLING_EVENT_TYPES, the one `stripe:setup` registers: the seventh type counts like the first six.
+    expect(BILLING_EVENT_TYPES).toContain("checkout.session.async_payment_succeeded");
+    const withoutAsync = await check("stripe-webhook", { [route]: { json: { data: [{ ...endpoint, enabled_events: BILLING_EVENT_TYPES.filter((t) => t !== "checkout.session.async_payment_succeeded") }] } } });
+    expect(withoutAsync).toMatchObject({ status: "fail", detail: expect.stringContaining("checkout.session.async_payment_succeeded") });
+    expect((await check("stripe-webhook", {})).detail).toContain(`enabled for ${BILLING_EVENT_TYPES.length} event types`);
     const denied = await check("stripe-webhook", { [route]: { status: 401, json: { error: { code: "api_key_expired", message: "secret detail" } } } });
     expect(denied).toMatchObject({ status: "fail" });
     expect(denied.detail).toContain("api_key_expired");
@@ -205,17 +225,39 @@ describe("production check (OPS-1)", () => {
     expect(report(config(), results, false)).toContain("production check: 1 failed");
     const json = JSON.parse(report(config(), results, true)) as { ok: boolean; results: CheckResult[] };
     expect(json.ok).toBe(false);
-    expect(json.results).toHaveLength(11);
+    expect(json.results).toHaveLength(12);
   });
 
   it("reads flags first, then the environment, trims trailing slashes and refuses a missing anon key or an unknown flag", () => {
     const env = { NORTH_WEB_URL: `${WEB}/`, NORTH_WORKER_URL: WORKER, NEXT_PUBLIC_SUPABASE_URL: SUPABASE, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ANON };
     const fromEnv = configFrom([], env, NOW);
     expect(fromEnv).toMatchObject({ webUrl: WEB, workerUrl: WORKER, supabaseUrl: SUPABASE, anonKey: ANON, stripeKey: null, usageKey: null, json: false, allowDevInngest: false });
-    const fromFlags = configFrom(["--worker", "http://localhost:3101/", "--stripe-key", STRIPE_KEY, "--json", "--allow-dev-inngest"], env, NOW);
+    const fromFlags = configFrom(["--worker", "http://localhost:3101/", "--json", "--allow-dev-inngest"], { ...env, STRIPE_READ_KEY: STRIPE_KEY }, NOW);
     expect(fromFlags).toMatchObject({ workerUrl: "http://localhost:3101", stripeKey: STRIPE_KEY, json: true, allowDevInngest: true });
     expect(() => configFrom([], { ...env, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "" }, NOW)).toThrow(/anon-key/);
     expect(() => configFrom(["--web", "not a url"], env, NOW)).toThrow(/--web/);
     expect(() => configFrom(["--write"], env, NOW)).toThrow();
+  });
+
+  it("M6 review L11: the usage and Stripe keys come from the environment only; a key flag is refused without echoing the key", () => {
+    const env = { NORTH_WEB_URL: WEB, NORTH_WORKER_URL: WORKER, NEXT_PUBLIC_SUPABASE_URL: SUPABASE, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ANON };
+    expect(configFrom([], { ...env, NORTH_USAGE_READ_KEY: ` ${USAGE_KEY} `, STRIPE_READ_KEY: STRIPE_KEY }, NOW)).toMatchObject({ usageKey: USAGE_KEY, stripeKey: STRIPE_KEY });
+    for (const argv of [["--usage-key", USAGE_KEY], [`--usage-key=${USAGE_KEY}`], ["--stripe-key", STRIPE_KEY], [`--stripe-key=${STRIPE_KEY}`]]) {
+      let message = "";
+      try {
+        configFrom(argv, env, NOW);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toMatch(/NORTH_USAGE_READ_KEY|STRIPE_READ_KEY/);
+      expect(message).toContain("environment");
+      expect(message).not.toContain(USAGE_KEY);
+      expect(message).not.toContain(STRIPE_KEY);
+    }
+  });
+
+  it("names the environment variable when a key is missing", async () => {
+    expect((await check("usage-ratios", {}, { usageKey: null })).detail).toContain("NORTH_USAGE_READ_KEY");
+    expect((await check("stripe-webhook", {}, { stripeKey: null })).detail).toContain("STRIPE_READ_KEY");
   });
 });

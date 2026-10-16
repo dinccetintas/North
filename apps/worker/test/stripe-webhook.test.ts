@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EVENT } from "@north/core";
+import { EVENT, parseBillingEvent } from "@north/core";
 import { isSandboxBilling, SANDBOX_STRIPE_WEBHOOK_SECRET, signedSandboxEvent, signSandboxWebhook, type SandboxBilling, type SandboxStripeEvent } from "@north/integrations";
 import { SimClock } from "../src/services/clock";
 import { emptyState, fakeDbModule, fakeDeps, seedCompany, type FakeState } from "./fake-db";
@@ -40,12 +41,16 @@ function sandboxBilling(): SandboxBilling {
   return billing;
 }
 
-/** A Pro checkout completed in the sandbox: checkout.session.completed, customer.subscription.created, invoice.paid. */
-async function proCheckout(userId = OWNER, storeCustomer = true): Promise<{ readonly customerId: string; readonly events: readonly SandboxStripeEvent[] }> {
+/** A Pro checkout completed in the sandbox: checkout.session.completed, customer.subscription.created, invoice.paid. `sessionOf` records the billing_sessions row the worker would have written for that user (L1). */
+async function proCheckout(userId = OWNER, storeCustomer = true, sessionOf: string | null = null): Promise<{ readonly customerId: string; readonly events: readonly SandboxStripeEvent[] }> {
   const billing = sandboxBilling();
   const { customerId } = await billing.ensureCustomer({ userId, email: "ceo@example.test" });
   if (storeCustomer) await dbModule.setStripeCustomer({} as never, userId, customerId);
   const session = await billing.createCheckoutSession({ customerId, lookupKey: "north_pro_monthly", mode: "subscription", clientReferenceId: userId, successUrl: "http://localhost:3100/settings/billing?checkout=s1", cancelUrl: "http://localhost:3100/settings/billing?canceled=1", idempotencyKey: `bs-${userId}` });
+  if (sessionOf) {
+    const id = `b${state.billingSessions.size + 1}000000-0000-4000-8000-000000000000`.slice(0, 36);
+    state.billingSessions.set(id, { id, userId: sessionOf, kind: "checkout", planId: "pro", packId: null, status: "ready", url: session.url, providerRef: session.providerRef, error: null });
+  }
   return { customerId, events: await billing.completeCheckout(session.providerRef) };
 }
 
@@ -147,15 +152,42 @@ describe("D6-2 POST /webhooks/stripe", () => {
   });
 
   it("checkout.session.completed only: an existing user's client_reference_id resolves a customer not stored yet; a stranger's does not", async () => {
-    const { events } = await proCheckout(OWNER, false);
+    const { events } = await proCheckout(OWNER, false, OWNER);
     const checkout = signed(events[0]!);
     expect((await post(checkout.body, checkout.signature)).status).toBe(200);
     expect(rows()[0]).toMatchObject({ type: "checkout.session.completed", userId: OWNER });
     const sub = signed(events[1]!);
     expect((await post(sub.body, sub.signature)).status).toBe(202);
-    const other = await proCheckout(STRANGER, false);
+    const other = await proCheckout(STRANGER, false, STRANGER);
     const strangers = signed(other.events[0]!);
     expect((await post(strangers.body, strangers.signature)).status).toBe(202);
+  });
+
+  it("L1: the hint is trusted only for a session the worker created for that user: none, or another user's, is unknown (202)", async () => {
+    const noRow = await proCheckout(OWNER, false, null);
+    const unproven = signed(noRow.events[0]!);
+    expect((await post(unproven.body, unproven.signature)).status).toBe(202);
+    Object.assign(state, emptyState());
+    seedCompany(state, { id: "c1000000-0000-4000-8000-000000000001", ownerId: OWNER, timezone: "Europe/Istanbul" });
+    root = await mkdtemp(join(tmpdir(), "north-stripe-"));
+    const foreign = await proCheckout(OWNER, false, STRANGER);
+    const forged = signed(foreign.events[0]!);
+    expect((await post(forged.body, forged.signature)).status).toBe(202);
+    expect(rows().map((r) => r.userId)).toEqual([null]);
+    expect(emitted).toEqual([]);
+  });
+
+  it("L2: the stored payload is the reduced event core parsed (no email, address or invoice URL) plus the sha256 of the raw body; it re-parses to itself", async () => {
+    const { events } = await proCheckout();
+    const raw = { ...events[2]!, data: { object: { ...(events[2]!.data.object as Record<string, unknown>), customer_email: "ceo@example.test", customer_address: { line1: "1 Main St" }, hosted_invoice_url: "https://invoice.stripe.com/i/x" } } };
+    const delivery = signed(raw);
+    expect((await post(delivery.body, delivery.signature)).status).toBe(200);
+    const [row] = rows();
+    expect(row!.payloadSha256).toBe(createHash("sha256").update(delivery.body).digest("hex"));
+    const stored = JSON.stringify(row!.payload);
+    for (const leaked of ["ceo@example.test", "1 Main St", "hosted_invoice_url", "invoice.stripe.com", "api_version", "livemode"]) expect(stored).not.toContain(leaked);
+    expect(parseBillingEvent(row!.payload)).toEqual(row!.payload);
+    expect(row!.payload).toMatchObject({ id: events[2]!.id, type: "invoice.paid", data: { object: { amount_paid: 29_900, billing_reason: "subscription_create" } } });
   });
 });
 

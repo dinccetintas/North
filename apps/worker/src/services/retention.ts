@@ -1,11 +1,13 @@
-import { archiveCompany, EXPORTS_BUCKET, listCompaniesByOwner, listExpiredExports, listRetentionDue, PurgeRefusedError, setExportExpired, setPurgeDue, type PurgeCounts } from "@north/db";
+import { archiveCompany, EXPORTS_BUCKET, listCompaniesByOwner, listExpiredExports, listRetentionDue, PurgeRefusedError, setExportExpired, setPurgeDue, sweepUnknownBillingEvents, type PurgeCounts } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { purgeOwner } from "./purge";
 import { directSteps, type StepRunner } from "./steps";
 
 /**
  * RET-1 (ADR 0016), daily (and on `retention/tick`): expired export zips are
- * removed and their rows marked `expired`; every `ended` owner whose
+ * removed and their rows marked `expired`; stored billing events no user
+ * owns and nothing applied are removed after 30 days (M6 review L2; the
+ * database refuses younger ones on its own clock); every `ended` owner whose
  * `retention_until` has passed on the worker clock gets their companies
  * archived (`paused_reason: retention`) and `purge_due` set. It deletes
  * nothing else on its own: the purge runs only with
@@ -32,6 +34,8 @@ export type PurgeAttempt = { readonly userId: string; readonly counts: PurgeCoun
 
 export interface RetentionSweepResult extends Omit<Marked, "due"> {
   readonly exportsRemoved: readonly string[];
+  /** Unapplied `billing_events` rows without a user, older than 30 days, removed by `billing_events_sweep_unknown`. */
+  readonly billingEventsSwept: number;
   readonly purged: readonly { readonly userId: string; readonly counts: PurgeCounts }[];
   readonly purgeSkipped: readonly { readonly userId: string; readonly skipped: string }[];
 }
@@ -88,9 +92,10 @@ export async function purgeDueOwner(deps: Deps, userId: string): Promise<PurgeAt
   }
 }
 
-/** The sweep as durable steps: `exports`, `archive`, then `purge-<userId>` per owner when the purge is enabled. */
+/** The sweep as durable steps: `exports`, `billing-events`, `archive`, then `purge-<userId>` per owner when the purge is enabled. */
 export async function retentionSweep(deps: Deps, step: StepRunner = directSteps): Promise<RetentionSweepResult> {
   const exportsRemoved = await step.run("exports", () => expireExports(deps));
+  const billingEventsSwept = await step.run("billing-events", () => sweepUnknownBillingEvents(deps.db, deps.clock()));
   const marked = await step.run("archive", () => archiveRetentionDue(deps));
   const attempts: PurgeAttempt[] = [];
   if (purgeEnabled(deps.env)) {
@@ -98,6 +103,7 @@ export async function retentionSweep(deps: Deps, step: StepRunner = directSteps)
   }
   return Object.freeze({
     exportsRemoved,
+    billingEventsSwept,
     archived: marked.archived,
     stopped: marked.stopped,
     purgeDue: marked.purgeDue,

@@ -9,7 +9,7 @@ describe("tasks repository (AGT-1/2/3)", () => {
   const verified = { kind: "artifact_id" as const, ref: "art-1", verified: true };
 
   const newTask = (title: string) =>
-    createTask(owned.owner.client, { companyId: owned.companyId, role: "research", taskType: "market_report", title, input: "Look at the clinic queue market", metricKey: "signups", expectedDelta: 5 });
+    createTask(service, { companyId: owned.companyId, role: "research", taskType: "market_report", title, input: "Look at the clinic queue market", metricKey: "signups", expectedDelta: 5 });
 
   beforeAll(async () => {
     owned = await createOwnerWithCompany("tasks");
@@ -31,37 +31,37 @@ describe("tasks repository (AGT-1/2/3)", () => {
 
   it("walks queued → running → waiting_decision → running → done with evidence, cost and summary", async () => {
     const task = await newTask("Happy path");
-    const running = await markTaskRunning(owned.owner.client, task.id);
+    const running = await markTaskRunning(service, task.id);
     expect(running).toMatchObject({ status: "running", attempts: 1 });
-    expect((await markTaskWaiting(owned.owner.client, task.id)).status).toBe("waiting_decision");
-    const resumed = await markTaskRunning(owned.owner.client, task.id);
+    expect((await markTaskWaiting(service, task.id)).status).toBe("waiting_decision");
+    const resumed = await markTaskRunning(service, task.id);
     expect(resumed).toMatchObject({ status: "running", attempts: 1 });
-    const done = await markTaskDone(owned.owner.client, task.id, { evidence: verified, costUsd: 0.42, outputSummary: "Report written" });
+    const done = await markTaskDone(service, task.id, { evidence: verified, costUsd: 0.42, outputSummary: "Report written" });
     expect(done).toMatchObject({ status: "done", costUsd: 0.42, outputSummary: "Report written", evidence: { ...verified, sandbox: false } });
   });
 
   it("AGT-2: done without verified evidence throws TaskTransitionError and leaves the row untouched", async () => {
     const task = await newTask("No evidence");
-    await markTaskRunning(owned.owner.client, task.id);
-    await expect(markTaskDone(owned.owner.client, task.id, { evidence: { ...verified, verified: false }, costUsd: 0, outputSummary: "x" })).rejects.toBeInstanceOf(TaskTransitionError);
+    await markTaskRunning(service, task.id);
+    await expect(markTaskDone(service, task.id, { evidence: { ...verified, verified: false }, costUsd: 0, outputSummary: "x" })).rejects.toBeInstanceOf(TaskTransitionError);
     expect((await getTask(service, task.id))?.status).toBe("running");
   });
 
   it("illegal transitions throw TaskTransitionError (done from queued, waiting from queued)", async () => {
     const task = await newTask("Illegal");
-    await expect(markTaskDone(owned.owner.client, task.id, { evidence: verified, costUsd: 0, outputSummary: "x" })).rejects.toBeInstanceOf(TaskTransitionError);
-    await expect(markTaskWaiting(owned.owner.client, task.id)).rejects.toBeInstanceOf(TaskTransitionError);
+    await expect(markTaskDone(service, task.id, { evidence: verified, costUsd: 0, outputSummary: "x" })).rejects.toBeInstanceOf(TaskTransitionError);
+    await expect(markTaskWaiting(service, task.id)).rejects.toBeInstanceOf(TaskTransitionError);
   });
 
   it("AGT-3: after two failed attempts a third start is refused", async () => {
     const task = await newTask("Retry");
-    await markTaskRunning(owned.owner.client, task.id);
-    const failed1 = await markTaskFailed(owned.owner.client, task.id, "first approach failed");
+    await markTaskRunning(service, task.id);
+    const failed1 = await markTaskFailed(service, task.id, "first approach failed");
     expect(failed1).toMatchObject({ status: "failed", attempts: 1, lastError: "first approach failed" });
-    await markTaskRunning(owned.owner.client, task.id);
-    const failed2 = await markTaskFailed(owned.owner.client, task.id, "second approach failed");
+    await markTaskRunning(service, task.id);
+    const failed2 = await markTaskFailed(service, task.id, "second approach failed");
     expect(failed2).toMatchObject({ status: "failed", attempts: 2, lastError: "second approach failed" });
-    await expect(markTaskRunning(owned.owner.client, task.id)).rejects.toBeInstanceOf(TaskTransitionError);
+    await expect(markTaskRunning(service, task.id)).rejects.toBeInstanceOf(TaskTransitionError);
   });
 
   it("listTasks filters by status and orders oldest first", async () => {
@@ -76,10 +76,10 @@ describe("tasks repository (AGT-1/2/3)", () => {
   });
 
   it("listTasksByType lists one task type, optionally only in some statuses (an open fix_error for the same ref)", async () => {
-    const fix = await createTask(owned.owner.client, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-1", input: "ref: 12345" });
-    const second = await createTask(owned.owner.client, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-2", input: "ref: 67890" });
-    await markTaskRunning(owned.owner.client, second.id);
-    await markTaskFailed(owned.owner.client, second.id, "boom");
+    const fix = await createTask(service, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-1", input: "ref: 12345" });
+    const second = await createTask(service, { companyId: owned.companyId, role: "engineering", taskType: "fix_error", title: "Fix ABC-2", input: "ref: 67890" });
+    await markTaskRunning(service, second.id);
+    await markTaskFailed(service, second.id, "boom");
     expect((await listTasksByType(owned.owner.client, owned.companyId, "fix_error")).map((t) => t.id)).toEqual([fix.id, second.id]);
     expect((await listTasksByType(owned.owner.client, owned.companyId, "fix_error", { status: ["queued", "running", "waiting_decision"] })).map((t) => t.id)).toEqual([fix.id]);
     expect(await listTasksByType(owned.owner.client, owned.companyId, "signal_research")).toEqual([]);

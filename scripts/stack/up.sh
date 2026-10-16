@@ -116,6 +116,9 @@ jwt-secret = "$JWT_SECRET"
 server-host = "127.0.0.1"
 server-port = $REST_PORT
 db-pool = 10
+# Hosted Supabase caps a response at max_rows (packages/db/supabase/config.toml);
+# the same cap here makes an unpaged read fail locally, not in production.
+db-max-rows = 1000
 EOF
 start_bg postgrest "$STACK/logs/postgrest.log" "$TOOLS/postgrest/postgrest" "$STACK/postgrest.conf"
 start_bg mailpit "$STACK/logs/mailpit.log" "$TOOLS/mailpit/mailpit" --listen "127.0.0.1:$MAIL_HTTP_PORT" --smtp "127.0.0.1:$MAIL_SMTP_PORT" --database "$STACK/mailpit.db" --smtp-auth-accept-any --smtp-auth-allow-insecure

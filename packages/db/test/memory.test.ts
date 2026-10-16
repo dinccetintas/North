@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DIGEST_TRUNCATION_MARKER, formatMemoryDigest, listMemoryItems, memoryDigest, searchMemory, writeMemoryItems } from "../src/memory";
 import { saveClarifications } from "../src/theses";
-import { createOwnerWithCompany, createTestUser, deleteTestUser, type OwnedCompany, type TestUser } from "./fixtures";
+import { createOwnerWithCompany, createTestUser, deleteTestUser, service, type OwnedCompany, type TestUser } from "./fixtures";
 
 describe("memory repository (MEM)", () => {
   let owned: OwnedCompany;
@@ -20,7 +20,7 @@ describe("memory repository (MEM)", () => {
   });
 
   it("writeMemoryItems stores drafts and returns ids in order", async () => {
-    const ids = await writeMemoryItems(owned.owner.client, owned.companyId, [
+    const ids = await writeMemoryItems(service, owned.companyId, [
       { kind: "persona", title: "Clinic owner", content: "Runs two dental clinics, hates no-shows, buys software on recommendation." },
       { kind: "learning", title: "Pricing signal", content: "Owners compared us to a zebra-striped competitor priced per chair." },
     ], "research");
@@ -28,7 +28,7 @@ describe("memory repository (MEM)", () => {
     const items = await listMemoryItems(owned.owner.client, owned.companyId);
     expect(items.map((i) => i.id).sort()).toEqual([...ids].sort());
     expect(items.every((i) => i.createdByRole === "research")).toBe(true);
-    expect(await writeMemoryItems(owned.owner.client, owned.companyId, [], "research")).toEqual([]);
+    expect(await writeMemoryItems(service, owned.companyId, [], "research")).toEqual([]);
   });
 
   it("searchMemory finds an item by a word in its content, ranked", async () => {

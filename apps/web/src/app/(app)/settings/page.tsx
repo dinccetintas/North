@@ -12,6 +12,7 @@ import { AutoRulesList, type AutoRuleRow } from "@/components/auto-rules-list";
 import { CostDashboard } from "@/components/cost-dashboard";
 import { ProfileForm } from "@/components/profile-form";
 import { PushEnable } from "@/components/push-enable";
+import { errorText } from "@/lib/page-errors";
 
 export const metadata = { title: "Settings" };
 
@@ -19,7 +20,8 @@ type SearchParams = Promise<{ saved?: string; error?: string }>;
 
 /** Settings: plan and credits (BIL-1/2), decision quota, time zone and brief hour, push, connections, export, the standing auto rules and the usage per company (DEC-2/3, BRF-1, OBS-1). */
 export default async function SettingsPage({ searchParams }: { searchParams: SearchParams }) {
-  const [user, { saved, error }] = await Promise.all([currentUser(), searchParams]);
+  const [user, { saved, error: errorCode }] = await Promise.all([currentUser(), searchParams]);
+  const error = errorText("settings", errorCode);
   if (!user) redirect("/login");
   const db = await createClient();
   const [profile, companies, plan] = await Promise.all([ownerProfile(user.id), ownerCompanies(), loadPlanSnapshot(db, user.id)]);

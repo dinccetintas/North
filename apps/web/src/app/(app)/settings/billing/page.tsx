@@ -8,6 +8,7 @@ import { loadBillingPage, loadCheckoutState } from "@/lib/billing-data";
 import { billingSummary, creditEntryRows, packCards, planCards } from "@/lib/billing-view";
 import { activeCompanyCount } from "@/lib/portfolio-view";
 import { usageView } from "@/lib/usage-view";
+import { errorText } from "@/lib/page-errors";
 import { BillingConfirming } from "@/components/billing-confirming";
 import { BillingStatus } from "@/components/billing-status";
 import { CreditsPanel } from "@/components/credits-panel";
@@ -35,6 +36,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
   const checkoutId = params.checkout && SessionIdSchema.safeParse(params.checkout).success ? params.checkout : null;
   const checkout = params.checkout === undefined ? null : await loadCheckoutState(db, user.id, checkoutId);
   const entitlement = data.entitlement;
+  const error = errorText("billing", params.error);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -43,9 +45,9 @@ export default async function BillingPage({ searchParams }: { searchParams: Sear
       </Link>
       <h1 className="mt-1 text-4xl">Plan and credits</h1>
 
-      {params.error ? (
-        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert">
-          {params.error}
+      {error ? (
+        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert" data-testid="billing-error">
+          {error}
         </p>
       ) : null}
       {params.canceled ? (

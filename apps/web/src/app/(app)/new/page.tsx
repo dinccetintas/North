@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/supabase/server";
 import { ownerCompanies, ownerEntitlement } from "@/lib/account";
 import { activeCompanyCount, newCompanyGate } from "@/lib/portfolio-view";
+import { errorText } from "@/lib/page-errors";
 import { createCompanyAction } from "./actions";
 
 export const metadata = { title: "New company" };
@@ -15,6 +16,8 @@ export default async function NewCompanyPage({ searchParams }: { searchParams: S
   if (!user) redirect("/login");
   const [entitlement, companies] = await Promise.all([ownerEntitlement(user.id), ownerCompanies()]);
   const gate = newCompanyGate(entitlement, activeCompanyCount(companies));
+  // The plan limit is already written out by the gate below when it applies; any other code gets its fixed line.
+  const errorLine = error === "plan-limit" && !gate.allowed ? null : errorText("newCompany", error);
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6">
@@ -25,9 +28,9 @@ export default async function NewCompanyPage({ searchParams }: { searchParams: S
         connections come next.
       </p>
 
-      {error && error !== gate.reason ? (
-        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert">
-          {error}
+      {errorLine ? (
+        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert" data-testid="new-error">
+          {errorLine}
         </p>
       ) : null}
       {gate.allowed ? null : (

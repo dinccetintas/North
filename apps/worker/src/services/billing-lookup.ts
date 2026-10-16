@@ -1,14 +1,17 @@
-import { billingCustomerId, billingUserHint, type BillingEvent } from "@north/core";
-import { getEntitlement, type DbClient } from "@north/db";
+import { billingCustomerId, billingUserHint, isCheckoutEvent, type BillingEvent } from "@north/core";
+import { findBillingSessionByProviderRef, getEntitlement, type DbClient } from "@north/db";
 import { z } from "zod";
 import type { WorkerDeps } from "../deps";
 
 /**
  * BIL-1 (ADR 0014): whose event is this? The Stripe customer the worker
- * stored on the user's entitlement first; on `checkout.session.completed`
- * only, the `client_reference_id` the worker set at checkout (a uuid that
- * must be an existing user whose entitlement does not already name another
- * customer). Anything else is unknown: stored, not applied.
+ * stored on the user's entitlement first; on a checkout event only, the
+ * `client_reference_id` the worker set at checkout, and only when the worker
+ * created that very session for that user (a `billing_sessions` row whose
+ * `provider_ref` is the session id, M6 review L1: a Payment Link or a
+ * session made elsewhere cannot name a victim), whose entitlement does not
+ * already name another customer. Anything else is unknown: stored, not
+ * applied.
  */
 
 const CustomerSchema = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
@@ -35,9 +38,11 @@ export async function resolveBillingUser(deps: WorkerDeps, event: BillingEvent):
     const byCustomer = await userIdForCustomer(deps.db, customer);
     if (byCustomer) return byCustomer;
   }
-  if (event.type !== "checkout.session.completed") return null;
+  if (!isCheckoutEvent(event)) return null;
   const hint = billingUserHint(event);
   if (!hint) return null;
+  const session = await findBillingSessionByProviderRef(deps.db, event.data.object.id);
+  if (!session || session.userId !== hint || session.kind === "portal") return null;
   const entitlement = await getEntitlement(deps.db, hint);
   if (!entitlement) return null;
   if (customer && entitlement.stripeCustomerId !== null && entitlement.stripeCustomerId !== customer) return null;

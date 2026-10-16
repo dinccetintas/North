@@ -6,9 +6,11 @@ import { z } from "zod";
 import { deactivateAutoRule, removePushSubscription, updateProfile, upsertPushSubscription } from "@north/db";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import type { ActionResult } from "@/app/(app)/c/[slug]/decisions/actions";
+import { withError, type ErrorCode } from "@/lib/page-errors";
 
-const settingsUrl = (outcome: { saved?: true; error?: string }): string =>
-  outcome.error ? `/settings?error=${encodeURIComponent(outcome.error)}` : outcome.saved ? "/settings?saved=1" : "/settings";
+/** M6 review L8: the page maps the code to its fixed line. */
+const settingsUrl = (outcome: { saved?: true; error?: ErrorCode<"settings"> }): string =>
+  outcome.error ? withError("/settings", "settings", outcome.error) : outcome.saved ? "/settings?saved=1" : "/settings";
 
 /** Fixed messages for the browser; the cause goes to the server log only. */
 const message = (error: unknown, fallback: string): string => {
@@ -28,12 +30,13 @@ export async function updateProfileAction(formData: FormData): Promise<void> {
   const rawHour = formData.get("briefHour");
   const briefHour = rawHour === null ? undefined : BriefHourSchema.safeParse(String(rawHour));
   const db = await createClient();
-  let error: string | null = null;
+  let error: ErrorCode<"settings"> | null = null;
   try {
     if (briefHour !== undefined && !briefHour.success) throw new Error("brief hour out of range");
     await updateProfile(db, user.id, { dailyDecisionQuota: quota, timezone, ...(briefHour?.success ? { briefHour: briefHour.data } : {}) });
   } catch (cause) {
-    error = message(cause, "Could not save: the quota must be 1 to 5, the time zone a known IANA name and the brief hour 0 to 23.");
+    console.error("[settings] could not save the profile", cause);
+    error = "save-failed";
   }
   revalidatePath("/settings");
   redirect(settingsUrl(error ? { error } : { saved: true }));

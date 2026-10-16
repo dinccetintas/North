@@ -2,13 +2,21 @@ import { z } from "zod";
 import type { BriefView } from "./brief-view";
 
 /**
- * PWA-1: the latest brief per company lives in Cache Storage
- * (`north-brief-v1`, key `/brief/<slug>`), written by `public/sw.js` when a
- * page posts it and read here by `/offline`. Cache contents are re-validated
+ * PWA-1: the latest brief per company of one user lives in Cache Storage
+ * (`north-brief-v1`, key `/brief/<userId>/<slug>`), written by `public/sw.js`
+ * when a page posts it and read here by `/offline`, which shows only the user
+ * the worker last saw (`/brief/last-user`). Cache contents are re-validated
  * like any other boundary; a malformed entry is no brief. Never a card.
+ * Sign-out and the sign-in page clear it (M6 review L14).
  */
 export const BRIEF_CACHE = "north-brief-v1";
-export const briefCacheKey = (slug: string): string => `/brief/${slug}`;
+/** The user whose briefs the cache holds (the service worker empties the cache when another user's brief arrives). */
+export const BRIEF_USER_KEY = "/brief/last-user";
+export const briefCacheKey = (userId: string, slug: string): string => `/brief/${userId}/${slug}`;
+
+/** Lower-case UUIDs, as Supabase Auth issues them and as `public/sw.js` accepts them. */
+const UserIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+const UserMarkerSchema = z.object({ userId: UserIdSchema });
 
 const Text = (max: number) => z.string().max(max);
 
@@ -36,17 +44,23 @@ const BriefViewSchema = z.object({
 });
 
 export const CachedBriefSchema = z.object({
+  userId: UserIdSchema,
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
   brief: BriefViewSchema,
   cachedAt: z.iso.datetime({ offset: true }),
 });
-export type CachedBrief = { readonly slug: string; readonly brief: BriefView; readonly cachedAt: string };
+export type CachedBrief = { readonly userId: string; readonly slug: string; readonly brief: BriefView; readonly cachedAt: string };
 
 const COMPANY_PATH = /^\/c\/([a-z0-9][a-z0-9-]{0,99})(?:\/|$)/;
 
 /** The company slug of a `/c/<slug>/…` path; null for any other path. */
 export function slugFromPath(pathname: string): string | null {
   return COMPANY_PATH.exec(pathname)?.[1] ?? null;
+}
+
+/** Only the briefs of `userId` (the user the worker last saw); none without one. */
+export function briefsForUser(entries: readonly CachedBrief[], userId: string | null): readonly CachedBrief[] {
+  return userId === null ? [] : entries.filter((e) => e.userId === userId);
 }
 
 /** The entry to show: the company the user navigated to when it is cached, else the newest by day and cache time. */
@@ -67,15 +81,37 @@ async function readEntry(cache: Cache, request: Request): Promise<CachedBrief | 
   }
 }
 
-/** Every cached brief (browser only); empty when Cache Storage is unavailable. */
+async function readUser(cache: Cache): Promise<string | null> {
+  try {
+    const marker = await cache.match(BRIEF_USER_KEY);
+    const parsed = UserMarkerSchema.safeParse(marker ? await marker.json() : null);
+    return parsed.success ? parsed.data.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The cached briefs of the user the worker last saw (browser only); empty when Cache Storage is unavailable or no user is named. */
 export async function readCachedBriefs(): Promise<readonly CachedBrief[]> {
   if (typeof caches === "undefined") return [];
   const cache = await caches.open(BRIEF_CACHE);
-  const entries = await Promise.all((await cache.keys()).map((request) => readEntry(cache, request)));
-  return entries.filter((e): e is CachedBrief => e !== null);
+  const userId = await readUser(cache);
+  if (userId === null) return [];
+  const requests = (await cache.keys()).filter((request) => new URL(request.url).pathname !== BRIEF_USER_KEY);
+  const entries = await Promise.all(requests.map((request) => readEntry(cache, request)));
+  return briefsForUser(
+    entries.filter((e): e is CachedBrief => e !== null),
+    userId,
+  );
 }
 
-/** Sign-out clears the cached briefs so the next person on this device reads nothing. */
+/**
+ * Sign-out and the sign-in page clear the cached briefs so the next person on
+ * this device reads nothing: the service worker is told (it finishes the
+ * delete even when this page is already navigating away), and the page
+ * deletes the cache itself as well.
+ */
 export async function clearCachedBriefs(): Promise<void> {
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) navigator.serviceWorker.controller?.postMessage({ type: "sign-out" });
   if (typeof caches !== "undefined") await caches.delete(BRIEF_CACHE);
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DbClient } from "./client";
 import { dbError } from "./errors";
 import { UuidSchema } from "./json";
+import { readAllPages } from "./paging";
 
 /**
  * BIL-2: the spec's `usage` table as a projection per user and owner-local
@@ -65,12 +66,14 @@ export async function listUsage(db: DbClient, userId: string, months = 12): Prom
   return Object.freeze((data ?? []).map(toUsage));
 }
 
-/** `usage-tick` (service role): months of these periods whose alert has not gone out yet; the worker checks the ratio per user. */
+/** `usage-tick` (service role): months of these periods whose alert has not gone out yet, every row in pages under PostgREST's `max_rows`; the worker checks the ratio per user. */
 export async function listUsageToAlert(db: DbClient, periods: readonly string[]): Promise<readonly Usage[]> {
   const ps = z.array(PeriodSchema).min(1).max(12).parse(periods);
-  const { data, error } = await db.from("usage").select(USAGE_COLUMNS).in("period", ps).is("alerted_at", null).order("period", { ascending: true }).limit(5000);
-  if (error) throw dbError("Could not list usage to alert", error);
-  return Object.freeze((data ?? []).map(toUsage));
+  const rows = await readAllPages(
+    (from, to) => db.from("usage").select(USAGE_COLUMNS).in("period", ps).is("alerted_at", null).order("period", { ascending: true }).order("user_id", { ascending: true }).range(from, to),
+    "Could not list usage to alert",
+  );
+  return Object.freeze(rows.map(toUsage));
 }
 
 /** Worker only: claims the period's alert. True when this call set `alerted_at`; false when it was already set or the month has no row. */

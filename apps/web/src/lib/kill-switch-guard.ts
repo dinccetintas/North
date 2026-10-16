@@ -30,7 +30,18 @@ export function answerRefusal(company: CompanyPause | null): string | null {
   return billingPause(company) ?? STOPPED_MESSAGE;
 }
 
-/** The refusal for the owner's resume: only their own pause (`user`, or none recorded before M6) is theirs to lift. */
-export function resumeRefusal(company: CompanyPause | null): string | null {
-  return company ? billingPause(company) : null;
+/** What the resume needs to know of the owner's entitlement. */
+interface EntitlementState {
+  readonly status: string;
+}
+
+/**
+ * The refusal for the owner's resume: only their own pause (`user`, or none
+ * recorded before M6) is theirs to lift, and none while their entitlement is
+ * ended (M6 review L3: the database refuses that too, with an error that
+ * names the company, so the page refuses first with the fixed line).
+ */
+export function resumeRefusal(company: CompanyPause | null, entitlement: EntitlementState | null = null): string | null {
+  if (!company) return null;
+  return billingPause(company) ?? (entitlement?.status === "ended" ? SUBSCRIPTION_MESSAGE : null);
 }

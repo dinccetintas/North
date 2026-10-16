@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BillingRedirectPolicy } from "./billing-view";
 
 const PublicEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -14,6 +15,27 @@ export function integrationsMode(env: Readonly<Record<string, string | undefined
   const parsed = IntegrationsModeSchema.safeParse(env.INTEGRATIONS_MODE || undefined);
   if (!parsed.success) throw new Error("INTEGRATIONS_MODE must be sandbox or live");
   return parsed.data;
+}
+
+const originOf = (value: string): string | null => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * M6 review L6: what the billing go page may follow. The sandbox origin is
+ * the one the worker's sandbox billing adapter builds its page URLs with
+ * (`SANDBOX_SITE_BASE_URL`, else `http://127.0.0.1:<WORKER_PORT>`), read by
+ * the same names so one value configures both processes and the defaults
+ * agree with none. Server only (the go page and the poll action), so no
+ * `NEXT_PUBLIC_` value is inlined into the bundle.
+ */
+export function billingRedirectPolicy(env: Readonly<Record<string, string | undefined>> = process.env): BillingRedirectPolicy {
+  return { mode: integrationsMode(env), sandboxOrigin: originOf(env.SANDBOX_SITE_BASE_URL || `http://127.0.0.1:${env.WORKER_PORT || "3101"}`) };
 }
 
 const SentryDsnSchema = z.string().url().refine((value) => value.startsWith("https://"), { message: "https DSN" });

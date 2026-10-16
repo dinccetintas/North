@@ -67,7 +67,7 @@ function fakeStripe(seed: { products?: Obj[]; prices?: Obj[]; endpoints?: Obj[] 
 }
 
 describe("stripe:setup (BIL-1)", () => {
-  it("plans from plans.ts: a product and a priced lookup key per plan and pack, the webhook for the six event types", () => {
+  it("plans from plans.ts: a product and a priced lookup key per plan and pack, the webhook for the seven event types", () => {
     const plan = setupPlan(`${WORKER}/`);
     expect(plan.products.map((p) => p.id)).toEqual(["north_solo", "north_pro", "north_scale", ...CREDIT_PACKS.map((p) => `north_${p.id}`)]);
     expect(plan.prices.map((p) => [p.lookupKey, p.unitAmount, p.interval])).toEqual([
@@ -77,6 +77,8 @@ describe("stripe:setup (BIL-1)", () => {
       ["north_pack_100", 2900, null],
     ]);
     expect(plan.webhook).toMatchObject({ url: `${WORKER}/webhooks/stripe`, events: [...BILLING_EVENT_TYPES] });
+    expect(plan.webhook.events).toContain("checkout.session.async_payment_succeeded");
+    expect(plan.webhook.events).not.toContain("checkout.session.async_payment_failed");
     expect(describePlan(plan)).toContain("price north_pack_100: 2900 usd once on north_pack_100");
   });
 
@@ -103,7 +105,7 @@ describe("stripe:setup (BIL-1)", () => {
     expect(stripe.calls.slice(before).every((c) => c.method === "GET")).toBe(true);
   });
 
-  it("a changed price creates a new one and transfers the lookup key; a disabled endpoint is re-enabled with the six events", async () => {
+  it("a changed price creates a new one and transfers the lookup key; a disabled endpoint is re-enabled with the seven events", async () => {
     const stripe = fakeStripe({
       prices: [{ id: "price_old", object: "price", active: true, product: "north_pro", currency: "usd", unit_amount: 24900, lookup_key: "north_pro_monthly", recurring: { interval: "month" } }],
       endpoints: [{ id: "we_old", url: `${WORKER}/webhooks/stripe`, enabled_events: ["invoice.paid"], status: "disabled" }],
@@ -112,7 +114,7 @@ describe("stripe:setup (BIL-1)", () => {
     expect(lines.find((l) => l.includes("north_pro_monthly"))).toMatch(/^replaced price north_pro_monthly \(price_fake_\d+, lookup key transferred\)$/);
     expect(lines.filter((l) => l.startsWith("created price"))).toHaveLength(3);
     expect(stripe.prices().filter((p) => p.lookup_key === "north_pro_monthly").map((p) => p.unit_amount)).toEqual([29900]);
-    expect(lines[lines.length - 1]).toBe(`updated webhook ${WORKER}/webhooks/stripe (we_old): 6 events, enabled`);
+    expect(lines[lines.length - 1]).toBe(`updated webhook ${WORKER}/webhooks/stripe (we_old): 7 events, enabled`);
     expect(stripe.endpoints[0]).toMatchObject({ status: "enabled", enabled_events: [...BILLING_EVENT_TYPES] });
   });
 

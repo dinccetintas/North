@@ -33,7 +33,7 @@ describe("M4 schema", () => {
   });
 
   it("tasks accept lead_research and artifacts accept lead_list; unknown kinds are refused", async () => {
-    const task = await createTask(owned.owner.client, { companyId: owned.companyId, role: "sales", taskType: "lead_research", title: "Find leads" });
+    const task = await createTask(service, { companyId: owned.companyId, role: "sales", taskType: "lead_research", title: "Find leads" });
     expect(task.taskType).toBe("lead_research");
     const ok = await service.from("artifacts").insert({ company_id: owned.companyId, kind: "lead_list", title: "Leads", storage_path: `companies/${owned.companyId}/lead_list/leads-v1.md`, created_by_role: "sales" });
     expect(ok.error).toBeNull();

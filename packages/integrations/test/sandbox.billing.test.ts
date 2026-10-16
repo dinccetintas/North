@@ -200,6 +200,30 @@ describe("SandboxBilling simulation (B6-2): Stripe-shaped events in Stripe's ord
     await expect(billing.subscription(customerId)).resolves.toBeNull();
   });
 
+  it("subscription(customer, id) reports the named subscription: the current one, a superseded one as canceled, anything else null (M1 reconcile)", async () => {
+    const { billing, customerId } = await setup();
+    await billing.completeCheckout((await billing.createCheckoutSession(checkoutInput(customerId))).providerRef);
+    await expect(billing.subscription(customerId, "sub_sandbox_1")).resolves.toMatchObject({ id: "sub_sandbox_1", status: "active" });
+    await billing.endNow(customerId);
+    await expect(billing.subscription(customerId, "sub_sandbox_1")).resolves.toMatchObject({ id: "sub_sandbox_1", status: "canceled" });
+    await billing.completeCheckout((await billing.createCheckoutSession(checkoutInput(customerId, { idempotencyKey: "second" }))).providerRef);
+    await expect(billing.subscription(customerId, "sub_sandbox_2")).resolves.toMatchObject({ id: "sub_sandbox_2", status: "active" });
+    // Like Stripe's canceled subscription, the superseded one still names its price (the plan of its old invoices, never a guess).
+    await expect(billing.subscription(customerId, "sub_sandbox_1")).resolves.toEqual({ id: "sub_sandbox_1", status: "canceled", lookupKey: "north_pro_monthly", periodEnd: null, cancelAtPeriodEnd: false, sandbox: true });
+    await expect(billing.subscription(customerId, "sub_sandbox_7")).resolves.toBeNull();
+    await expect(billing.subscription("cus_sandbox_9", "sub_sandbox_1")).resolves.toBeNull();
+  });
+
+  it("emits the fields the grants check: a paid checkout at the price in usd, invoices with the billing reason and a priced subscription line (H1, M3)", async () => {
+    const { billing, customerId } = await setup();
+    const [checkout, , paid] = await billing.completeCheckout((await billing.createCheckoutSession(checkoutInput(customerId))).providerRef);
+    expect(objectOf(checkout!)).toMatchObject({ payment_status: "paid", amount_total: 29_900, currency: "usd" });
+    const invoice = parsed(paid!);
+    if (invoice.type !== "invoice.paid") throw new Error("invoice.paid");
+    expect(invoice.data.object.billing_reason).toBe("subscription_create");
+    expect(invoice.data.object.lines.data[0]).toMatchObject({ amount: 29_900, parent: { type: "subscription_item_details", subscription_item_details: { proration: false } } });
+  });
+
   it("refuses simulations on unknown or malformed ids", async () => {
     const { billing } = await setup();
     await expect(billing.completeCheckout("cs_sandbox_404")).rejects.toMatchObject({ code: "resource_missing" });
@@ -243,7 +267,8 @@ describe("Every sandbox event is a BillingEvent the core projection reads (B6-2 
     emitted.push(...(await billing.completeCheckout(solo.providerRef)), ...(await billing.advancePeriod(customerId)));
 
     const events = emitted.map(parsed);
-    expect(new Set(events.map((e) => e.type))).toEqual(new Set(BILLING_EVENT_TYPES));
+    // Every type but the delayed-payment success: the sandbox sells by card only, which settles at checkout (H1).
+    expect(new Set(events.map((e) => e.type))).toEqual(new Set(BILLING_EVENT_TYPES.filter((t) => t !== "checkout.session.async_payment_succeeded")));
     expect(new Set(events.map((e) => e.id)).size).toBe(events.length);
 
     let entitlement: Entitlement = trialEntitlement(USER, START);

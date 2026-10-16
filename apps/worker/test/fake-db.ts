@@ -315,7 +315,7 @@ export function fakeDbModule(state: FakeState) {
     }),
     getArtifact: vi.fn(async (_db: unknown, id: string) => (id.startsWith("art-") ? { id, title: "Artifact", version: 1 } : null)),
     createArtifact: vi.fn(async (_db: unknown, input: { companyId: string; kind: string; title: string; createdByRole: string }) => ({ ...m5.recordArtifact(input.companyId, input.kind, input.title, input.createdByRole) })),
-    recordAgentRun: vi.fn(async () => nextId("run")),
+    recordAgentRun: vi.fn(async (_db: unknown, input?: { id?: string }) => input?.id ?? nextId("run")),
     currentThesis: vi.fn(async () => ({ text: "Bookkeeping for solo consultants.", targetCustomer: "solo consultants", whyNow: "now" })),
     listGoals: vi.fn(async () => []),
     memoryDigest: vi.fn(async () => "Thesis: Bookkeeping for solo consultants."),

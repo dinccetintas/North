@@ -104,9 +104,17 @@ describe("D6-3 billing ticks", () => {
   it("entitlements-tick ends an expired trial and sends company/killswitch per company", async () => {
     const trial = (await dbModule.getEntitlement({} as never, OWNER))!;
     state.entitlements.set(OWNER, { ...trial, periodEnd: new Date(clock.now().getTime() - 1000).toISOString() });
-    expect(await run("entitlements-tick")).toEqual({ ended: 1, users: [OWNER], companies: 1 });
+    expect(await run("entitlements-tick")).toEqual({ ended: 1, users: [OWNER], companies: 1, reconciled: { checked: 0, ended: [] }, healed: 0 });
     expect(sent).toEqual([{ id: "kill-switch", events: [{ name: EVENT.companyKillSwitch, data: { companyId: C1 } }] }]);
     expect(state.pausedReasons.get(C1)).toBe("subscription_ended");
+  });
+
+  it("entitlements-tick also ends a subscription the provider no longer knows, 3 days past its period end (M6 review M1)", async () => {
+    const trial = (await dbModule.getEntitlement({} as never, OWNER))!;
+    state.entitlements.set(OWNER, { ...trial, status: "active", priceUsd: 299, stripeCustomerId: "cus_sandbox_404", stripeSubscriptionId: "sub_sandbox_404", periodEnd: new Date(clock.now().getTime() - 4 * 86_400_000).toISOString() });
+    expect(await run("entitlements-tick")).toEqual({ ended: 0, users: [], companies: 1, reconciled: { checked: 1, ended: [OWNER] }, healed: 0 });
+    expect(sent).toEqual([{ id: "reconcile-kill-switch", events: [{ name: EVENT.companyKillSwitch, data: { companyId: C1 } }] }]);
+    expect(state.entitlements.get(OWNER)?.status).toBe("ended");
   });
 
   it("usage-tick with nothing due sends nothing", async () => {

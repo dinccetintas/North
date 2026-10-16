@@ -2,7 +2,8 @@ import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 import { getBillingSession } from "@north/db";
 import { createClient, currentUser } from "@/lib/supabase/server";
-import { safeRedirectUrl } from "@/lib/billing-view";
+import { billingFailure, safeRedirectUrl } from "@/lib/billing-view";
+import { billingRedirectPolicy } from "@/lib/env";
 import { BillingRedirect } from "@/components/billing-redirect";
 
 export const metadata = { title: "Opening Stripe" };
@@ -17,8 +18,8 @@ export default async function BillingGoPage({ params }: { params: Params }) {
   if (!id.success) notFound();
   const session = await getBillingSession(await createClient(), id.data);
   if (!session) notFound();
-  const url = session.status === "ready" ? safeRedirectUrl(session.url) : null;
-  const initial = { status: session.status === "ready" && url === null ? ("failed" as const) : session.status, url };
+  const url = session.status === "ready" ? safeRedirectUrl(session.url, billingRedirectPolicy()) : null;
+  const initial = { status: session.status === "ready" && url === null ? ("failed" as const) : session.status, url, reason: session.status === "failed" ? billingFailure(session.error) : null };
 
   return (
     <main className="mx-auto w-full max-w-xl px-4 py-12 sm:px-6">

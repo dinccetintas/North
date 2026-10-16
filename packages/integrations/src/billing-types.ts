@@ -38,6 +38,8 @@ const BillingUrl = z.string().max(URL_MAX).refine(isAllowedBillingUrl, { message
 
 /** Stripe customer ids (`cus_…`, `cus_sandbox_<n>`); the strict shape also keeps them safe as a path segment. */
 export const CustomerIdSchema = z.string().regex(/^cus_[A-Za-z0-9_]{1,120}$/, "a Stripe customer id (cus_…)");
+/** Stripe subscription ids (`sub_…`, `sub_sandbox_<n>`); safe as a path segment for the same reason. */
+export const SubscriptionIdSchema = z.string().regex(/^sub_[A-Za-z0-9_]{1,120}$/, "a Stripe subscription id (sub_…)");
 
 /** The `billing_sessions` row id in practice; Stripe accepts up to 255 characters. */
 const IdempotencyKey = z.string().regex(/^[A-Za-z0-9:._-]{1,255}$/, "idempotency key: letters, digits, ':', '.', '_' or '-'");
@@ -125,5 +127,11 @@ export interface BillingProvider {
   /** A `payment`-mode checkout for one credit pack. */
   createCreditPackSession(input: CreditPackSessionInput): Promise<BillingSessionResult>;
   createPortalSession(input: PortalSessionInput): Promise<BillingSessionResult>;
-  subscription(customerId: string): Promise<BillingSubscription | null>;
+  /**
+   * The customer's newest subscription in any status, or, with
+   * `subscriptionId`, that one subscription of the customer (`entitlements-tick`
+   * asks whether the followed one has ended, M6 review M1). Null when there is
+   * none, when the id is malformed, or when it belongs to another customer.
+   */
+  subscription(customerId: string, subscriptionId?: string): Promise<BillingSubscription | null>;
 }

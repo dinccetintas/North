@@ -2,6 +2,7 @@ import type { ExportManifest } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
 import {
+  ExportRefusedError,
   EXPORTS_BUCKET,
   exportStoragePath,
   getExport,
@@ -36,22 +37,24 @@ describe("exports repository (EXP-1, MEM-2, RET-1)", () => {
     const all = await requestExport(owned.owner.client, { userId: owned.owner.id, companyId: null, kind: "full" });
     expect(all).toMatchObject({ userId: owned.owner.id, companyId: null, kind: "full", includeArchived: false, status: "requested", storagePath: null, bytes: null, manifest: null, expiresAt: null });
     expect(Object.isFrozen(all)).toBe(true);
-    const one = await requestExport(owned.owner.client, { userId: owned.owner.id, companyId: owned.companyId, kind: "artifacts" });
+    // M6 review M4: one open export per user; the next request waits for this one.
+    await expect(requestExport(owned.owner.client, { userId: owned.owner.id, companyId: owned.companyId, kind: "artifacts" })).rejects.toBeInstanceOf(ExportRefusedError);
     await expect(requestExport(owned.owner.client, { userId: owned.owner.id, companyId: null, kind: "everything" as never })).rejects.toThrow();
     await expect(requestExport(stranger.client, { userId: stranger.id, companyId: owned.companyId, kind: "data" })).rejects.toBeInstanceOf(DbError);
-    expect((await listExports(owned.owner.client, owned.owner.id)).map((e) => e.id)).toEqual([one.id, all.id]);
     expect(await listExports(stranger.client, owned.owner.id)).toEqual([]);
     expect(await getExport(stranger.client, all.id)).toBeNull();
 
     expect((await setExportRunning(service, all.id))?.status).toBe("running");
     expect(await setExportRunning(service, all.id)).toBeNull();
-    await expect(setExportRunning(owned.owner.client, one.id)).rejects.toBeInstanceOf(DbError);
     const path = exportStoragePath(owned.owner.id, all.id);
     expect(path).toBe(`users/${owned.owner.id}/exports/${all.id}.zip`);
     await raw.storage.from(EXPORTS_BUCKET).upload(path, new Blob(["PK-full"], { type: "application/zip" }), { contentType: "application/zip" });
     const expiresAt = "2026-11-16T10:00:00.000Z";
     const ready = await setExportReady(service, all.id, { storagePath: path, bytes: 7, manifest: manifest("exports-co"), expiresAt });
     expect(ready).toMatchObject({ status: "ready", storagePath: path, bytes: 7, manifest: manifest("exports-co"), expiresAt });
+    const one = await requestExport(owned.owner.client, { userId: owned.owner.id, companyId: owned.companyId, kind: "artifacts" });
+    expect((await listExports(owned.owner.client, owned.owner.id)).map((e) => e.id)).toEqual([one.id, all.id]);
+    await expect(setExportRunning(owned.owner.client, one.id)).rejects.toBeInstanceOf(DbError);
     await expect(setExportReady(service, one.id, { storagePath: exportStoragePath(stranger.id, one.id), bytes: 1, manifest: manifest("x"), expiresAt })).rejects.toBeInstanceOf(DbError);
     await expect(setExportReady(service, one.id, { storagePath: path, bytes: 1, manifest: { files: [{ path: "../etc/passwd", bytes: 1, kind: "md" }], companies: [], generatedAt: expiresAt }, expiresAt })).rejects.toThrow();
     expect(await setExportFailed(service, one.id, "The export could not be built.")).toMatchObject({ status: "failed", error: "The export could not be built." });

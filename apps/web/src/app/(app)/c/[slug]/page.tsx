@@ -32,6 +32,8 @@ export async function generateMetadata({ params }: { params: Params }) {
 }
 
 interface OwnerContext {
+  /** The signed-in owner's id (claims): the key of the offline brief copy. */
+  readonly userId: string | null;
   readonly timezone: string;
   readonly briefHour: number;
   /** BIL-1 / BIL-2: what `dispatchDecision` says for this company right now; null when agents may run. */
@@ -41,10 +43,10 @@ interface OwnerContext {
 /** The signed-in owner's zone and brief hour for the brief's empty state and the dispatch refusal for queued tasks; claims only, never a session. */
 async function ownerContext(company: { readonly killSwitchActive: boolean; readonly pausedReason?: PausedReason | null }): Promise<OwnerContext> {
   const user = await currentUser();
-  if (!user) return { timezone: FALLBACK_TIMEZONE, briefHour: BRIEF_HOUR, blockReason: null };
+  if (!user) return { userId: null, timezone: FALLBACK_TIMEZONE, briefHour: BRIEF_HOUR, blockReason: null };
   const [profile, plan] = await Promise.all([ownerProfile(user.id), loadPlanSnapshot(await createClient(), user.id)]);
   const decision = dispatchDecision({ killSwitchActive: company.killSwitchActive, pausedReason: company.pausedReason ?? null, entitlement: plan.entitlement, balance: plan.balance, now: new Date() });
-  return { timezone: profile?.timezone ?? FALLBACK_TIMEZONE, briefHour: profile?.briefHour ?? BRIEF_HOUR, blockReason: decision.ok ? null : decision.reason };
+  return { userId: user.id, timezone: profile?.timezone ?? FALLBACK_TIMEZONE, briefHour: profile?.briefHour ?? BRIEF_HOUR, blockReason: decision.ok ? null : decision.reason };
 }
 
 /**
@@ -94,7 +96,7 @@ export default async function CompanyHomePage({ params }: { params: Params }) {
         <LiveRefresh active={live} />
       </div>
 
-      <BriefPanel slug={slug} brief={brief} timezone={owner.timezone} briefHour={owner.briefHour} />
+      <BriefPanel userId={owner.userId} slug={slug} brief={brief} timezone={owner.timezone} briefHour={owner.briefHour} />
 
       <DecisionsSection slug={slug} companyId={company.id} stopped={company.killSwitchActive} stoppedMessage={answerRefusal(company)} />
 

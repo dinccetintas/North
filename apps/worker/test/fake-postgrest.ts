@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { DbClient } from "@north/db";
+import { EXPORT_TEXT_MAX_CHARS, type DbClient } from "@north/db";
 
 /**
  * An in-memory stand-in for the parts of supabase-js the export, retention and
@@ -7,7 +7,9 @@ import type { DbClient } from "@north/db";
  * delete with eq, neq, in, is, not, lte, gte, order, range, limit, single),
  * Storage buckets and `auth.admin.deleteUser`. The real `@north/db`
  * repositories run against it, so their Zod parsing and status guards are
- * exercised as they are against Postgres. Embedded selects are refused.
+ * exercised as they are against Postgres. Embedded selects are refused. Like
+ * hosted PostgREST, a select returns at most `maxRows` rows (1000) and a
+ * `column::export_text` cast cuts the text at `EXPORT_TEXT_MAX_CHARS`.
  */
 
 export type Row = Record<string, unknown>;
@@ -22,9 +24,15 @@ export interface FakeStore {
   readonly failing: Set<string>;
   /** Side effects in order: `storage.remove:<bucket>`, `rpc:<name>`, `auth.deleteUser`. */
   readonly log: string[];
+  /** PostgREST's `max_rows`: a select never returns more (a test may lower it to prove paging). */
+  maxRows: number;
+  /** Every select as `<table>:<rows returned>`, for paging assertions. */
+  readonly reads: string[];
+  /** Every upload as `<bucket>:<stream|bytes|blob|string>`: an export must stream its zip from the file. */
+  readonly uploads: string[];
 }
 
-export const emptyStore = (): FakeStore => ({ tables: new Map(), objects: new Map(), rpc: new Map(), deletedAuthUsers: [], failing: new Set(), log: [] });
+export const emptyStore = (): FakeStore => ({ tables: new Map(), objects: new Map(), rpc: new Map(), deletedAuthUsers: [], failing: new Set(), log: [], maxRows: 1000, reads: [], uploads: [] });
 
 export const rowsOf = (store: FakeStore, table: string): Row[] => {
   const rows = store.tables.get(table) ?? [];
@@ -38,10 +46,17 @@ type Result = { data: unknown; error: { message: string; code?: string } | null 
 const compare = (a: unknown, b: unknown): number => (a === b ? 0 : a === null || a === undefined ? -1 : b === null || b === undefined ? 1 : String(a) < String(b) ? -1 : 1);
 const numericOrString = (a: unknown, b: unknown): number => (typeof a === "number" && typeof b === "number" ? a - b : compare(a, b));
 
+/** `name` or `name::cast`; `export_text` cuts strings as the 0015 domain does, other casts pass the value through. */
+function cell(row: Row, column: string): [string, unknown] {
+  const [name = column, cast] = column.split("::");
+  const value = row[name] ?? null;
+  return [name, cast === "export_text" && typeof value === "string" ? value.slice(0, EXPORT_TEXT_MAX_CHARS) : value];
+}
+
 function project(row: Row, columns: string | null): Row {
   if (columns === null || columns.trim() === "*") return { ...row };
   if (columns.includes("(")) throw new Error(`fake-postgrest: embedded selects are not supported (${columns})`);
-  return Object.fromEntries(columns.split(",").map((c) => c.trim()).filter(Boolean).map((c) => [c, row[c] ?? null]));
+  return Object.fromEntries(columns.split(",").map((c) => c.trim()).filter(Boolean).map((c) => cell(row, c)));
 }
 
 class Query implements PromiseLike<Result> {
@@ -161,7 +176,8 @@ class Query implements PromiseLike<Result> {
       return { data: null, error: { message: `fake outage on ${this.table}` } };
     }
     const rows = rowsOf(this.store, this.table);
-    const affected = this.op === "select" ? this.matching(rows) : this.write(rows);
+    const affected = this.op === "select" ? this.matching(rows).slice(0, this.store.maxRows) : this.write(rows);
+    if (this.op === "select") this.store.reads.push(`${this.table}:${affected.length}`);
     const data = this.op === "select" || this.returning ? affected.map((r) => project(r, this.columns)) : null;
     if (this.singleMode === null || data === null) return { data, error: null };
     if (data.length > 1) return { data: null, error: { message: "more than one row", code: "PGRST116" } };
@@ -170,10 +186,19 @@ class Query implements PromiseLike<Result> {
   }
 }
 
+const isStream = (body: unknown): body is AsyncIterable<Uint8Array> => typeof body === "object" && body !== null && Symbol.asyncIterator in body && "pipe" in body;
+
+const bodyKind = (body: unknown): string => (isStream(body) ? "stream" : body instanceof Uint8Array ? "bytes" : body instanceof Blob ? "blob" : typeof body);
+
 const toBytes = async (body: unknown): Promise<Uint8Array> => {
   if (body instanceof Uint8Array) return new Uint8Array(body);
   if (body instanceof Blob) return new Uint8Array(await body.arrayBuffer());
   if (typeof body === "string") return new TextEncoder().encode(body);
+  if (isStream(body)) {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of body) chunks.push(chunk);
+    return new Uint8Array(Buffer.concat(chunks));
+  }
   throw new Error("fake-postgrest: unsupported upload body");
 };
 
@@ -181,6 +206,7 @@ function bucket(store: FakeStore, name: string) {
   const key = (path: string): string => `${name}/${path}`;
   return {
     upload: async (path: string, body: unknown, opts: { upsert?: boolean } = {}) => {
+      store.uploads.push(`${name}:${bodyKind(body)}`);
       if (store.failing.has(`storage:${name}`)) {
         store.failing.delete(`storage:${name}`);
         return { data: null, error: { message: "fake storage outage" } };

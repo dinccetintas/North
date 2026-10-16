@@ -4,6 +4,7 @@ import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { createAnonClient } from "@/lib/supabase/anon";
 import { PublicPageForm } from "@/components/public-page-form";
+import { errorText } from "@/lib/page-errors";
 
 export const metadata = { title: "Public page" };
 
@@ -16,7 +17,8 @@ type SearchParams = Promise<{ saved?: string; error?: string }>;
  * than the world sees.
  */
 export default async function PublicPageEditor({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
-  const [{ slug }, { saved, error }] = await Promise.all([params, searchParams]);
+  const [{ slug }, { saved, error: errorCode }] = await Promise.all([params, searchParams]);
+  const error = errorText("publicPage", errorCode);
   const company = await companyBySlug(slug);
   if (!company) notFound();
   const [page, view] = await Promise.all([getPublicPage(await createClient(), company.id), publicPageView(createAnonClient(), slug)]);

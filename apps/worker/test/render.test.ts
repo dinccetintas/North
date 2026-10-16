@@ -87,6 +87,15 @@ describe("renderPdf (pdf-lib)", () => {
     await expect(renderPdf(huge, { title: "Huge" })).rejects.toThrow(/5 MB/);
   });
 
+  it("M6 review M4: a 20 000-character token is broken into lines in well under a second, every character kept", async () => {
+    const started = Date.now();
+    const pdf = await renderPdf(`# Token\n\n${"n".repeat(20_000)}\n`, { title: "Token" });
+    expect(Date.now() - started).toBeLessThan(3000);
+    const lines = pdfText(pdf).split("\n").filter((l) => /^n+$/.test(l));
+    expect(lines.length).toBeGreaterThan(100);
+    expect(lines.join("")).toHaveLength(20_000);
+  });
+
   it("renders an empty-looking markdown as one page", async () => {
     const doc = await PDFDocument.load(await renderPdf("   \n", { title: "Empty" }));
     expect(doc.getPageCount()).toBe(1);

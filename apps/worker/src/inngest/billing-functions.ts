@@ -4,6 +4,7 @@ import { inngest } from "./client";
 import { buildDeps } from "../deps";
 import { applyBillingEvent, createBillingSession } from "../services/billing";
 import { endExpiredTrials, type CompanyEvent } from "../services/entitlements";
+import { healPlanGrants, reconcileSubscriptions } from "../services/reconcile";
 import type { StepRunner } from "../services/steps";
 import { notifyUsageAlert, usageTick } from "../services/usage";
 
@@ -47,14 +48,23 @@ export const applyBillingEventFn = inngest.createFunction(
   },
 );
 
-/** Hourly at :23 (and `billing/tick`): trials past their period end with no subscription end and stop their agents. */
+/**
+ * Hourly at :23 (and `billing/tick`): trials past their period end with no
+ * subscription end and stop their agents; then subscriptions whose end never
+ * arrived (3 days past `cancel_at` or `period_end`) are checked with the
+ * provider and ended when it says they are gone or ended (M6 review M1);
+ * last, a plan grant an `invoice.paid` never wrote is healed (`healPlanGrants`).
+ */
 export const entitlementsTick = inngest.createFunction(
   { id: "entitlements-tick", triggers: [cron("23 * * * *"), { event: EVENT.billingTick }], retries: 0 },
   async ({ step }) => {
     const deps = await buildDeps();
     const ended = await step.run("end-trials", () => endExpiredTrials(deps));
     if (ended.events.length > 0) await step.sendEvent("kill-switch", outgoing(ended.events));
-    return { ended: ended.ended.length, users: ended.ended, companies: ended.events.length };
+    const reconciled = await step.run("reconcile", () => reconcileSubscriptions(deps));
+    if (reconciled.events.length > 0) await step.sendEvent("reconcile-kill-switch", outgoing(reconciled.events));
+    const healed = await step.run("heal-grants", () => healPlanGrants(deps));
+    return { ended: ended.ended.length, users: ended.ended, companies: ended.events.length + reconciled.events.length, reconciled: { checked: reconciled.checked, ended: reconciled.ended }, healed: healed.healed.length };
   },
 );
 

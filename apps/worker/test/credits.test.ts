@@ -14,7 +14,7 @@ const state: FakeState = emptyState();
 const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
-const { chargeRun, consumeForRun, recordUsageForRun } = await import("../src/services/credits");
+const { chargeRun, consumeForRun, recordUsageForRun, releaseRun, reserveRun } = await import("../src/services/credits");
 
 const OWNER = "7a1f0c4e-2b3d-4e5f-8a9b-0c1d2e3f4a5b";
 const COMPANY = "c1000000-0000-4000-8000-000000000001";
@@ -48,13 +48,40 @@ describe("D6-3 credits per run", () => {
     expect(await recordUsageForRun(deps(), { userId: OWNER, timezone: "UTC", run: { costUsd: 1.5, sandboxMinutes: 0 } })).toMatchObject({ period: "2026-10", creditsUsed: 1, llmCostUsd: 1.5 });
   });
 
-  it(`a consume past the -${CREDIT_GRACE} floor is refused by the database: logged, no usage, the run is not failed`, async () => {
+  it(`a consume past the -${CREDIT_GRACE} floor is refused by the database: logged, the run's cost still in usage (no credit), the run is not failed`, async () => {
     state.credits.set(OWNER, [{ kind: "adjust", amount: -CREDIT_GRACE, ref: "adjust:floor", note: "" }]);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    expect(await chargeRun(deps(), COMPANY, "run-3", { usage: { costUsd: 0.1 } })).toEqual({ userId: OWNER, consumed: false, period: "2026-11" });
+    expect(await chargeRun(deps(), COMPANY, "run-3", { usage: { costUsd: 0.1 }, sandboxMinutes: 3 })).toEqual({ userId: OWNER, consumed: false, period: "2026-11" });
     expect(refs()).toEqual(["adjust:floor"]);
-    expect(state.usage.size).toBe(0);
+    expect(state.usage.get(`${OWNER}:2026-11`)).toMatchObject({ creditsUsed: 0, llmCostUsd: 0.1, sandboxMinutes: 3 });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("credit floor"));
     warn.mockRestore();
+  });
+});
+
+describe("M6 review L9: the credit is reserved at dispatch", () => {
+  it("reserveRun takes the run's credit before it starts (run:<id>), once; refused at a balance of 0", async () => {
+    state.credits.set(OWNER, [{ kind: "grant_plan", amount: 1, ref: "trial:one", note: "" }]);
+    expect(await reserveRun(deps(), COMPANY, "run-a")).toEqual({ ok: true, userId: OWNER, reserved: true });
+    expect(await reserveRun(deps(), COMPANY, "run-a")).toEqual({ ok: true, userId: OWNER, reserved: false });
+    expect(await reserveRun(deps(), COMPANY, "run-b")).toEqual({ ok: false, userId: OWNER, reason: "credits_exhausted" });
+    expect(refs()).toEqual(["trial:one", "run:run-a"]);
+  });
+
+  it("chargeRun on a reserved run writes no second consume and adds the run to usage once", async () => {
+    const reservation = await reserveRun(deps(), COMPANY, "run-r");
+    expect(await chargeRun(deps(), COMPANY, "run-r", { usage: { costUsd: 0.25 }, sandboxMinutes: 1 }, reservation)).toEqual({ userId: OWNER, consumed: true, period: "2026-11" });
+    expect(refs().filter((r) => r === "run:run-r")).toHaveLength(1);
+    expect(state.usage.get(`${OWNER}:2026-11`)).toMatchObject({ creditsUsed: 1, llmCostUsd: 0.25, sandboxMinutes: 1 });
+    expect(await dbModule.creditBalance({} as never, OWNER)).toBe(299);
+  });
+
+  it("releaseRun gives a reserved credit back once (release:<id>); an unreserved run releases nothing", async () => {
+    const reservation = await reserveRun(deps(), COMPANY, "run-x");
+    await releaseRun(deps(), "run-x", reservation);
+    await releaseRun(deps(), "run-x", reservation);
+    await releaseRun(deps(), "run-y", { ok: true, userId: OWNER, reserved: false });
+    expect(refs()).toEqual([`trial:${OWNER}`, "run:run-x", "release:run-x"]);
+    expect(await dbModule.creditBalance({} as never, OWNER)).toBe(300);
   });
 });

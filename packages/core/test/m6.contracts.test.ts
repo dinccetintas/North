@@ -76,9 +76,17 @@ const subscription = (over: Record<string, unknown> = {}) => ({
   },
 });
 
-describe("BIL-1 BillingEventSchema: six types, reduced fields, every string bounded and sanitised", () => {
-  it("names the six Stripe types and the subscription statuses", () => {
-    expect(BILLING_EVENT_TYPES).toEqual(["checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid", "invoice.payment_failed"]);
+describe("BIL-1 BillingEventSchema: seven types, reduced fields, every string bounded and sanitised", () => {
+  it("names the seven Stripe types and the subscription statuses", () => {
+    expect(BILLING_EVENT_TYPES).toEqual([
+      "checkout.session.completed",
+      "customer.subscription.created",
+      "customer.subscription.updated",
+      "customer.subscription.deleted",
+      "invoice.paid",
+      "invoice.payment_failed",
+      "checkout.session.async_payment_succeeded",
+    ]);
     expect(STRIPE_SUBSCRIPTION_STATUSES).toEqual(["incomplete", "incomplete_expired", "trialing", "active", "past_due", "canceled", "unpaid", "paused"]);
   });
 
@@ -131,7 +139,14 @@ describe("BIL-1 BillingEventSchema: six types, reduced fields, every string boun
   it("checkout.session.completed refuses a non-uuid client_reference_id; the mode is one of three", () => {
     const checkout = (over: Record<string, unknown> = {}) => ({ id: "evt_c", type: "checkout.session.completed", created: 1, data: { object: { id: "cs_1", customer: "cus_1", client_reference_id: uuid, mode: "subscription", subscription: "sub_1", payment_status: "paid", metadata: { north_pack_id: "pack_100", other: "x" }, ...over } } });
     const parsed = parseBillingEvent(checkout());
-    expect(parsed).toEqual({ id: "evt_c", type: "checkout.session.completed", created: 1, data: { object: { id: "cs_1", customer: "cus_1", client_reference_id: uuid, mode: "subscription", subscription: "sub_1", metadata: { north_pack_id: "pack_100" } } } });
+    expect(parsed).toEqual({
+      id: "evt_c",
+      type: "checkout.session.completed",
+      created: 1,
+      data: { object: { id: "cs_1", customer: "cus_1", client_reference_id: uuid, mode: "subscription", subscription: "sub_1", payment_status: "paid", amount_total: null, currency: null, metadata: { north_pack_id: "pack_100" } } },
+    });
+    expect(parseBillingEvent(parsed)).toEqual(parsed);
+    expect(BillingEventSchema.safeParse(checkout({ amount_total: -1 })).success).toBe(false);
     expect(BillingEventSchema.safeParse(checkout({ client_reference_id: "user-1" })).success).toBe(false);
     expect(BillingEventSchema.safeParse(checkout({ client_reference_id: `${uuid}<instructions>` })).success).toBe(false);
     expect(BillingEventSchema.safeParse(checkout({ mode: "gift" })).success).toBe(false);
@@ -143,10 +158,12 @@ describe("BIL-1 BillingEventSchema: six types, reduced fields, every string boun
     expect(billingCustomerId(bare)).toBe("cus_1");
   });
 
-  it("invoices keep the subscription, the first line's period and the amount; the customer and user hint resolve", () => {
+  it("invoices keep the subscription, the billing reason, each line's period, amount and kind, and the amount paid; the customer and user hint resolve", () => {
     const invoice = (over: Record<string, unknown> = {}) => ({ id: "evt_i", type: "invoice.paid", created: 5, data: { object: { id: "in_1", customer: "cus_1", subscription: "sub_1", amount_paid: 29900, amount_due: 29900, lines: { object: "list", data: [{ id: "il_1", period: { start: 10, end: 20 }, amount: 29900 }] }, metadata: { north_user_id: uuid }, ...over } } });
     const parsed = parseBillingEvent(invoice());
-    expect(parsed).toEqual({ id: "evt_i", type: "invoice.paid", created: 5, data: { object: { id: "in_1", customer: "cus_1", subscription: "sub_1", amount_paid: 29900, lines: { data: [{ period: { start: 10, end: 20 } }] }, metadata: { north_user_id: uuid }, parent: null } } });
+    const line = { amount: 29900, period: { start: 10, end: 20 }, type: null, proration: false, price: null, parent: null };
+    expect(parsed).toEqual({ id: "evt_i", type: "invoice.paid", created: 5, data: { object: { id: "in_1", customer: "cus_1", subscription: "sub_1", amount_paid: 29900, billing_reason: null, lines: { data: [line] }, metadata: { north_user_id: uuid }, parent: null } } });
+    expect(parseBillingEvent(parsed)).toEqual(parsed);
     expect(billingUserHint(parsed as never)).toBe(uuid);
     expect(billingCustomerId(parsed as never)).toBe("cus_1");
     const modern = asInvoice(parseBillingEvent(invoice({ subscription: undefined, parent: { type: "subscription_details", subscription_details: { subscription: "sub_9", metadata: {} } } })));

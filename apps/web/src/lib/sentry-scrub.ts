@@ -44,3 +44,27 @@ export function scrubBreadcrumb<B extends BreadcrumbLike>(breadcrumb: B): B | nu
   if (breadcrumb.category === "console") return { category: "console", message: "[console]" } as B;
   return breadcrumb.data ? { ...breadcrumb, data: scrubData(breadcrumb.data) } : breadcrumb;
 }
+
+/**
+ * M6 review L7: transactions skip `beforeSend` and carry request URLs, span
+ * descriptions and span attributes (`http.target`, `url.full`, `url.query`)
+ * with their query strings: OAuth codes, checkout ids. None is sent.
+ */
+export function dropTransaction(event: unknown): null {
+  void event;
+  return null;
+}
+
+/**
+ * What both configs pass to `Sentry.init` besides the DSN and environment.
+ * No `tracesSampleRate` and no `tracesSampler`: tracing stays off. A rate of
+ * 0 would not do, because the SDK lets a parent's sampled decision (an
+ * incoming `sentry-trace: …-1` header) override the rate; with neither option
+ * no span is recorded at all, and `dropTransaction` stops any that still is.
+ */
+export const SENTRY_PRIVACY_OPTIONS = Object.freeze({
+  sendDefaultPii: false,
+  beforeSend: <E extends EventLike>(event: E): E => scrubEvent(event),
+  beforeSendTransaction: dropTransaction,
+  beforeBreadcrumb: <B extends BreadcrumbLike>(breadcrumb: B): B | null => scrubBreadcrumb(breadcrumb),
+});

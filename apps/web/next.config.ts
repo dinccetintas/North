@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs/config";
+import { SECURITY_HEADERS } from "./src/lib/security-headers";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
@@ -17,6 +18,8 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
+      // Every response: no framing (clickjacking of a card), no sniffing, origin-only cross-site referrers.
+      { source: "/:path*", headers: [...SECURITY_HEADERS] },
       {
         // PWA-1: the worker must always be revalidated so a new version (cache names, rules) takes over.
         source: "/sw.js",

@@ -1,5 +1,5 @@
-import { dispatchDecision, EVENT, retentionUntil, shouldEndTrial, type DispatchDecision, type Entitlement } from "@north/core";
-import { creditBalance, getCompanyById, getEntitlementForCompany, listCompaniesByOwner, listTrialsToEnd, setKillSwitch, unarchiveCompany, upsertEntitlement } from "@north/db";
+import { dispatchDecision, endedEntitlement, EVENT, shouldEndTrial, type DispatchDecision } from "@north/core";
+import { creditBalance, getCompanyById, getEntitlementForCompany, listCompaniesByOwner, listTrialsToEnd, purgeStartedAt, setKillSwitch, unarchiveCompany, updateEntitlementIf } from "@north/db";
 import type { WorkerDeps } from "../deps";
 
 /**
@@ -65,9 +65,11 @@ export async function endSubscription(deps: WorkerDeps, userId: string): Promise
  * A subscription is active again: the pauses billing set are lifted (a
  * user's own pause stays), companies the retention sweep archived before a
  * purge are restored, and each gets `company/resume`, which redispatches the
- * queue and opens the M4 resume card for paused campaigns.
+ * queue and opens the M4 resume card for paused campaigns. Nothing while a
+ * purge runs for the owner (M6 review M5): the purge removes these companies.
  */
 export async function reactivate(deps: WorkerDeps, userId: string): Promise<SubscriptionEffect> {
+  if (await purgeStartedAt(deps.db, userId)) return Object.freeze({ userId, companies: [], events: [] });
   const touched: string[] = [];
   for (const company of await listCompaniesByOwner(deps.db, userId)) {
     if (company.status === "archived" && company.pausedReason === "retention") {
@@ -81,17 +83,20 @@ export async function reactivate(deps: WorkerDeps, userId: string): Promise<Subs
   return Object.freeze({ userId, companies: Object.freeze(touched), events: Object.freeze(touched.map((id) => eventFor(EVENT.companyResume, id))) });
 }
 
-/** The trial ends like a cancelled subscription: `ended` now, retention from now. */
-const endedTrial = (entitlement: Entitlement, now: Date): Entitlement => Object.freeze({ ...entitlement, status: "ended", endedAt: now.toISOString(), retentionUntil: retentionUntil(now), cancelAt: null });
-
-/** `entitlements-tick` (hourly, and `billing/tick`): trials past their period end with no subscription end, then stop their agents. */
+/**
+ * `entitlements-tick` (hourly, and `billing/tick`): trials past their period
+ * end with no subscription end like a cancelled subscription (`ended` now,
+ * retention from now), then stop their agents. The write is conditional on
+ * the row still being a card-less trial (M6 review L10): a subscription the
+ * apply step projected meanwhile is never overwritten by the tick's copy.
+ */
 export async function endExpiredTrials(deps: WorkerDeps): Promise<{ readonly ended: readonly string[]; readonly events: readonly CompanyEvent[] }> {
   const now = deps.clock();
   const ended: string[] = [];
   const events: CompanyEvent[] = [];
   for (const trial of await listTrialsToEnd(deps.db, now)) {
     if (!shouldEndTrial(trial, now)) continue;
-    await upsertEntitlement(deps.db, endedTrial(trial, now));
+    if (!(await updateEntitlementIf(deps.db, endedEntitlement(trial, now), { status: "trialing", stripeSubscriptionId: null }))) continue;
     const stopped = await endSubscription(deps, trial.userId);
     ended.push(trial.userId);
     events.push(...stopped.events);

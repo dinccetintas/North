@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { invoiceSubscriptionId, unixToIso, type BillingEvent, type BillingInvoiceObject, type BillingSubscriptionObject, type StripeSubscriptionStatus } from "./events";
+import { invoiceSubscriptionId, isCheckoutEvent, planInvoiceLine, unixToIso, type BillingEvent, type BillingInvoiceObject, type BillingSubscriptionObject, type CheckoutEvent, type StripeSubscriptionStatus } from "./events";
 import { planByLookupKey, RETENTION_DAYS, SUBSCRIPTION_PLAN_IDS, SUBSCRIPTION_PLANS, TRIAL_DAYS, type SubscriptionPlan, type SubscriptionPlanId } from "./plans";
 
 /**
@@ -75,6 +75,11 @@ export function isActive(entitlement: Pick<Entitlement, "status">): boolean {
 const ended = (entitlement: Entitlement, now: Date): Entitlement =>
   entitlement.status === "ended" ? entitlement : { ...entitlement, status: "ended", endedAt: now.toISOString(), retentionUntil: retentionUntil(now), cancelAt: null };
 
+/** The end a tick writes (an expired trial, a subscription Stripe says is gone): `ended` now, retention from now; an ended one is returned as is. */
+export function endedEntitlement(entitlement: Entitlement, now: Date): Entitlement {
+  return entitlement.status === "ended" ? entitlement : Object.freeze(ended(entitlement, now));
+}
+
 /** A live subscription clears what the end set; the sweep's archive is reversed by the worker (`reactivate`). */
 const revived = (entitlement: Entitlement): Entitlement => ({ ...entitlement, endedAt: null, retentionUntil: null, purgeDue: false });
 
@@ -97,6 +102,9 @@ function subscriptionStatus(status: StripeSubscriptionStatus, cancelAtPeriodEnd:
   }
 }
 
+/** M1: a Stripe status after which agents stop (the tick ends an entitlement whose subscription Stripe reports so). */
+export const stripeStatusEnds = (status: StripeSubscriptionStatus): boolean => subscriptionStatus(status, false) === "ended";
+
 /** The period from the subscription or, on newer API versions, its first item; nothing when neither carries it. */
 function subscriptionPeriod(object: BillingSubscriptionObject): Partial<Pick<Entitlement, "periodStart" | "periodEnd">> {
   const item = object.items.data[0];
@@ -108,6 +116,8 @@ function subscriptionPeriod(object: BillingSubscriptionObject): Partial<Pick<Ent
 function applySubscription(entitlement: Entitlement, object: BillingSubscriptionObject, now: Date): Entitlement {
   const lookupKey = object.items.data[0]?.price?.lookup_key;
   const plan = lookupKey ? planByLookupKey(lookupKey) : null;
+  const status = subscriptionStatus(object.status, object.cancel_at_period_end);
+  if (status === null) return entitlement;
   const base: Entitlement = {
     ...entitlement,
     ...(plan ? planFields(plan) : {}),
@@ -115,39 +125,43 @@ function applySubscription(entitlement: Entitlement, object: BillingSubscription
     stripeSubscriptionId: object.id,
     stripeCustomerId: object.customer ?? entitlement.stripeCustomerId,
   };
-  const status = subscriptionStatus(object.status, object.cancel_at_period_end);
-  if (status === null) return base;
   if (status === "ended") return ended(base, now);
   const cancelAt = status === "canceled" ? (object.cancel_at === null ? base.periodEnd : unixToIso(object.cancel_at)) : null;
   return { ...revived(base), status, cancelAt };
 }
 
+/** A plan invoice of the followed (or first) subscription: the plan line's period, past due or trial resolved. */
 function applyInvoicePaid(entitlement: Entitlement, object: BillingInvoiceObject): Entitlement {
-  if (entitlement.status === "ended") return entitlement;
-  const line = object.lines.data[0];
-  const period = line ? { periodStart: unixToIso(line.period.start), periodEnd: unixToIso(line.period.end) } : {};
+  const line = planInvoiceLine(object);
+  if (entitlement.status === "ended" || line === null) return entitlement;
   const status: EntitlementStatus = entitlement.status === "past_due" || entitlement.status === "trialing" ? "active" : entitlement.status;
   return {
     ...entitlement,
-    ...period,
+    periodStart: unixToIso(line.period.start),
+    periodEnd: unixToIso(line.period.end),
     status,
     stripeSubscriptionId: invoiceSubscriptionId(object) ?? entitlement.stripeSubscriptionId,
     stripeCustomerId: object.customer ?? entitlement.stripeCustomerId,
   };
 }
 
-function applyCheckout(entitlement: Entitlement, event: Extract<BillingEvent, { type: "checkout.session.completed" }>): Entitlement {
+/** L13: a subscription checkout names its subscription for adoption only once its payment settled (an unpaid one may still expire incomplete). */
+const settledPayment = (object: CheckoutEvent["data"]["object"]): boolean => object.payment_status === "paid" || object.payment_status === "no_payment_required";
+
+function applyCheckout(entitlement: Entitlement, event: CheckoutEvent): Entitlement {
   const object = event.data.object;
+  const adopts = object.mode === "subscription" && settledPayment(object);
   return {
     ...entitlement,
     stripeCustomerId: object.customer ?? entitlement.stripeCustomerId,
-    stripeSubscriptionId: object.mode === "subscription" ? (object.subscription ?? entitlement.stripeSubscriptionId) : entitlement.stripeSubscriptionId,
+    stripeSubscriptionId: adopts ? (object.subscription ?? entitlement.stripeSubscriptionId) : entitlement.stripeSubscriptionId,
   };
 }
 
 function project(entitlement: Entitlement, event: BillingEvent, now: Date): Entitlement {
   switch (event.type) {
     case "checkout.session.completed":
+    case "checkout.session.async_payment_succeeded":
       return applyCheckout(entitlement, event);
     case "customer.subscription.created":
     case "customer.subscription.updated":
@@ -161,31 +175,77 @@ function project(entitlement: Entitlement, event: BillingEvent, now: Date): Enti
   }
 }
 
+/** The subscription an event is about; null for a payment-mode checkout. */
+function subscriptionOf(event: BillingEvent): string | null {
+  if (isCheckoutEvent(event)) return event.data.object.mode === "subscription" ? event.data.object.subscription : null;
+  if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") return invoiceSubscriptionId(event.data.object);
+  return event.data.object.id;
+}
+
+const isOlder = (entitlement: Entitlement, event: BillingEvent): boolean => entitlement.lastEventCreated !== null && event.created < entitlement.lastEventCreated;
+
+/** Why an event leaves the entitlement exactly as it is (the worker logs it and skips the effects); null when it applies. */
+export type BillingEventIgnoredReason = "incomplete" | "another subscription" | "no subscription" | "not a plan invoice" | "not followed";
+
+/** Only a newer `created` adopts a subscription other than the followed one (a resubscribe; a late event never). */
+function subscriptionIgnored(entitlement: Entitlement, event: Extract<BillingEvent, { type: "customer.subscription.created" | "customer.subscription.updated" | "customer.subscription.deleted" }>): BillingEventIgnoredReason | null {
+  const object = event.data.object;
+  const status = event.type === "customer.subscription.deleted" ? "ended" : subscriptionStatus(object.status, object.cancel_at_period_end);
+  if (status === null) return "incomplete";
+  const followed = entitlement.stripeSubscriptionId;
+  if (followed === null) return status === "ended" ? "not followed" : null;
+  if (object.id === followed) return null;
+  return event.type === "customer.subscription.created" && !isOlder(entitlement, event) ? null : "another subscription";
+}
+
+function invoiceIgnored(entitlement: Entitlement, event: Extract<BillingEvent, { type: "invoice.paid" | "invoice.payment_failed" }>): BillingEventIgnoredReason | null {
+  const subscription = invoiceSubscriptionId(event.data.object);
+  const followed = entitlement.stripeSubscriptionId;
+  if (subscription === null) return "no subscription";
+  if (followed !== null && subscription !== followed) return "another subscription";
+  if (event.type === "invoice.payment_failed") return followed === null ? "not followed" : null;
+  return planInvoiceLine(event.data.object) === null ? "not a plan invoice" : null;
+}
+
 /**
- * An update or delete for a subscription other than the one the entitlement
- * follows (a late delete of the previous subscription after a re-subscribe)
- * must not touch the current one. `created` always adopts the new
- * subscription; a trial with no subscription adopts whatever it sees first.
+ * M6 review M1 / M3 / L13: the entitlement follows one subscription. An event
+ * about another one changes nothing, unless it is a newer `created`, which
+ * adopts it (a resubscribe; a late or replayed one never); an entitlement
+ * that follows none adopts the first live one it sees (a subscription
+ * checkout included), never a dead one or a failed payment.
+ * An `incomplete` subscription says nothing; an invoice changes the
+ * entitlement only when it pays for a plan period (`planInvoiceLine`).
  */
-function concernsAnotherSubscription(entitlement: Entitlement, event: BillingEvent): boolean {
-  if (event.type !== "customer.subscription.updated" && event.type !== "customer.subscription.deleted") return false;
-  return entitlement.stripeSubscriptionId !== null && event.data.object.id !== entitlement.stripeSubscriptionId;
+export function ignoredBecause(entitlement: Entitlement, event: BillingEvent): BillingEventIgnoredReason | null {
+  if (isCheckoutEvent(event)) {
+    const subscription = subscriptionOf(event);
+    return subscription !== null && entitlement.stripeSubscriptionId !== null && subscription !== entitlement.stripeSubscriptionId ? "another subscription" : null;
+  }
+  if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") return invoiceIgnored(entitlement, event);
+  return subscriptionIgnored(entitlement, event);
 }
 
 type StatusFields = Pick<Entitlement, "status" | "cancelAt" | "endedAt" | "retentionUntil" | "purgeDue" | "periodStart" | "periodEnd" | "lastEventCreated">;
 const statusFields = (e: Entitlement): StatusFields => ({ status: e.status, cancelAt: e.cancelAt, endedAt: e.endedAt, retentionUntil: e.retentionUntil, purgeDue: e.purgeDue, periodStart: e.periodStart, periodEnd: e.periodEnd, lastEventCreated: e.lastEventCreated });
 
+/** An ended entitlement comes back through the subscription that ended only on a strictly newer event: Stripe never revives a deleted subscription. */
+const staleFor = (entitlement: Entitlement, event: BillingEvent): boolean =>
+  isOlder(entitlement, event) || (entitlement.status === "ended" && event.created === entitlement.lastEventCreated && subscriptionOf(event) === entitlement.stripeSubscriptionId);
+
 /**
- * The pure projection: the entitlement after one event. `now` stamps an end.
- * An event created before the one last applied may still fill the plan and
- * the Stripe ids (Stripe does not order `subscription.created` and
- * `invoice.paid`), but never moves the status, the period or the end dates.
+ * The pure projection: the entitlement after one event; the very same object
+ * when the event is ignored (`ignoredBecause`). `now` stamps an end. An event
+ * created before the one last applied may still fill the plan and the Stripe
+ * ids (Stripe does not order `subscription.created` and `invoice.paid`), but
+ * never moves the status, the period or the end dates, with one exception:
+ * the followed subscription's `deleted` is terminal whenever it arrives (M1).
  */
 export function applyBillingEvent(entitlement: Entitlement, event: BillingEvent, now: Date): Entitlement {
-  if (concernsAnotherSubscription(entitlement, event)) return entitlement;
+  if (ignoredBecause(entitlement, event) !== null) return entitlement;
   const projected = project(entitlement, event, now);
-  const older = entitlement.lastEventCreated !== null && event.created < entitlement.lastEventCreated;
-  return Object.freeze(older ? { ...projected, ...statusFields(entitlement) } : { ...projected, lastEventCreated: event.created });
+  const last = entitlement.lastEventCreated;
+  if (event.type === "customer.subscription.deleted") return Object.freeze({ ...projected, lastEventCreated: Math.max(last ?? event.created, event.created) });
+  return Object.freeze(staleFor(entitlement, event) ? { ...projected, ...statusFields(entitlement) } : { ...projected, lastEventCreated: event.created });
 }
 
 export type CompanyCreationCheck = { readonly ok: true } | { readonly ok: false; readonly reason: string };

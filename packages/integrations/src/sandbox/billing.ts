@@ -143,10 +143,15 @@ export class SandboxBilling implements BillingProvider {
     return Object.freeze({ url: `${this.baseUrl}${SANDBOX_BILLING_PORTAL_PATH}/${input.customerId}`, providerRef, sandbox: true });
   }
 
-  async subscription(customerId: string): Promise<BillingSubscription | null> {
+  /** The current subscription; with `subscriptionId`, that one: the current one, or one it superseded (ended, so reported `canceled`, with the lookup key it was sold at). */
+  async subscription(customerId: string, subscriptionId?: string): Promise<BillingSubscription | null> {
     if (!CustomerIdSchema.safeParse(customerId).success) return null;
     const current = await this.store.readSubscription(customerId);
     if (!current) return null;
+    if (subscriptionId !== undefined && subscriptionId !== current.id) {
+      if (!current.superseded.includes(subscriptionId)) return null;
+      return Object.freeze({ id: subscriptionId, status: "canceled", lookupKey: current.supersededLookupKeys[subscriptionId] ?? null, periodEnd: null, cancelAtPeriodEnd: false, sandbox: true });
+    }
     const periodEnd = periodOf(current, current.cycle).end;
     return Object.freeze({ id: current.id, status: current.status, lookupKey: current.lookupKey, periodEnd: new Date(periodEnd * 1000).toISOString(), cancelAtPeriodEnd: current.cancelAtPeriodEnd, sandbox: true });
   }
@@ -191,6 +196,7 @@ export class SandboxBilling implements BillingProvider {
       anchor: created,
       cycle: 0,
       superseded: previous ? [...previous.superseded, previous.id] : [],
+      supersededLookupKeys: previous ? { ...previous.supersededLookupKeys, [previous.id]: previous.lookupKey } : {},
       replay: { cancel: null, end: null, failed: null },
     };
     await this.store.writeSubscription(subscription);

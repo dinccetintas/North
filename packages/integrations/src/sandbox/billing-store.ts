@@ -74,6 +74,8 @@ export const SandboxSubscriptionSchema = z.object({
   cycle: z.number().int().nonnegative(),
   /** Earlier subscriptions of the customer this one replaced (a new checkout after an end). */
   superseded: z.array(z.string()),
+  /** The lookup key each superseded subscription was sold at (files written before this field read as none). */
+  supersededLookupKeys: z.record(z.string(), z.string()).default({}),
   replay: z.object({ cancel: SandboxStripeEventSchema.nullable(), end: SandboxStripeEventSchema.nullable(), failed: FailedInvoice.nullable() }),
 });
 export type SandboxSubscription = z.infer<typeof SandboxSubscriptionSchema>;

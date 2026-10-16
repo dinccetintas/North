@@ -2,6 +2,7 @@ import { usageAlertDue } from "@north/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DbError } from "../src/errors";
 import { applyUsage, getUsage, listUsage, listUsageToAlert, markUsageAlerted } from "../src/usage";
+import { maxRowsServiceClient, POSTGREST_MAX_ROWS } from "./max-rows";
 import { createTestUser, deleteTestUser, service, type TestUser } from "./fixtures";
 
 describe("usage repository (BIL-2: the usage projection)", () => {
@@ -51,5 +52,15 @@ describe("usage repository (BIL-2: the usage projection)", () => {
     expect((await listUsageToAlert(service, ["2026-11"])).some((u) => u.userId === owner.id)).toBe(false);
     expect(await markUsageAlerted(service, owner.id, "2030-01", new Date())).toBe(false);
     await expect(markUsageAlerted(owner.client, owner.id, "2026-10", new Date())).rejects.toBeInstanceOf(DbError);
+  });
+
+  it(`listUsageToAlert reads every unalerted row in pages under PostgREST's cap of ${POSTGREST_MAX_ROWS} (it asks again until a page is empty)`, async () => {
+    await applyUsage(service, { userId: owner.id, period: "2026-12", credits: 1, costUsd: 0.5, sandboxMinutes: 0 });
+    const capped = maxRowsServiceClient();
+    const rows = await listUsageToAlert(capped.client, ["2026-12"]);
+    expect(rows.some((u) => u.userId === owner.id && u.period === "2026-12")).toBe(true);
+    expect(capped.limits.length).toBeGreaterThanOrEqual(2);
+    expect(capped.limits.every((limit) => limit <= POSTGREST_MAX_ROWS)).toBe(true);
+    expect(capped.cut).toEqual([]);
   });
 });

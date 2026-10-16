@@ -73,6 +73,36 @@ role it already holds, and purges. No second delete path, no pause
 convention to remember, and every smoke run proves the retention path once
 more.
 
+## Amendment: M6 security review (2026-10-16)
+
+Migration `0015_m6_storage_hardening.sql` and the worker's export and purge
+services carry these rules; they replace the matching sentences above.
+
+- **The purge is marked before anything is removed.** `purge_begin(user)`
+  checks the same condition as `purge_owner` under the same lock and stamps
+  `entitlements.purge_started_at` once; from then on a trigger keeps the
+  entitlement `ended` for every caller (only `postgres` can clear the
+  stamp), so a resubscribe cannot land between the storage removal and the
+  function. The worker then removes the storage objects and the owner's task
+  and export folders under `WORKSPACE_ROOT`, calls `purge_owner`, and
+  deletes the auth user. A purge that stops halfway is finished by the next
+  run. A payment that arrives during a purge is deleted with the user; the
+  runbook refunds it in Stripe.
+- **Every listing is paged.** The purge's storage listing and the export's
+  artifact listing page with `.range()` until an empty page, so a server row
+  cap (PostgREST `max_rows` 1 000) never leaves objects behind or rows out.
+- **An artifact row cannot name another company's file.** A CHECK pins
+  `artifacts.storage_path` to `companies/<company_id>/<kind>/<slug>-v<n>.md`;
+  owners read artifacts but no longer write them; the export and the purge
+  refuse a row whose path names another company.
+- **Exports are bounded.** One export being built per owner and 5 requests
+  per 24 hours (`exports_rate_limit`); rows stream to disk 200 at a time,
+  free-text columns are cut at 20 000 characters in the select
+  (`export_text`), and a budget of 16 MiB per table and 45 MiB per export
+  (under the 50 MiB upload limit) bounds the zip, which is uploaded as a
+  stream. The README names every cut. Owner-writable free text is
+  length-checked (`memory_items`, `audit_tool_calls.input`, `theses`).
+
 ## Consequences
 
 - Non-negotiable 3 stands for every caller but one: a service-role function

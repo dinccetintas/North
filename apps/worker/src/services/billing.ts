@@ -1,5 +1,5 @@
-import { SUBSCRIPTION_PLANS, type Entitlement } from "@north/core";
-import { getBillingSession, getEntitlement, getProfile, setBillingSessionFailed, setBillingSessionReady, setStripeCustomer, type BillingSessionRecord } from "@north/db";
+import { CHECKOUT_OPEN_MINUTES, SUBSCRIPTION_PLANS, type Entitlement } from "@north/core";
+import { getBillingSession, getEntitlement, getProfile, listOpenCheckouts, setBillingSessionFailed, setBillingSessionReady, setStripeCustomer, type BillingSessionRecord } from "@north/db";
 import { BillingProviderError } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
 import type { StepRunner } from "./steps";
@@ -31,6 +31,7 @@ export interface BillingSessionOptions {
 /** Fixed, user-readable messages; the provider's body never reaches the page. */
 export const BILLING_SESSION_MESSAGES = Object.freeze({
   subscribed: "You already have a subscription. Change plans in Manage billing.",
+  checkoutOpen: `A checkout is already open. Complete it there, or start again in ${CHECKOUT_OPEN_MINUTES} minutes.`,
   noAccount: "Your account has no billing record yet. Try again in a minute.",
   noEmail: "Your account has no email address for billing. Add one and try again.",
   resource_missing: "Billing could not find your customer record. Try again; if it persists, contact support.",
@@ -42,6 +43,18 @@ export const BILLING_SESSION_MESSAGES = Object.freeze({
 /** A subscription that has not ended: plan changes go through the portal, never a second checkout. */
 const hasSubscription = (entitlement: Entitlement): boolean => entitlement.stripeSubscriptionId !== null && entitlement.status !== "ended";
 
+/**
+ * M6 review L10: another subscription checkout of the user that is still open
+ * (`ready`, its checkout event not applied, younger than the provider
+ * session's `CHECKOUT_OPEN_MINUTES` lifetime), so two clicks before the
+ * webhook cannot buy two subscriptions. Measured on the wall clock:
+ * `created_at` is the database's `now()`, not the worker's simulated clock.
+ */
+async function otherCheckoutOpen(deps: WorkerDeps, session: BillingSessionRecord): Promise<boolean> {
+  const since = new Date(Date.now() - CHECKOUT_OPEN_MINUTES * 60_000);
+  return (await listOpenCheckouts(deps.db, session.userId, since)).some((open) => open.id !== session.id);
+}
+
 type Loaded = { readonly kind: "skip"; readonly reason: string } | { readonly kind: "refuse"; readonly message: string } | { readonly kind: "open"; readonly session: BillingSessionRecord; readonly customerId: string | null; readonly email: string };
 
 async function loadSession(deps: WorkerDeps, sessionId: string, expectedUserId: string | undefined): Promise<Loaded> {
@@ -52,6 +65,7 @@ async function loadSession(deps: WorkerDeps, sessionId: string, expectedUserId: 
   const entitlement = await getEntitlement(deps.db, session.userId);
   if (!entitlement) return { kind: "refuse", message: BILLING_SESSION_MESSAGES.noAccount };
   if (session.kind === "checkout" && hasSubscription(entitlement)) return { kind: "refuse", message: BILLING_SESSION_MESSAGES.subscribed };
+  if (session.kind === "checkout" && (await otherCheckoutOpen(deps, session))) return { kind: "refuse", message: BILLING_SESSION_MESSAGES.checkoutOpen };
   const email = (await getProfile(deps.db, session.userId))?.email ?? "";
   if (!entitlement.stripeCustomerId && !email) return { kind: "refuse", message: BILLING_SESSION_MESSAGES.noEmail };
   return { kind: "open", session, customerId: entitlement.stripeCustomerId, email };
@@ -73,6 +87,7 @@ async function openSession(deps: WorkerDeps, session: BillingSessionRecord, cust
   let opened: { readonly url: string; readonly providerRef: string };
   if (session.kind === "portal") opened = await provider.createPortalSession({ customerId, returnUrl: billingUrl, idempotencyKey: session.id });
   else if (session.kind === "credit_pack") opened = await provider.createCreditPackSession({ customerId, packId: session.packId ?? "", ...back });
+  // Card only (founder default, in the adapter): the renewal is paid or past_due at once, which `healPlanGrants` relies on.
   else opened = await provider.createCheckoutSession({ customerId, lookupKey: SUBSCRIPTION_PLANS[session.planId ?? "solo"].lookupKey, mode: "subscription", ...back });
   const ready = await setBillingSessionReady(deps.db, session.id, { url: opened.url, providerRef: opened.providerRef });
   return { sessionId: session.id, status: "ready", url: ready.url ?? opened.url };

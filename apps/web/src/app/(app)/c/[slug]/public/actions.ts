@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { getCompanyBySlug, setPublicPageEnabled, upsertPublicPage } from "@north/db";
 import { PublicPageSchema } from "@north/core/public-page";
 import { createClient, currentUser } from "@/lib/supabase/server";
+import { withError, type ErrorCode } from "@/lib/page-errors";
 
 /**
  * PUB-1: the owner writes the page (core schema: headline ≤ 120, blurb ≤ 600,
@@ -14,8 +15,9 @@ import { createClient, currentUser } from "@/lib/supabase/server";
  */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
-const pageUrl = (slug: string, outcome: { saved?: true; error?: string }): string =>
-  `/c/${slug}/public${outcome.error ? `?error=${encodeURIComponent(outcome.error)}` : outcome.saved ? "?saved=1" : ""}`;
+/** M6 review L8: the page maps the code to its fixed line. */
+const pageUrl = (slug: string, outcome: { saved?: true; error?: ErrorCode<"publicPage"> }): string =>
+  outcome.error ? withError(`/c/${slug}/public`, "publicPage", outcome.error) : `/c/${slug}/public${outcome.saved ? "?saved=1" : ""}`;
 
 const checked = (formData: FormData, name: string): boolean => formData.get(name) === "on";
 
@@ -35,15 +37,15 @@ export async function savePublicPageAction(slug: string, formData: FormData): Pr
     showSiteLink: checked(formData, "showSiteLink"),
     listed: checked(formData, "listed"),
   });
-  if (!parsed.success) redirect(pageUrl(slug, { error: "Check the page: a headline up to 120 characters, a blurb up to 600 and at most three metrics." }));
+  if (!parsed.success) redirect(pageUrl(slug, { error: "invalid-page" }));
 
-  let error: string | null = null;
+  let error: ErrorCode<"publicPage"> | null = null;
   try {
     await upsertPublicPage(db, company.id, parsed.data);
     await setPublicPageEnabled(db, company.id, checked(formData, "enabled"));
   } catch (cause) {
     console.error("[public-page] save failed", company.id, cause);
-    error = "The page could not be saved. Try again.";
+    error = "save-failed";
   }
   revalidatePath(`/p/${slug}`);
   revalidatePath(`/c/${slug}/public`);

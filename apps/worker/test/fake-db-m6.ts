@@ -22,6 +22,10 @@ export interface FakeBillingSession {
   url: string | null;
   providerRef: string | null;
   error: string | null;
+  /** L10: the session's checkout event was applied. */
+  completedAt?: string | null;
+  /** Wall clock of the insert (the database's `now()`); defaults to the time the fake reads it. */
+  createdAt?: string;
 }
 
 export interface FakeBillingEvent {
@@ -30,6 +34,7 @@ export interface FakeBillingEvent {
   type: string;
   userId: string | null;
   payload: Record<string, unknown>;
+  payloadSha256: string | null;
   receivedAt: string;
   appliedAt: string | null;
 }
@@ -44,9 +49,11 @@ export interface M6State {
   archived: Set<string>;
   /** Owner id → `users.brief_hour` (default 7). */
   briefHours: Map<string, number>;
+  /** User id → `entitlements.purge_started_at` (0015, M5): while set, no write may reactivate the entitlement. */
+  purgeStarted: Map<string, string>;
 }
 
-export const emptyM6State = (): M6State => ({ entitlements: new Map(), credits: new Map(), billingSessions: new Map(), billingEvents: new Map(), usage: new Map(), pausedReasons: new Map(), archived: new Set(), briefHours: new Map() });
+export const emptyM6State = (): M6State => ({ entitlements: new Map(), credits: new Map(), billingSessions: new Map(), billingEvents: new Map(), usage: new Map(), pausedReasons: new Map(), archived: new Set(), briefHours: new Map(), purgeStarted: new Map() });
 
 export interface M6Helpers {
   readonly DbError: new (message: string) => Error;
@@ -79,8 +86,16 @@ export function fakeEntitlementsQuery(state: M6State) {
   return api;
 }
 
+/** The fields `saveEntitlement` compares (the database's compare-and-set on the row as read). */
+const CAS_FIELDS = ["status", "planId", "stripeCustomerId", "stripeSubscriptionId", "lastEventCreated", "purgeDue"] as const;
+type Expectation = Partial<Pick<Entitlement, (typeof CAS_FIELDS)[number]>>;
+const expectationOf = (e: Entitlement): Expectation => Object.fromEntries(CAS_FIELDS.map((f) => [f, e[f]]));
+
 export function fakeDbM6(state: M6State, h: M6Helpers) {
   class CreditFloorError extends h.DbError {}
+  class EntitlementConflictError extends h.DbError {}
+  /** `entitlements_purge_hold` (0015): a write during a purge that does not keep the entitlement ended past retention. */
+  class PurgeRunningError extends h.DbError {}
   const ensureUser = (userId: string): Entitlement | null => {
     const known = state.entitlements.get(userId);
     if (known) return known;
@@ -106,6 +121,15 @@ export function fakeDbM6(state: M6State, h: M6Helpers) {
   };
   const usageKey = (userId: string, period: string): string => `${userId}:${period}`;
   const copy = (e: Entitlement | null): Entitlement | null => (e ? { ...e } : null);
+  const writeIf = (entitlement: Entitlement, expect: Expectation): Entitlement | null => {
+    const held = state.purgeStarted.has(entitlement.userId) && (entitlement.status !== "ended" || entitlement.retentionUntil === null || Date.parse(entitlement.retentionUntil) > Date.now());
+    if (held) throw new PurgeRunningError(`entitlement: a purge is running for ${entitlement.userId}; it is not reactivated`);
+    const current = state.entitlements.get(entitlement.userId);
+    if (!current || !Object.entries(expect).every(([field, value]) => current[field as keyof Entitlement] === value)) return null;
+    state.entitlements.set(entitlement.userId, { ...entitlement });
+    return { ...entitlement };
+  };
+  const balanceOf = (userId: string): number => sum(state.credits.get(userId) ?? []);
 
   return {
     CreditFloorError,
@@ -118,6 +142,24 @@ export function fakeDbM6(state: M6State, h: M6Helpers) {
       state.entitlements.set(entitlement.userId, { ...entitlement });
       return { ...entitlement };
     }),
+    EntitlementConflictError,
+    isPurgeRunning: (error: unknown) => error instanceof PurgeRunningError,
+    purgeStartedAt: vi.fn(async (_db: unknown, userId: string) => state.purgeStarted.get(userId) ?? null),
+    updateEntitlementIf: vi.fn(async (_db: unknown, entitlement: Entitlement, expect: Expectation) => writeIf(entitlement, expect)),
+    saveEntitlement: vi.fn(async (_db: unknown, before: Entitlement, after: Entitlement) => {
+      const saved = writeIf(after, expectationOf(before));
+      if (!saved) throw new EntitlementConflictError(`Entitlement of ${before.userId} changed since it was read; not written`);
+      return saved;
+    }),
+    listEntitlementsToReconcile: vi.fn(async (_db: unknown, cutoff: Date) =>
+      [...state.entitlements.values()]
+        .filter((e) => e.status !== "ended" && e.stripeSubscriptionId !== null && Date.parse(e.cancelAt ?? e.periodEnd) <= cutoff.getTime())
+        .map((e) => ({ ...e })),
+    ),
+    listEntitlementsToHeal: vi.fn(async (_db: unknown, startedBefore: Date, now: Date) => {
+      const running = (e: Entitlement): boolean => e.status === "active" || (e.status === "canceled" && Date.parse(e.periodEnd) > now.getTime() && (e.cancelAt === null || Date.parse(e.cancelAt) > now.getTime()));
+      return [...state.entitlements.values()].filter((e) => running(e) && e.priceUsd > 0 && e.stripeSubscriptionId !== null && Date.parse(e.periodStart) <= startedBefore.getTime()).map((e) => ({ ...e }));
+    }),
     listTrialsToEnd: vi.fn(async (_db: unknown, now: Date) => [...state.entitlements.values()].filter((e) => e.status === "trialing" && e.stripeSubscriptionId === null && Date.parse(e.periodEnd) <= now.getTime()).map((e) => ({ ...e }))),
     setStripeCustomer: vi.fn(async (_db: unknown, userId: string, customerId: string) => {
       const current = ensureUser(userId);
@@ -128,14 +170,35 @@ export function fakeDbM6(state: M6State, h: M6Helpers) {
       return { ...next };
     }),
     getBillingSession: vi.fn(async (_db: unknown, id: string) => (state.billingSessions.has(id) ? { ...session(id) } : null)),
+    findBillingSessionByProviderRef: vi.fn(async (_db: unknown, ref: string) => {
+      const row = [...state.billingSessions.values()].reverse().find((s) => s.providerRef === ref);
+      return row ? { completedAt: null, ...row } : null;
+    }),
+    markBillingSessionCompleted: vi.fn(async (_db: unknown, ref: string) => {
+      const rows = [...state.billingSessions.values()].filter((s) => s.providerRef === ref && !s.completedAt);
+      for (const row of rows) row.completedAt = new Date().toISOString();
+      return rows.length > 0;
+    }),
+    listOpenCheckouts: vi.fn(async (_db: unknown, userId: string, since: Date) =>
+      [...state.billingSessions.values()]
+        .filter((s) => s.userId === userId && s.kind === "checkout" && s.status === "ready" && !s.completedAt && Date.parse(s.createdAt ?? new Date().toISOString()) >= since.getTime())
+        .map((s) => ({ completedAt: null, ...s })),
+    ),
     setBillingSessionReady: vi.fn(async (_db: unknown, id: string, ready: { url: string; providerRef: string | null }) => settle(id, { status: "ready", url: ready.url, providerRef: ready.providerRef }, "ready")),
     setBillingSessionFailed: vi.fn(async (_db: unknown, id: string, message: string) => settle(id, { status: "failed", error: message }, "failed")),
-    insertBillingEvent: vi.fn(async (_db: unknown, input: { eventId: string; type: string; userId: string | null; payload: Record<string, unknown> }) => {
+    insertBillingEvent: vi.fn(async (_db: unknown, input: { eventId: string; type: string; userId: string | null; payload: Record<string, unknown>; payloadSha256: string }) => {
       const existing = [...state.billingEvents.values()].find((e) => e.eventId === input.eventId);
       if (existing) return { id: existing.id, duplicate: true };
       const id = randomUUID();
-      state.billingEvents.set(id, { id, eventId: input.eventId, type: input.type, userId: input.userId, payload: structuredClone(input.payload), receivedAt: new Date().toISOString(), appliedAt: null });
+      state.billingEvents.set(id, { id, eventId: input.eventId, type: input.type, userId: input.userId, payload: structuredClone(input.payload), payloadSha256: input.payloadSha256, receivedAt: new Date().toISOString(), appliedAt: null });
       return { id, duplicate: false };
+    }),
+    /** `billing_events_sweep_unknown` (L2): unapplied rows no user owns, received before `now` − 30 days. */
+    sweepUnknownBillingEvents: vi.fn(async (_db: unknown, now: Date) => {
+      const cutoff = now.getTime() - 30 * 86_400_000;
+      const swept = [...state.billingEvents.values()].filter((e) => e.userId === null && e.appliedAt === null && Date.parse(e.receivedAt) < cutoff);
+      for (const row of swept) state.billingEvents.delete(row.id);
+      return swept.length;
     }),
     markBillingEventApplied: vi.fn(async (_db: unknown, id: string) => {
       const row = state.billingEvents.get(id);
@@ -162,7 +225,16 @@ export function fakeDbM6(state: M6State, h: M6Helpers) {
     }),
     creditBalance: vi.fn(async (_db: unknown, userId: string) => {
       ensureUser(userId);
-      return sum(state.credits.get(userId) ?? []);
+      return balanceOf(userId);
+    }),
+    /** `credit_reserve`: one consume of 1 under the per-user lock (the fake runs it in one tick), refused at a balance of 0. */
+    reserveCredit: vi.fn(async (_db: unknown, userId: string, ref: string) => {
+      ensureUser(userId);
+      const entries = state.credits.get(userId) ?? [];
+      if (entries.some((e) => e.ref === ref)) return "exists";
+      if (balanceOf(userId) <= 0) return "refused";
+      state.credits.set(userId, [...entries, { kind: "consume", amount: -1, ref, note: "" }]);
+      return "reserved";
     }),
     applyUsage: vi.fn(async (_db: unknown, input: { userId: string; period: string; credits: number; costUsd: number; sandboxMinutes: number }) => {
       const key = usageKey(input.userId, input.period);

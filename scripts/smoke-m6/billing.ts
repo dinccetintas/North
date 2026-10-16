@@ -252,7 +252,12 @@ export async function phase2(ctx: Ctx): Promise<Ctx> {
   const pro = await until("entitlement Pro active", entitlementWhere(ctx.ownerId, (e) => e.status === "active" && e.planId === "pro"), { found: () => getEntitlement(db, ctx.ownerId) });
   check(pro.companyLimit === 3 && pro.monthlyCredits === 1000 && pro.stripeCustomerId !== null && pro.stripeSubscriptionId !== null, "Pro entitlement", "company_limit 3, monthly_credits 1000, Stripe ids set", pro);
   const sub = required(pro.stripeSubscriptionId, "the subscription id");
-  const grants = (await creditsOf(ctx.ownerId)).filter((e) => e.kind === "grant_plan" && e.ref.startsWith("plan:"));
+  // `applied_at` is set by the apply's first step; the grant is written by its next one, which may still be running.
+  const planGrants = async (): Promise<readonly Credit[]> => (await creditsOf(ctx.ownerId)).filter((e) => e.kind === "grant_plan" && e.ref.startsWith("plan:"));
+  const grants = await until("the Pro grant", async () => {
+    const g = await planGrants();
+    return g.length > 0 ? g : null;
+  }, { found: planGrants });
   check(grants.length === 1 && grants[0]?.amount === 1000 && isPlanRef(grants[0].ref, sub, pro.periodStart), "Pro credits", `+1000 grant_plan with ref plan:${sub}:${pro.periodStart}`, grants);
   check((await creditBalance(db, ctx.ownerId)) === 1300, "balance", "1300", await creditBalance(db, ctx.ownerId));
   check((await getProfile(db, ctx.ownerId))?.plan === "pro", "users.plan", "pro (the mirror trigger)", (await getProfile(db, ctx.ownerId))?.plan);
@@ -362,7 +367,8 @@ export async function phase8(ctx: Ctx, queued: readonly string[]): Promise<Ctx> 
   const solo = await until("entitlement Solo active", entitlementWhere(ctx.ownerId, (e) => e.status === "active" && e.planId === "solo"), { found: () => getEntitlement(db, ctx.ownerId) });
   const sub = required(solo.stripeSubscriptionId, "the new subscription id");
   check(solo.companyLimit === 1 && sub !== ctx.facts.proSubscription && solo.endedAt === null && solo.retentionUntil === null, "Solo entitlement", "company_limit 1, a new subscription, end and retention cleared", solo);
-  const firstGrant = (await creditsOf(ctx.ownerId)).find((e) => e.kind === "grant_plan" && isPlanRef(e.ref, sub, solo.periodStart));
+  // As in phase 2: the grant follows `applied_at` by one step of the apply.
+  const firstGrant = await until("the Solo grant", async () => (await creditsOf(ctx.ownerId)).find((e) => e.kind === "grant_plan" && isPlanRef(e.ref, sub, solo.periodStart)), { found: () => creditsOf(ctx.ownerId) });
   check(firstGrant?.amount === 300, "Solo credits", `+300 under plan:${sub}:${solo.periodStart}`, firstGrant);
   await reactivated(ctx, startedAt, queued);
   await periodRoll(ctx, sub, required(firstGrant, "the Solo grant").ref);

@@ -19,7 +19,7 @@ describe("ledger repository (OUT-1)", () => {
   });
 
   it("recordLedgerEntry (worker) appends an entry linked to a task and listLedgerEntries (owner) returns newest first", async () => {
-    const task = await createTask(owned.owner.client, { companyId: owned.companyId, role: "research", taskType: "market_report", title: "t" });
+    const task = await createTask(service, { companyId: owned.companyId, role: "research", taskType: "market_report", title: "t" });
     const first = await recordLedgerEntry(service, { companyId: owned.companyId, taskId: task.id, metricKey: "signups", before: 0, after: 3, costUsd: 1.5, channel: "landing_page", note: "after launch" });
     const second = await recordLedgerEntry(service, { companyId: owned.companyId, taskId: null, metricKey: "mrr_usd", before: 0, after: 49, costUsd: 0, channel: "stripe" });
     const entries = await listLedgerEntries(owned.owner.client, owned.companyId);

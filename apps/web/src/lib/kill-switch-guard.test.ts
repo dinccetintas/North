@@ -26,4 +26,14 @@ describe("resumeRefusal", () => {
     expect(resumeRefusal({ killSwitchActive: true, pausedReason: "retention" })).toBe(ARCHIVED_MESSAGE);
     expect(resumeRefusal(null)).toBeNull();
   });
+
+  it("M6 review L3: refuses any resume, the owner's own pause included, while the owner's entitlement is ended (the database refuses it too)", () => {
+    const ended = { status: "ended" as const };
+    expect(resumeRefusal({ killSwitchActive: true, pausedReason: "user" }, ended)).toBe(SUBSCRIPTION_MESSAGE);
+    expect(resumeRefusal({ killSwitchActive: true, pausedReason: null }, ended)).toBe(SUBSCRIPTION_MESSAGE);
+    expect(resumeRefusal({ killSwitchActive: true, pausedReason: "retention" }, ended)).toBe(ARCHIVED_MESSAGE);
+    for (const status of ["trialing", "active", "canceled", "past_due"] as const) expect(resumeRefusal({ killSwitchActive: true, pausedReason: "user" }, { status })).toBeNull();
+    expect(resumeRefusal({ killSwitchActive: true, pausedReason: "user" }, null)).toBeNull();
+    expect(SUBSCRIPTION_MESSAGE).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+  });
 });

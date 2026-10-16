@@ -37,7 +37,7 @@ describe("theses repository (ONB-1)", () => {
   });
 
   it("addThesisVersion appends v2 and carries the clarifications forward", async () => {
-    const created = await addThesisVersion(owned.owner.client, owned.companyId, {
+    const created = await addThesisVersion(service, owned.companyId, {
       text: "Clinics need a queue app patients use; clinic managers pay for it.",
       targetCustomer: "Clinic managers",
       whyNow: "Post-pandemic staffing gaps",

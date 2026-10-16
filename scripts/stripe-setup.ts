@@ -7,8 +7,10 @@
  *   one active price per lookup key (`north_solo_monthly`, …, `north_pack_100`);
  *     a changed amount creates a new price and transfers the lookup key to it
  *     (existing subscriptions keep their price until Stripe moves them)
- *   the webhook endpoint `<worker>/webhooks/stripe` for the six event types the
- *     worker projects, pinned to the API version the parser is written against
+ *   the webhook endpoint `<worker>/webhooks/stripe` for the seven event types the
+ *     worker projects (core `BILLING_EVENT_TYPES`, `checkout.session.async_payment_succeeded`
+ *     included: a pack bought with a delayed method is granted on it, M6 review H1),
+ *     pinned to the API version the parser is written against
  *
  * Usage (the founder's shell; test mode first, CLAUDE.md #5):
  *   STRIPE_SECRET_KEY=<your key> pnpm stripe:setup -- --worker-url https://<worker>.fly.dev

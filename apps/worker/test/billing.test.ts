@@ -201,3 +201,138 @@ describe("D6-3 applyBillingEvent", () => {
     expect(balance()).toBe(1400);
   });
 });
+
+/** A sandbox event re-shaped as Stripe would send another one: a new id, and the given type, `created` and object fields. */
+function variant(event: SandboxStripeEvent, id: string, patch: { type?: string; created?: number; object?: Record<string, unknown> }): SandboxStripeEvent {
+  return { ...event, id, type: (patch.type ?? event.type) as SandboxStripeEvent["type"], created: patch.created ?? event.created, data: { object: { ...(event.data.object as Record<string, unknown>), ...patch.object } } };
+}
+
+async function packEvents(): Promise<{ readonly cs: string; readonly events: readonly SandboxStripeEvent[] }> {
+  const pack = requestSession({ kind: "credit_pack", packId: "pack_100" });
+  await createBillingSession(deps(), directSteps, pack, { appUrl: APP, finalAttempt: false });
+  const cs = state.billingSessions.get(pack)!.providerRef!;
+  return { cs, events: await billing().completeCheckout(cs) };
+}
+
+describe("M6 security review: billing (H1, M1, M3, L10)", () => {
+  it("H1: a pack completed unpaid (ACH) grants nothing; its async_payment_succeeded grants +100 once; async_payment_failed is ignored with no row", async () => {
+    await subscribePro();
+    const { cs, events } = await packEvents();
+    const completed = events[0]!;
+    await deliver([variant(completed, "evt_pack_unpaid", { object: { payment_status: "unpaid" } })]);
+    expect(balance()).toBe(1300);
+    expect(refs().some((r) => r.startsWith("grant_pack:"))).toBe(false);
+    const failed = await deliver([variant(completed, "evt_pack_failed", { type: "checkout.session.async_payment_failed" })]);
+    expect(failed).toEqual([{ status: 200, body: { ignored: "checkout.session.async_payment_failed" } }]);
+    const succeeded = variant(completed, "evt_pack_paid", { type: "checkout.session.async_payment_succeeded" });
+    await deliver([succeeded, succeeded]);
+    expect(refs().filter((r) => r.startsWith("grant_pack:"))).toEqual([`grant_pack:pack:${cs}:100`]);
+    expect(balance()).toBe(1400);
+    expect([...state.billingEvents.values()].map((e) => e.type)).not.toContain("checkout.session.async_payment_failed");
+  });
+
+  it("H1: a paid payment-mode checkout without the pack id, at another amount or currency grants nothing", async () => {
+    await subscribePro();
+    const { events } = await packEvents();
+    const completed = events[0]!;
+    await deliver([
+      variant(completed, "evt_pack_no_id", { object: { metadata: { north_user_id: OWNER } } }),
+      variant(completed, "evt_pack_cheap", { object: { amount_total: 100 } }),
+      variant(completed, "evt_pack_eur", { object: { currency: "eur" } }),
+    ]);
+    expect(balance()).toBe(1300);
+  });
+
+  it("M3: a proration invoice mid-period grants nothing and does not move the period", async () => {
+    const { events } = await subscribePro();
+    const before = state.entitlements.get(OWNER)!;
+    const paid = events[2]!;
+    const lines = (paid.data.object as { lines: { data: Record<string, unknown>[] } }).lines;
+    const mid = Math.floor(Date.parse(before.periodStart) / 1000) + 14 * 86_400;
+    const proration = { ...lines.data[0]!, id: "il_proration", amount: 70_000, period: { start: mid, end: Math.floor(Date.parse(before.periodEnd) / 1000) }, parent: { type: "invoice_item_details", invoice_item_details: { invoice_item: "ii_1", proration: true } } };
+    await deliver([variant(paid, "evt_proration", { created: paid.created + 60, object: { id: "in_proration", billing_reason: "subscription_update", amount_paid: 70_000, lines: { ...lines, data: [proration] } } })]);
+    expect(applied.at(-1)).toMatchObject({ applied: true, ignored: "not a plan invoice", credits: [], events: [] });
+    expect(state.entitlements.get(OWNER)).toMatchObject({ periodStart: before.periodStart, periodEnd: before.periodEnd, status: "active" });
+    expect(balance()).toBe(1300);
+  });
+
+  it("M1 sequence A: S1 ends, S2 starts, S1's old invoice is paid, S2 is cancelled → ended, kill switch on both companies", async () => {
+    const { customerId, events } = await subscribePro();
+    const s1 = state.entitlements.get(OWNER)!.stripeSubscriptionId!;
+    await deliver(await billing().endNow(customerId));
+    const solo = requestSession({ kind: "checkout", planId: "solo" });
+    await createBillingSession(deps(), directSteps, solo, { appUrl: APP, finalAttempt: false });
+    await deliver(await billing().completeCheckout(state.billingSessions.get(solo)!.providerRef!));
+    const s2 = state.entitlements.get(OWNER)!.stripeSubscriptionId!;
+    expect([s2 !== s1, state.entitlements.get(OWNER)!.status]).toEqual([true, "active"]);
+    const old = events[2]!;
+    await deliver([variant(old, "evt_old_invoice_paid", { created: old.created + 120, object: { billing_reason: "subscription_cycle" } })]);
+    expect(applied.at(-1)).toMatchObject({ ignored: "another subscription", events: [] });
+    expect(state.entitlements.get(OWNER)).toMatchObject({ status: "active", stripeSubscriptionId: s2 });
+    await deliver(await billing().endNow(customerId));
+    expect(state.entitlements.get(OWNER)).toMatchObject({ status: "ended", stripeSubscriptionId: s2 });
+    expect(applied.at(-1)).toMatchObject({ transition: "ended", events: [C1, C2].map((companyId) => ({ name: EVENT.companyKillSwitch, data: { companyId } })) });
+  });
+
+  it("M1 sequence B: payment_failed (t+101) applied, then subscription.deleted (t+100) arrives late → ended, kill switch", async () => {
+    const { customerId } = await subscribePro();
+    const [failed] = await billing().failPayment(customerId);
+    const late = variant(failed!, "evt_late_delete", { type: "customer.subscription.deleted", created: failed!.created + 101, object: {} });
+    await deliver([variant(failed!, failed!.id, { created: failed!.created + 101 })]);
+    expect(state.entitlements.get(OWNER)?.status).toBe("past_due");
+    const [ended] = await billing().endNow(customerId);
+    await deliver([variant(ended!, late.id, { created: failed!.created + 100 })]);
+    expect(state.entitlements.get(OWNER)).toMatchObject({ status: "ended", lastEventCreated: failed!.created + 101 });
+    expect(applied.at(-1)).toMatchObject({ transition: "ended", events: [C1, C2].map((companyId) => ({ name: EVENT.companyKillSwitch, data: { companyId } })) });
+  });
+
+  it("L10: a second checkout is refused while the first is open; once its event is applied the session is completed and no longer holds one back", async () => {
+    const first = requestSession({ kind: "checkout", planId: "pro" });
+    await createBillingSession(deps(), directSteps, first, { appUrl: APP, finalAttempt: false });
+    const second = requestSession({ kind: "checkout", planId: "scale" });
+    expect(await createBillingSession(deps(), directSteps, second, { appUrl: APP, finalAttempt: false })).toMatchObject({ status: "failed", error: expect.stringContaining("already open") });
+    const old = requestSession({ kind: "checkout", planId: "solo", status: "ready", url: "http://127.0.0.1:3101/x", providerRef: "cs_old", createdAt: new Date(Date.now() - 36 * 60_000).toISOString() });
+    expect(old).toBeTruthy();
+    await deliver(await billing().completeCheckout(state.billingSessions.get(first)!.providerRef!));
+    expect(state.billingSessions.get(first)?.completedAt).toEqual(expect.any(String));
+    const { customerId } = { customerId: state.entitlements.get(OWNER)!.stripeCustomerId! };
+    await deliver(await billing().endNow(customerId));
+    const third = requestSession({ kind: "checkout", planId: "solo" });
+    expect(await createBillingSession(deps(), directSteps, third, { appUrl: APP, finalAttempt: false })).toMatchObject({ status: "ready" });
+  });
+
+  it("M5: a resubscribe during a purge is refused by the database: not applied (purging), left unapplied, nothing reactivated", async () => {
+    const { customerId } = await subscribePro();
+    await deliver(await billing().endNow(customerId));
+    const ended = state.entitlements.get(OWNER)!;
+    state.entitlements.set(OWNER, { ...ended, retentionUntil: "2026-10-01T00:00:00.000Z" });
+    state.purgeStarted.set(OWNER, "2026-11-02T04:00:00.000Z");
+    const solo = requestSession({ kind: "checkout", planId: "solo" });
+    await createBillingSession(deps(), directSteps, solo, { appUrl: APP, finalAttempt: false });
+    const events = await billing().completeCheckout(state.billingSessions.get(solo)!.providerRef!);
+    await deliver(events);
+    const created = [...state.billingEvents.values()].find((e) => e.eventId === events[1]!.id)!;
+    expect(applied.slice(-3).map((a) => [a.type ?? null, a.applied, a.reason ?? null])).toEqual([
+      ["checkout.session.completed", true, null],
+      [null, false, "purging"],
+      ["invoice.paid", true, null],
+    ]);
+    expect(created.appliedAt).toBeNull();
+    expect(state.entitlements.get(OWNER)?.status).toBe("ended");
+    expect([state.killSwitch.get(C1), state.killSwitch.get(C2)]).toEqual([true, true]);
+  });
+
+  it("L10: the projection is written only over the row it was read from; a row changed meanwhile fails the step, which re-reads and applies", async () => {
+    const { customerId } = await subscribePro();
+    const [cancel] = await billing().cancelAtPeriodEnd(customerId);
+    const webhook = stripeWebhookRoutes(deps(), { secret: SANDBOX_STRIPE_WEBHOOK_SECRET, emit: async () => undefined });
+    const signed = signedSandboxEvent(cancel!, SANDBOX_STRIPE_WEBHOOK_SECRET, clock.now());
+    const body = (await (await webhook.request("/webhooks/stripe", { method: "POST", headers: { "stripe-signature": signed.signature }, body: signed.body })).json()) as { billingEventId: string };
+    const stale = { ...state.entitlements.get(OWNER)! };
+    state.entitlements.set(OWNER, { ...stale, purgeDue: true });
+    dbModule.getEntitlement.mockImplementationOnce(async () => stale);
+    await expect(applyBillingEvent(deps(), directSteps, body.billingEventId, APP)).rejects.toThrow(/changed since it was read/);
+    expect(state.billingEvents.get(body.billingEventId)?.appliedAt).toBeNull();
+    expect(await applyBillingEvent(deps(), directSteps, body.billingEventId, APP)).toMatchObject({ applied: true, status: "canceled" });
+  });
+});

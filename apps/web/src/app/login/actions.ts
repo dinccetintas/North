@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { publicEnv } from "@/lib/env";
+import { withError } from "@/lib/page-errors";
 
 const EmailSchema = z.string().trim().email().max(254);
 
@@ -13,7 +14,7 @@ function safeNext(value: FormDataEntryValue | null): string {
 
 export async function sendMagicLink(formData: FormData): Promise<void> {
   const parsed = EmailSchema.safeParse(formData.get("email"));
-  if (!parsed.success) redirect("/login?error=Enter+a+valid+email");
+  if (!parsed.success) redirect(withError("/login", "login", "invalid-email"));
 
   const next = safeNext(formData.get("next"));
   const supabase = await createClient();
@@ -21,7 +22,7 @@ export async function sendMagicLink(formData: FormData): Promise<void> {
     email: parsed.data,
     options: { emailRedirectTo: `${publicEnv().NEXT_PUBLIC_APP_URL}/auth/callback?next=${encodeURIComponent(next)}` },
   });
-  if (error) redirect(`/login?error=${encodeURIComponent("Could not send the link. Try again.")}`);
+  if (error) redirect(withError("/login", "login", "link-failed"));
   redirect("/login?sent=1");
 }
 
@@ -32,7 +33,7 @@ export async function signInWithGoogle(formData: FormData): Promise<void> {
     provider: "google",
     options: { redirectTo: `${publicEnv().NEXT_PUBLIC_APP_URL}/auth/callback?next=${encodeURIComponent(next)}` },
   });
-  if (error || !data.url) redirect(`/login?error=${encodeURIComponent("Google sign-in is not configured.")}`);
+  if (error || !data.url) redirect(withError("/login", "login", "google-unavailable"));
   redirect(data.url);
 }
 

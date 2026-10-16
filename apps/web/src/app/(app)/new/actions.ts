@@ -2,13 +2,14 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { createCompany, CreateCompanyInputSchema, EntitlementError, getEntitlement, listCompanies, type CompanySummary } from "@north/db";
+import { createCompany, CreateCompanyInputSchema, EntitlementError, type CompanySummary } from "@north/db";
 import { EVENT } from "@north/core/events";
 import { createClient, currentUser } from "@/lib/supabase/server";
 import { inngest } from "@/inngest/client";
-import { activeCompanyCount, newCompanyGate } from "@/lib/portfolio-view";
+import { withError, type ErrorCode } from "@/lib/page-errors";
 
-const newError = (message: string): never => redirect(`/new?error=${encodeURIComponent(message)}`);
+/** M6 review L8: an error code; the page writes the line (the plan limit in the plan's own words). */
+const newError = (code: ErrorCode<"newCompany">): never => redirect(withError("/new", "newCompany", code));
 
 export async function createCompanyAction(formData: FormData): Promise<void> {
   const user = await currentUser();
@@ -22,15 +23,14 @@ export async function createCompanyAction(formData: FormData): Promise<void> {
     whyNow: formData.get("whyNow") ?? "",
   });
   if (!parsed.success) {
-    redirect(`/new?error=${encodeURIComponent("Give the company a name and a thesis of at least ten characters.")}`);
+    redirect(withError("/new", "newCompany", "invalid-company"));
   }
 
   const supabase = await createClient();
-  const company: CompanySummary = await createCompany(supabase, parsed.data).catch(async (error: unknown) => {
-    // BIL-1: the trigger `companies_within_entitlement` refused; the owner reads the plan's own words, not the database's.
+  const company: CompanySummary = await createCompany(supabase, parsed.data).catch((error: unknown) => {
+    // BIL-1: the trigger `companies_within_entitlement` refused; the page shows the plan's own words (its gate), not the database's.
     if (!(error instanceof EntitlementError)) throw error;
-    const [entitlement, companies] = await Promise.all([getEntitlement(supabase, user.id), listCompanies(supabase)]);
-    return newError(newCompanyGate(entitlement, activeCompanyCount(companies)).reason ?? "Your plan does not include another company.");
+    return newError("plan-limit");
   });
   await inngest.send({ name: EVENT.companyCreated, data: { companyId: company.id } });
   revalidatePath("/companies");

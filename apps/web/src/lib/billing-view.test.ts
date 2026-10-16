@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { trialEntitlement, type Entitlement } from "@north/core/billing/entitlements";
-import { billingSummary, checkoutConfirmed, companiesLabel, creditEntryRows, daysLeft, packCards, planCards, queuedBlockReason, safeRedirectUrl } from "./billing-view";
+import { CHECKOUT_OPEN_MINUTES } from "@north/core/billing/plans";
+import { billingFailure, billingSummary, checkoutConfirmed, companiesLabel, creditEntryRows, daysLeft, packCards, planCards, queuedBlockReason, safeRedirectUrl, type BillingRedirectPolicy } from "./billing-view";
+import { errorText } from "./page-errors";
+import { billingRedirectPolicy } from "./env";
 
 const USER = "00000000-0000-4000-8000-000000000001";
 const NOW = new Date("2026-10-15T10:00:00.000Z");
@@ -123,15 +126,73 @@ describe("BIL-1 checkout confirmation: only the webhook's entitlement proves it"
   });
 });
 
-describe("BIL-1 billing redirect URLs", () => {
-  it("follows https and the sandbox's loopback http only", () => {
-    expect(safeRedirectUrl("https://checkout.stripe.com/c/pay/cs_test_1")).toBe("https://checkout.stripe.com/c/pay/cs_test_1");
-    expect(safeRedirectUrl("http://127.0.0.1:3101/sandbox/billing/checkout/abc")).toBe("http://127.0.0.1:3101/sandbox/billing/checkout/abc");
-    expect(safeRedirectUrl("http://localhost:3101/sandbox/billing/portal/cus_1")).toBe("http://localhost:3101/sandbox/billing/portal/cus_1");
-    expect(safeRedirectUrl("http://evil.example/checkout")).toBeNull();
-    expect(safeRedirectUrl("javascript:alert(1)")).toBeNull();
-    expect(safeRedirectUrl("https://user:pw@checkout.stripe.com/")).toBeNull();
-    expect(safeRedirectUrl(null)).toBeNull();
+describe("BIL-1 billing redirect URLs (M6 review L6)", () => {
+  const live: BillingRedirectPolicy = { mode: "live", sandboxOrigin: "http://127.0.0.1:3101" };
+  const sandbox: BillingRedirectPolicy = { mode: "sandbox", sandboxOrigin: "http://127.0.0.1:3101" };
+  const STRIPE = ["https://checkout.stripe.com/c/pay/cs_test_a1#fid=x", "https://billing.stripe.com/p/session/test_YWNjdF8x"];
+  const NEVER = [
+    "https://evil.example/checkout",
+    "http://evil.example/checkout",
+    "https://checkout.stripe.com.evil.example/c/pay/cs_1",
+    "https://evil.example/?u=https://checkout.stripe.com/",
+    "https://connect.stripe.com/oauth/authorize",
+    "https://pay.stripe.com/x",
+    "http://checkout.stripe.com/c/pay/cs_1",
+    "https://checkout.stripe.com:8443/c/pay/cs_1",
+    "https://user:pw@checkout.stripe.com/",
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "//checkout.stripe.com/c/pay/cs_1",
+    "/settings/billing",
+    "not a url",
+    "",
+  ];
+
+  it("live: follows Stripe's checkout and billing portal only, never the sandbox's loopback pages", () => {
+    for (const url of STRIPE) expect(safeRedirectUrl(url, live)).toBe(url);
+    for (const url of [...NEVER, "http://127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1", "http://localhost:3101/sandbox/billing/portal/cus_sandbox_1"]) expect(safeRedirectUrl(url, live)).toBeNull();
+    expect(safeRedirectUrl(null, live)).toBeNull();
+  });
+
+  it("sandbox: follows exactly the worker's sandbox billing pages (its origin, its billing paths); Stripe's hosts stay allowed", () => {
+    expect(safeRedirectUrl("http://127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1", sandbox)).toBe("http://127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1");
+    expect(safeRedirectUrl("http://127.0.0.1:3101/sandbox/billing/portal/cus_sandbox_1", sandbox)).toBe("http://127.0.0.1:3101/sandbox/billing/portal/cus_sandbox_1");
+    for (const url of STRIPE) expect(safeRedirectUrl(url, sandbox)).toBe(url);
+    for (const url of [
+      ...NEVER,
+      "http://127.0.0.1:3102/sandbox/billing/checkout/cs_sandbox_1",
+      "http://localhost:3101/sandbox/billing/checkout/cs_sandbox_1",
+      "http://[::1]:3101/sandbox/billing/checkout/cs_sandbox_1",
+      "https://127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1",
+      "http://127.0.0.1:3101/sandbox/sites/agent-site/index.html",
+      "http://127.0.0.1:3101/sandbox/billing/../sites/agent-site/index.html",
+      "http://127.0.0.1:3101/sandbox/clock",
+      "http://user@127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1",
+    ])
+      expect(safeRedirectUrl(url, sandbox)).toBeNull();
+    expect(safeRedirectUrl("http://127.0.0.1:3101/sandbox/billing/checkout/cs_sandbox_1", { mode: "sandbox", sandboxOrigin: null })).toBeNull();
+  });
+
+  it("reads the policy from the web's env: the mode, and the worker's sandbox origin as the worker computes it", () => {
+    expect(billingRedirectPolicy({})).toEqual({ mode: "sandbox", sandboxOrigin: "http://127.0.0.1:3101" });
+    expect(billingRedirectPolicy({ INTEGRATIONS_MODE: "live" })).toEqual({ mode: "live", sandboxOrigin: "http://127.0.0.1:3101" });
+    expect(billingRedirectPolicy({ WORKER_PORT: "4101" })).toEqual({ mode: "sandbox", sandboxOrigin: "http://127.0.0.1:4101" });
+    expect(billingRedirectPolicy({ SANDBOX_SITE_BASE_URL: "http://localhost:3999/", WORKER_PORT: "4101" })).toEqual({ mode: "sandbox", sandboxOrigin: "http://localhost:3999" });
+    expect(billingRedirectPolicy({ SANDBOX_SITE_BASE_URL: "javascript:alert(1)" }).sandboxOrigin).toBeNull();
+    expect(billingRedirectPolicy({ SANDBOX_SITE_BASE_URL: "not a url" }).sandboxOrigin).toBeNull();
+  });
+});
+
+describe("BIL-1 a failed billing session names the worker's refusal in the web's own words (M6 review L8, L10)", () => {
+  it("recognises the open-checkout and already-subscribed refusals by their first sentence; anything else is the generic line", () => {
+    expect(billingFailure(`A checkout is already open. Complete it there, or start again in ${CHECKOUT_OPEN_MINUTES} minutes.`)).toBe("checkout-open");
+    expect(billingFailure("You already have a subscription. Change plans in Manage billing.")).toBe("subscribed");
+    for (const other of ["Billing is unavailable right now. Try again in a few minutes.", "The payment provider refused the request. Try again in a few minutes.", "Visit https://evil.example. A checkout is already open.", "", null]) expect(billingFailure(other)).toBeNull();
+  });
+
+  it("each reason has a fixed message", () => {
+    expect(errorText("billing", "checkout-open")).toBe(`A checkout is already open. Complete it in its Stripe tab, or start again in ${CHECKOUT_OPEN_MINUTES} minutes.`);
+    expect(errorText("billing", "subscribed")).toBe("You already have a subscription. Change plans in Manage billing.");
   });
 });
 

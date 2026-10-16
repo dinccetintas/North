@@ -43,7 +43,8 @@ success redirect proves nothing and changes nothing.
 entitlements.** `POST /webhooks/stripe` follows ADR 0013: `stripe-signature`
 verified over the raw bytes with `timingSafeEqual` and a 300 s timestamp
 tolerance on the worker clock, a strict Zod union that keeps only the fields
-the projection reads from six event types, a 256 KB body limit, idempotency
+the projection reads from six event types (seven since the amendment
+below), a 256 KB body limit, idempotency
 by `billing_events.event_id` (unique, append-only, no owner policies). Every
 accepted event is stored before it is applied; `apply-billing-event` runs
 the pure projection `applyBillingEvent(entitlement, event, now)` from core
@@ -115,6 +116,57 @@ packs; Stripe prices carry lookup keys and `scripts/stripe-setup.ts` creates
 or rotates them from the file (transferring the lookup key). The worker
 resolves a price by lookup key at checkout. Changing a number is an edit and
 a script run; no price id lives in code or in an environment variable.
+
+## Amendment: M6 security review (2026-10-16)
+
+The review found that the projection trusted too much of what Stripe sends.
+These rules replace the matching sentences above; migration
+`0016_m6_billing_hardening.sql` and `packages/core/src/billing/*` carry them.
+
+- **Seven event types.** `checkout.session.async_payment_succeeded` joins
+  the six: it is how a pack bought with a delayed method (ACH, SEPA) is paid.
+  `async_payment_failed` is answered 200 and stored nowhere.
+- **A pack is granted only when it is paid.** `payment_status = paid` (or the
+  async success event), a known `north_pack_id`, and `amount_total` exactly
+  the pack's price in USD; no fallback to a default pack. Pack checkouts are
+  card-only, without promotion codes.
+- **Plan credits only for a real period.** `invoice.paid` grants plan credits
+  only when `billing_reason` is `subscription_create` or
+  `subscription_cycle`, the period comes from the subscription's own line
+  (never a proration line), and that line's price is above 0. A renewal paid
+  from the customer's balance still grants; a proration invoice grants
+  nothing and never moves the period.
+- **The entitlement follows one subscription.** An invoice or update for
+  another subscription changes nothing; only a newer
+  `customer.subscription.created` adopts a different one, and a checkout
+  fills the subscription only when none is followed. A delete of the followed
+  subscription ends the entitlement even when it arrives late. A trial
+  adopts a checkout's subscription only once its payment settled; an
+  `incomplete` subscription changes nothing.
+- **Reconciliation.** `entitlements-tick` asks the provider for the followed
+  subscription once `cancel_at` / `period_end` is more than 3 days past and
+  ends the rows Stripe reports gone or ended. Ids from the other billing mode
+  are skipped, so switching sandbox to live cannot end every user.
+- **The user hint needs a session.** `client_reference_id` /
+  `metadata.north_user_id` is trusted only when a `billing_sessions` row the
+  worker created has that `provider_ref` and that user; otherwise the
+  customer must already be known.
+- **Reduced payloads.** `billing_events.payload` stores the parsed, reduced
+  event (no email, address or hosted invoice URL) and `payload_sha256` the
+  hash of the raw signed body. Rows no user owns are swept after 30 days by
+  `billing_events_sweep_unknown` (the retention sweep), the one delete the
+  append-only trigger allows besides `purge_owner`.
+- **The credit is reserved at dispatch.** `credit_reserve(user, ref)` writes
+  the run's `consume` before the run starts and refuses at a balance of 0
+  under the per-user credits lock; the run is recorded under the reserved id,
+  and a run that throws before it is recorded gets its credit back
+  (`release:<id>`). Its cost always reaches `usage`. The −5 grace now covers
+  only consumes written after the fact.
+- **No read-then-write races.** The tick ends a trial only if the row is
+  still a card-less trial, and the apply step writes only over the row it
+  read. A second subscription checkout is refused while another is open
+  (`billing_sessions.completed_at`, a 35-minute window that matches the live
+  session expiry).
 
 ## Consequences
 

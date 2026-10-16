@@ -1,10 +1,12 @@
 import { WorkspacePathSchema, type ExportKind } from "@north/core";
+import type { Cut } from "./budget";
 import type { ManifestFile } from "./files";
 
 /**
  * EXP-1: the export's `README.md`: what is inside, where each company's code
  * already lives (the repository reference the worker recorded), the export
- * date, and anything left out.
+ * date, and anything left out or cut (M6 review M4: the budgets, the row
+ * limit, a free-text value cut in the select; M2: a refused artifact).
  */
 export const README_PATH = WorkspacePathSchema.parse("README.md");
 
@@ -13,8 +15,10 @@ export interface ReadmeInput {
   readonly generatedAt: string;
   readonly companies: readonly { readonly slug: string; readonly name: string; readonly repoUrl: string | null }[];
   readonly files: readonly ManifestFile[];
+  /** Artifact files not in the zip; `reason` reads after the path ("was not rendered: …"). */
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
-  readonly truncated: readonly string[];
+  /** Data files cut or left out. */
+  readonly cuts: readonly Cut[];
 }
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
@@ -37,7 +41,8 @@ function inside(kind: ExportKind): readonly string[] {
 export function exportReadme(input: ReadmeInput): string {
   const bytes = input.files.reduce((sum, f) => sum + f.bytes, 0);
   const code = input.companies.length === 0 ? ["- No companies in this export."] : input.companies.map((c) => `- ${oneLine(c.name)} (\`${c.slug}\`): ${c.repoUrl ? oneLine(c.repoUrl) : "no repository yet (nothing has been built)"}`);
-  const notes = [...input.skipped.map((s) => `- \`${s.path}\` was not rendered: ${oneLine(s.reason)}`), ...input.truncated.map((t) => `- \`data/${t}\` stops at its first 100 000 rows.`)];
+  const sentence = (text: string): string => `${oneLine(text).replace(/\.$/, "")}.`;
+  const notes = [...input.skipped.map((s) => `- \`${s.path}\` ${sentence(s.reason)}`), ...input.cuts.map((c) => `- \`${c.path}\`: ${sentence(c.reason)}`)];
   return [
     "# Your North export",
     "",

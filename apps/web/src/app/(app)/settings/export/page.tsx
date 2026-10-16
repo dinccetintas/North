@@ -6,6 +6,7 @@ import { loadExports, loadRepoRefs } from "@/lib/export-data";
 import { exportAccess, exportRows, repoLinks } from "@/lib/export-view";
 import { ExportRequestForm, ExportRows, RepoList } from "@/components/export-sections";
 import { LiveRefresh } from "@/components/live-refresh";
+import { errorText } from "@/lib/page-errors";
 
 export const metadata = { title: "Export" };
 
@@ -26,6 +27,7 @@ export default async function ExportPage({ searchParams }: { searchParams: Searc
   const rows = exportRows(records, new Map(companies.map((c) => [c.id, c.name])), now);
   const building = rows.some((r) => r.status === "requested" || r.status === "running");
   const access = exportAccess(entitlement, now);
+  const error = errorText("export", params.error);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -39,9 +41,9 @@ export default async function ExportPage({ searchParams }: { searchParams: Searc
         <LiveRefresh active={building} />
       </div>
 
-      {params.error ? (
-        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert">
-          {params.error}
+      {error ? (
+        <p className="mono-label mt-6 border border-error bg-error-bg px-3 py-3 text-error" role="alert" data-testid="export-error">
+          {error}
         </p>
       ) : null}
       {params.requested ? (

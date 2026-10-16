@@ -15,8 +15,8 @@ describe("M2 schema", () => {
   });
 
   it("tasks accept the K2 task types campaign_spec and outreach_batch", async () => {
-    const campaign = await createTask(owned.owner.client, { companyId: owned.companyId, role: "growth", taskType: "campaign_spec", title: "Ad test" });
-    const outreach = await createTask(owned.owner.client, { companyId: owned.companyId, role: "sales", taskType: "outreach_batch", title: "Cold emails" });
+    const campaign = await createTask(service, { companyId: owned.companyId, role: "growth", taskType: "campaign_spec", title: "Ad test" });
+    const outreach = await createTask(service, { companyId: owned.companyId, role: "sales", taskType: "outreach_batch", title: "Cold emails" });
     expect([campaign.taskType, outreach.taskType]).toEqual(["campaign_spec", "outreach_batch"]);
     const bad = await service.from("tasks").insert({ company_id: owned.companyId, role: "growth", task_type: "mine_bitcoin", title: "x" });
     expect(bad.error?.message).toMatch(/tasks_task_type_check/);

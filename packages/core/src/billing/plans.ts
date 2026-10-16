@@ -43,6 +43,14 @@ export const RETENTION_DAYS = 90;
 export const CREDIT_GRACE = 5;
 /** The spec's cost NFR: one `usage_alert` per period when inference plus sandbox cost crosses this share of the plan price. */
 export const USAGE_ALERT_RATIO = 0.4;
+/**
+ * L10: a subscription checkout stays open this long (Stripe's `expires_at`,
+ * whose minimum is 30 minutes); while one is open and not completed, a second
+ * checkout of the same user is refused, so two clicks cannot buy two plans.
+ */
+export const CHECKOUT_OPEN_MINUTES = 35;
+/** L2: a stored event no user owns (an unknown customer) is swept after this many days, Stripe's own event retention. */
+export const UNKNOWN_BILLING_EVENT_DAYS = 30;
 /** Sandbox compute per minute until the SDK runtime's real cost is known. */
 export const SANDBOX_USD_PER_MINUTE = 0.01;
 
@@ -56,3 +64,6 @@ export function planByLookupKey(lookupKey: string): SubscriptionPlan | null {
 export function packById(id: string): CreditPack | null {
   return CREDIT_PACKS.find((pack) => pack.id === id) ?? null;
 }
+
+/** A dollar price in Stripe's smallest unit (cents), the unit `amount_total` and `unit_amount` use. */
+export const usdCents = (usd: number): number => Math.round(usd * 100);

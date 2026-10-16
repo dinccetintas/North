@@ -39,6 +39,8 @@ export interface MarkLeadsOptions {
 export interface ListLeadsOptions {
   readonly status?: readonly LeadStatus[];
   readonly limit?: number;
+  /** Rows to skip in the (created_at, email) order: how a reader pages past PostgREST's 1000 rows. */
+  readonly offset?: number;
 }
 
 const LEAD_COLUMNS = "id, company_id, name, email, company_name, why, source, status, batch_id, message_id, created_at, updated_at";
@@ -102,18 +104,19 @@ export async function importLeads(db: DbClient, companyId: string, rows: readonl
   return Object.freeze({ imported, skipped: leads.length - imported });
 }
 
-/** The oldest `new` leads, up to `limit` (what an outreach batch receives). */
+/** The oldest `new` leads, up to `limit`, whether or not an open batch holds them (`leadsFreeForOutreach` is what an outreach batch receives). */
 export async function nextUnsentLeads(db: DbClient, companyId: string, limit = 5): Promise<readonly LeadRecord[]> {
   return listLeads(db, companyId, { status: ["new"], limit });
 }
 
-/** Leads of the company, oldest first, optionally filtered by status. */
+/** Leads of the company, oldest first (email breaks ties, so the order is total), optionally filtered by status; `offset` pages. */
 export async function listLeads(db: DbClient, companyId: string, opts: ListLeadsOptions = {}): Promise<readonly LeadRecord[]> {
   const id = UuidSchema.parse(companyId);
   const limit = z.number().int().positive().max(1000).default(500).parse(opts.limit);
+  const offset = z.number().int().nonnegative().default(0).parse(opts.offset);
   const base = db.from("leads").select(LEAD_COLUMNS).eq("company_id", id);
   const filtered = opts.status && opts.status.length > 0 ? base.in("status", z.array(z.enum(LEAD_STATUSES)).parse(opts.status)) : base;
-  const { data, error } = await filtered.order("created_at", { ascending: true }).order("email", { ascending: true }).limit(limit);
+  const { data, error } = await filtered.order("created_at", { ascending: true }).order("email", { ascending: true }).range(offset, offset + limit - 1);
   if (error) throw dbError("Could not list leads", error);
   return Object.freeze((data ?? []).map(toRecord));
 }

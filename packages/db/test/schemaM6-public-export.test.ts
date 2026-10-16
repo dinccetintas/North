@@ -87,6 +87,8 @@ describe("M6 schema: public page and exports", () => {
   });
 
   it("EXP-1: a ready export is downloadable through the owner's signed URL; a stranger sees no row and gets no URL", async () => {
+    // M6 review M4: one open export per user; the previous test left one requested.
+    await raw.from("exports").update({ status: "failed", error: "test" }).eq("user_id", owned.owner.id).in("status", ["requested", "running"]);
     const created = await asRaw(owned.owner).from("exports").insert({ user_id: owned.owner.id, kind: "data" }).select("id").single();
     const path = `users/${owned.owner.id}/exports/${created.data!.id}.zip`;
     expect((await raw.storage.from("exports").upload(path, new Blob(["PK-zip"], { type: "application/zip" }), { contentType: "application/zip" })).error).toBeNull();

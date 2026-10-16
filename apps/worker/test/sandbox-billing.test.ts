@@ -38,7 +38,12 @@ const deliver = async (signed: { eventId: string; body: string; signature: strin
   if (response.status === 200 && body.duplicate === false) await applyBillingEvent(deps(), directSteps, body.billingEventId!, APP);
   return { eventId: signed.eventId, type, status: response.status, response: body, applied: response.status === 200 ? true : null, request: { body: signed.body, signature: signed.signature } };
 };
-const routes = (host = "127.0.0.1", integrations = deps().integrations) => sandboxRoutes(integrations, host, clock, { clock: () => clock.now(), deliver, appUrl: APP });
+/** The worker's own loopback origin: plain requests (the harness) and the pages' own forms reach the routes through it (M6 review L4). */
+const SELF = "http://127.0.0.1:3101";
+const routes = (host = "127.0.0.1", integrations = deps().integrations) => {
+  const app = sandboxRoutes(integrations, host, clock, { clock: () => clock.now(), deliver, appUrl: APP });
+  return { request: (path: string, init?: RequestInit) => app.request(new URL(path, SELF).href, init) };
+};
 
 async function checkout(planId: "pro" | "solo" = "pro"): Promise<{ sessionId: string; url: string; csId: string }> {
   const sessionId = "b1000000-0000-4000-8000-000000000001";
@@ -122,6 +127,43 @@ describe("D6-1 sandbox portal page", () => {
     expect(state.pausedReasons.get(C1)).toBe("subscription_ended");
     expect(await (await routes().request(`/sandbox/billing/portal/${customer}?done=end`)).text()).toContain("Done: end.");
     expect((await routes().request(`/sandbox/billing/portal/${customer}/cancel`, { method: "POST" })).status).toBe(400);
+  });
+
+  it("M6 review L4: a page elsewhere cannot press a button (cross-site form, rebound Host); the portal's own form can", async () => {
+    const { csId } = await checkout();
+    const forged = await routes().request(`/sandbox/billing/checkout/${csId}/complete`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "cross-site", origin: "https://evil.example" } });
+    expect(forged.status).toBe(403);
+    expect(state.billingEvents.size).toBe(0);
+    await routes().request(`/sandbox/billing/checkout/${csId}/complete`, { method: "POST", headers: { "sec-fetch-site": "same-origin", origin: SELF } });
+    const customer = state.entitlements.get(OWNER)!.stripeCustomerId!;
+    const end = `/sandbox/billing/portal/${customer}/end`;
+    expect((await routes().request(end, { method: "POST", headers: { "sec-fetch-site": "cross-site", origin: "https://evil.example" } })).status).toBe(403);
+    expect((await routes().request(end, { method: "POST", headers: { origin: "null" } })).status).toBe(403);
+    expect((await routes().request(end, { method: "POST", headers: { host: "rebound.evil.example:3101", "sec-fetch-site": "same-origin" } })).status).toBe(403);
+    expect((await routes().request(`/sandbox/billing/portal/${customer}`, { headers: { host: "rebound.evil.example:3101" } })).status).toBe(403);
+    expect(state.entitlements.get(OWNER)?.status).toBe("active");
+    const own = await routes().request(end, { method: "POST", headers: { "sec-fetch-site": "same-origin", origin: SELF } });
+    expect(own.status).toBe(303);
+    expect(state.entitlements.get(OWNER)?.status).toBe("ended");
+  });
+
+  it("M6 review L4: a sandbox-signed event posted through a rebound Host is refused before the signature check; nothing is stored", async () => {
+    const { sandboxWebhookGuards } = await import("../src/sandbox-routes");
+    const { isSandboxBilling, signedSandboxEvent } = await import("@north/integrations");
+    const { Hono } = await import("hono");
+    const env = { INTEGRATIONS_MODE: "sandbox" as const, WORKER_HOST: "127.0.0.1", WORKER_PORT: 3101, STRIPE_WEBHOOK_SECRET: undefined, SENTRY_CLIENT_SECRET: undefined };
+    const server = new Hono().route("/", sandboxWebhookGuards(env)).route("/", stripeWebhookRoutes(deps(), { secret: SANDBOX_STRIPE_WEBHOOK_SECRET, emit: async () => undefined }));
+    const { csId } = await checkout();
+    const billing = deps().integrations.billing;
+    if (!isSandboxBilling(billing)) throw new Error("expected the sandbox billing adapter");
+    const [event] = await billing.completeCheckout(csId);
+    const signed = signedSandboxEvent(event!, SANDBOX_STRIPE_WEBHOOK_SECRET, clock.now());
+    const send = (headers: Record<string, string>) => server.request(`${SELF}/webhooks/stripe`, { method: "POST", headers: { "stripe-signature": signed.signature, ...headers }, body: signed.body });
+    expect((await send({ host: "rebound.evil.example:3101" })).status).toBe(403);
+    expect((await send({ "sec-fetch-site": "cross-site", origin: "https://evil.example" })).status).toBe(403);
+    expect(state.billingEvents.size).toBe(0);
+    expect((await send({})).status).toBe(200);
+    expect(state.billingEvents.size).toBe(1);
   });
 
   it("an unknown customer or action is 404; a bad customer id never reaches the adapter", async () => {

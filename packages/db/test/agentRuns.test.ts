@@ -36,7 +36,7 @@ describe("agent runs repository (OBS-1)", () => {
   });
 
   it("recordAgentRun (worker) stores model, tokens, cost, duration and status", async () => {
-    const task = await createTask(owned.owner.client, { companyId: owned.companyId, role: "research", taskType: "market_report", title: "t" });
+    const task = await createTask(service, { companyId: owned.companyId, role: "research", taskType: "market_report", title: "t" });
     const id = await recordAgentRun(service, run(owned.companyId, { taskId: task.id, inputTokens: 1200, outputTokens: 300, costUsd: 0.012, durationMs: 850 }));
     const row = await service.from("agent_runs").select("task_id, role, model, runtime, session_id, input_tokens, output_tokens, cost_usd, duration_ms, status, error").eq("id", id).single();
     expect(row.data).toEqual({ task_id: task.id, role: "research", model: "drafter", runtime: "mock", session_id: null, input_tokens: 1200, output_tokens: 300, cost_usd: 0.012, duration_ms: 850, status: "succeeded", error: null });

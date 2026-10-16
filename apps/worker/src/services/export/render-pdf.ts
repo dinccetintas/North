@@ -55,9 +55,27 @@ function winAnsi(font: PDFFont): (text: string) => string {
   return (text) => Array.from(text, one).join("");
 }
 
+/**
+ * The longest prefix of `word` (at least one character) that fits: a binary
+ * search, since widths only grow with length (M6 review M4: shortening one
+ * character at a time made a 4 000-character token take seconds).
+ */
+function longestFit(word: string, fits: (s: string) => boolean, maxChars: number): number {
+  let lo = 1;
+  let hi = Math.min(word.length - 1, maxChars);
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(word.slice(0, mid))) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 /** Splits text into lines no wider than `width`; a word longer than a line is broken by characters. */
 function wrap(text: string, font: PDFFont, size: number, width: number): readonly string[] {
   const fits = (s: string): boolean => font.widthOfTextAtSize(s, size) <= width;
+  // No glyph of the standard fonts is narrower than 0.15 em, so a longer piece never fits: measure at most this much.
+  const maxChars = Math.max(1, Math.ceil(width / (0.15 * size)));
   const lines: string[] = [];
   let current = "";
   for (const word of text.split(/\s+/).filter(Boolean)) {
@@ -69,9 +87,8 @@ function wrap(text: string, font: PDFFont, size: number, width: number): readonl
     if (current) lines.push(current);
     current = "";
     let rest = word;
-    while (!fits(rest)) {
-      let cut = rest.length - 1;
-      while (cut > 1 && !fits(rest.slice(0, cut))) cut -= 1;
+    while (rest.length > maxChars || !fits(rest)) {
+      const cut = longestFit(rest, fits, maxChars);
       lines.push(rest.slice(0, cut));
       rest = rest.slice(cut);
     }

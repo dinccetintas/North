@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ActionSpecSchema, AgentOutputSchema, OutputFilesSchema, PlanOutputSchema, outputJsonSchema, type ActionSpec, type AgentOutput, type DispatchBlockReason, type OutputFile } from "@north/core";
 import { sandboxMinutesOf, workspaceFiles } from "@north/agents";
 import { writeTree } from "@north/integrations";
@@ -22,7 +23,7 @@ import type { AgentRunResult } from "@north/agents";
 import type { WorkerDeps } from "../deps";
 import { companyContext } from "./company-context";
 import { deferredActionsFor } from "./actions";
-import { chargeRun } from "./credits";
+import { chargeRun, releaseRun, reserveRun, type RunReservation } from "./credits";
 import { dispatchAllowed } from "./entitlements";
 
 export interface ExecuteTaskResult {
@@ -81,8 +82,11 @@ async function collectFiles(task: TaskRecord, workspaceDir: string, output: Agen
  * waiting on deferred decisions is not re-run; its stored actions are returned.
  * Dispatch asks first (ADR 0014): under the kill switch, an ended
  * subscription or an empty credit balance nothing runs, the outcome is
- * `blocked` with the reason and the task stays queued. The run is traced
- * (OBS-1) and charged one credit in the same call that records it (BIL-2).
+ * `blocked` with the reason and the task stays queued. The run's credit is
+ * reserved before the task starts (M6 review L9: concurrent dispatches at a
+ * low balance cannot start more runs than it covers; a refusal is `blocked`
+ * with `credits_exhausted`), the run is traced (OBS-1) and recorded under the
+ * reserved id with its usage (BIL-2); a run that never started is released.
  */
 export async function executeTask(deps: WorkerDeps, taskId: string): Promise<ExecuteTaskResult> {
   const { db } = deps;
@@ -94,9 +98,13 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   if (task.status === "waiting_decision") return resumeParkedTask(deps, task);
   if (task.status === "running") return noActions("blocked", taskId, { error: "already running" });
 
-  const running = await markTaskRunning(db, taskId);
+  const agentRunId = randomUUID();
+  const reservation = await reserveRun(deps, task.companyId, agentRunId);
+  if (!reservation.ok) return noActions("blocked", taskId, { error: "dispatch blocked: credits_exhausted", reason: "credits_exhausted" });
+  const charge: RunCharge = { agentRunId, reservation };
+  const running = await releasedOnThrow(deps, charge, () => markTaskRunning(db, taskId));
   const workspaceDir = `${deps.env.WORKSPACE_ROOT}/${task.id}`;
-  const result = await runAgent(deps, task, running, workspaceDir);
+  const result = await runAgent(deps, task, running, workspaceDir, charge);
   if (result.status !== "succeeded") {
     const error = result.status === "failed" ? result.error : "the runtime cannot pause mid-run before M3";
     await markTaskFailed(db, taskId, error);
@@ -119,27 +127,46 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
   });
 }
 
-/** One traced agent run for the running task (OBS-1), recorded and charged one credit before it returns (BIL-2). */
-async function runAgent(deps: WorkerDeps, task: TaskRecord, running: TaskRecord, workspaceDir: string): Promise<AgentRunResult> {
-  const context = await companyContext(deps.db, task.companyId, task.taskType);
-  await seedWorkspace(deps, task, workspaceDir);
-  const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
-  const instructions = `${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim();
-  const traceId = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: task.role, taskType: task.taskType, instructions });
-  const result = await deps.runtime.run({
-    companyId: task.companyId,
-    taskId: task.id,
-    role: task.role,
-    taskType: task.taskType,
-    instructions,
-    memoryDigest: context.digest,
-    workspaceDir,
-    outputSchema: outputJsonSchema(task.taskType),
-    vars: context.vars,
-    ...(traceId ? { traceId } : {}),
+/** The run's id and its credit, reserved at dispatch (L9). */
+interface RunCharge {
+  readonly agentRunId: string;
+  readonly reservation: RunReservation;
+}
+
+/** A reserved run that throws before it is recorded never ran: its credit is released, the error stays the step's. */
+async function releasedOnThrow<T>(deps: WorkerDeps, charge: RunCharge, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (cause) {
+    await releaseRun(deps, charge.agentRunId, charge.reservation);
+    throw cause;
+  }
+}
+
+/** One traced agent run for the running task (OBS-1), recorded under its reserved id with its usage before it returns (BIL-2); released when it throws before that. */
+async function runAgent(deps: WorkerDeps, task: TaskRecord, running: TaskRecord, workspaceDir: string, charge: RunCharge): Promise<AgentRunResult> {
+  const { result, traceId } = await releasedOnThrow(deps, charge, async () => {
+    const context = await companyContext(deps.db, task.companyId, task.taskType);
+    await seedWorkspace(deps, task, workspaceDir);
+    const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
+    const instructions = `${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim();
+    const started = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: task.role, taskType: task.taskType, instructions });
+    const ran = await deps.runtime.run({
+      companyId: task.companyId,
+      taskId: task.id,
+      role: task.role,
+      taskType: task.taskType,
+      instructions,
+      memoryDigest: context.digest,
+      workspaceDir,
+      outputSchema: outputJsonSchema(task.taskType),
+      vars: context.vars,
+      ...(started ? { traceId: started } : {}),
+    });
+    return { result: ran, traceId: started };
   });
   deps.tracer.endRun(traceId, { model: result.usage.model, costUsd: result.usage.costUsd, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, status: result.status });
-  await recordRun(deps, running, result, result.traceId ?? traceId);
+  await recordRun(deps, running, result, result.traceId ?? traceId, charge);
   return result;
 }
 
@@ -176,9 +203,10 @@ async function resumeParkedTask(deps: WorkerDeps, task: TaskRecord): Promise<Exe
   return noActions("ran", task.id, { ...carried, files });
 }
 
-/** The `agent_runs` row (with its trace) and, in the same call, its credit and usage (BIL-2). */
-async function recordRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null): Promise<void> {
+/** The `agent_runs` row (with its trace) under the reserved id and, in the same call, its usage (BIL-2). */
+async function recordRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null, charge: RunCharge): Promise<void> {
   const agentRunId = await recordAgentRun(deps.db, {
+    id: charge.agentRunId,
     companyId: task.companyId,
     taskId: task.id,
     role: task.role,
@@ -193,7 +221,7 @@ async function recordRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunRes
     ...(result.status === "failed" ? { error: result.error } : {}),
     traceId,
   });
-  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) });
+  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) }, charge.reservation);
 }
 
 interface Persisted {
