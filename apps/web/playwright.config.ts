@@ -11,6 +11,12 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
+  /**
+   * One spec at a time: the specs assert a single user's latency (an answer
+   * shows within 2 s, DEC-2), and two browsers driving agents on the same
+   * dev server, worker and database measure the machine, not the product.
+   */
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   use: {

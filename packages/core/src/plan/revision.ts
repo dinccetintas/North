@@ -32,3 +32,17 @@ const explainsShrink = (revision: PlanRevision, type: string): boolean =>
 export function missingRevisionReasons(plan: RevisedPlan, previous: readonly TypedTask[]): readonly string[] {
   return Object.freeze(shrunkTaskTypes(previous, plan.tasks).filter((type) => !plan.revisions.some((revision) => explainsShrink(revision, type))));
 }
+
+/**
+ * The plan without any task of `taskType`, for a type the platform cannot run
+ * this week (an outreach batch with no free lead, SLS-K2). The plan still
+ * passes PLN-2: every revision the planner wrote for the type goes, and when
+ * the previous plan had the type it is recorded `dropped` with `reason`. A
+ * plan without the type comes back unchanged; a plan of only that type may end empty.
+ */
+export function dropTaskType<P extends RevisedPlan>(plan: P, taskType: PlanRevision["taskType"], reason: string, previous: readonly TypedTask[]): P {
+  if (!plan.tasks.some((t) => t.taskType === taskType)) return plan;
+  const hadIt = previous.some((t) => t.taskType === taskType);
+  const revisions = [...plan.revisions.filter((r) => r.taskType !== taskType), ...(hadIt ? [{ taskType, change: "dropped" as const, reason }] : [])];
+  return Object.freeze({ ...plan, tasks: plan.tasks.filter((t) => t.taskType !== taskType), revisions });
+}

@@ -12,7 +12,7 @@ import { TASK_STATUSES, TASK_TYPES, isHttpUrl, type ChannelReportRow } from "@no
 export const PLAN_PREVIOUS_VAR = "plan.previous";
 /** `vars["ledger.report"]`: `channelReport` rows for the ledger entries since the previous plan, as JSON `ChannelReportRow[]`. */
 export const LEDGER_REPORT_VAR = "ledger.report";
-/** `vars["leads.count"]`: how many leads the company has (a non-negative integer as a string). */
+/** `vars["leads.count"]`: how many free leads the company has, i.e. `new` leads not held by an open first-contact batch (a non-negative integer as a string). */
 export const LEADS_COUNT_VAR = "leads.count";
 /** `vars["site.url"]`: the live site, else the latest preview, else empty. */
 export const SITE_URL_VAR = "site.url";

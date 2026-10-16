@@ -105,6 +105,8 @@ describe("gateAction (DEC-1 through AuthorityEngine.gate)", () => {
 
   it("a task with several card actions parks once and opens one card per action (no illegal transition)", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
+    // SLS-K2: a single first contact goes to a free new lead of the company, like a batch's first send.
+    for (const r of ["a@example.test", "b@example.test"]) await seedLead(r);
     const mail = (to: string) => ({ kind: "email.send.first_contact" as const, companyId: "x", agentRole: "x", description: `Email ${to}`, payload: { to, subject: "s", text: "t" } });
     const first = await openCardFor(task.id, mail("a@example.test"));
     const second = await openCardFor(task.id, mail("b@example.test"));
@@ -281,6 +283,7 @@ describe("settleDecision (DEC-2): the card's stored answer is the only input", (
 
   it("a task waits while any of its cards is still pending, and finishes only when the last one settles", async () => {
     const task = seedTask(state, { role: "sales", taskType: "outreach_batch", result: { artifactIds: ["art-1"], costUsd: 0, summary: "batch" } });
+    for (const r of ["a@example.test", "b@example.test"]) await seedLead(r);
     const mail = (to: string) => ({ kind: "email.send.first_contact" as const, companyId: "x", agentRole: "x", description: `Email ${to}`, payload: { to, subject: "s", text: "t" } });
     const first = await openCardFor(task.id, mail("a@example.test"));
     const second = await openCardFor(task.id, mail("b@example.test"));
@@ -306,6 +309,7 @@ describe("decision deadlines", () => {
     const task = seedTask(state);
     const k2 = await openCardFor(task.id);
     const ops = seedTask(state, { role: "sales", taskType: "outreach_batch" });
+    await seedLead("reg@example.test");
     const k3 = await openCardFor(ops.id, { kind: "email.send.first_contact", companyId: "x", agentRole: "x", description: "Email the regulator", requestedTier: "K3", payload: { to: "reg@example.test", subject: "s", text: "t" } });
     expect(state.cards.get(k3.cardId)).toMatchObject({ tier: "K3", defaultOptionId: null });
     const past = new Date(Date.now() - 1000).toISOString();

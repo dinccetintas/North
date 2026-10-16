@@ -178,8 +178,44 @@ export function fakeDbModule(state: FakeState) {
   const toRecord = (a: FakeAction) => ({ ...a, payload: { ...a.payload } });
   const makeTask = (input: Record<string, unknown>): FakeTask => ({ ...seedTaskRow(), ...input } as FakeTask);
   const m5 = fakeDbM5(state, { DbError, nextId, tasks: () => state.tasks, makeTask, cards: () => [...state.cards.values()], companies: () => state.companies, killSwitch: () => state.killSwitch, memory: () => state.memory, metrics: () => state.metrics, ledger: () => state.ledger });
+  /** `recordAction`: the insert with the `actions_tier_requires_authority` check. */
+  const recordActionRow = (input: Record<string, unknown>): string => {
+    const tier = String(input.tier) as FakeAction["tier"];
+    const status = String(input.status);
+    const authority = Boolean(input.decisionCardId) || Boolean(input.autoRuleId);
+    if (((tier === "K2" && !authority) || (tier === "K3" && !input.decisionCardId)) && status !== "blocked") throw new DbError("actions_tier_requires_authority");
+    const id = nextId("action");
+    const ref = (key: string) => (input[key] as string | null | undefined) ?? null;
+    state.actions.push({ id, companyId: String(input.companyId), taskId: ref("taskId"), agentRole: String(input.agentRole), kind: String(input.kind), tier, description: String(input.description), status, externalRef: ref("externalRef"), decisionCardId: ref("decisionCardId"), autoRuleId: ref("autoRuleId"), sandbox: (input.sandbox as boolean | undefined) ?? true, payload: (input.payload as Record<string, unknown>) ?? {}, supersedes: null, createdAt: new Date().toISOString() });
+    return id;
+  };
+  /** `openCard`: the insert, refused by the quota trigger while `quotaExhausted`. */
+  const openCardRow = (draft: Record<string, unknown>) => {
+    if (state.quotaExhausted) throw new QuotaExceededError("quota");
+    const id = nextId("card");
+    const openedAt = typeof draft.openedAt === "string" ? draft.openedAt : new Date().toISOString();
+    const card: FakeCard = {
+      id,
+      companyId: String(draft.companyId),
+      taskId: (draft.taskId as string | null) ?? null,
+      tier: draft.tier as "K2" | "K3",
+      question: String(draft.question),
+      rationale: String(draft.rationale),
+      options: draft.options as { id: string; label: string }[],
+      defaultOptionId: (draft.defaultOptionId as string | null) ?? null,
+      dueAt: String(draft.dueAt),
+      openedAt,
+      day: openedAt.slice(0, 10),
+      actionKind: String(draft.actionKind),
+      answeredOptionId: null,
+      answeredAt: null,
+      answeredBy: null,
+    };
+    state.cards.set(id, card);
+    return { ...card, seq: state.cards.size };
+  };
   return {
-    ...fakeDbM4(state, { DbError, nextId, actions: () => state.actions, heads, toRecord, ledger: () => state.ledger }),
+    ...fakeDbM4(state, { DbError, nextId, actions: () => state.actions, heads, toRecord, ledger: () => state.ledger, openCard: openCardRow, recordAction: recordActionRow }),
     ...m5,
     DbError,
     QuotaExceededError,
@@ -196,31 +232,7 @@ export function fakeDbModule(state: FakeState) {
     listBudgets: vi.fn(async (_db: unknown, companyId: string) => (state.budgets.get(companyId) ?? []).map((b) => ({ dailyExtraUsd: 0, ...b }))),
     listActiveAutoRules: vi.fn(async (_db: unknown, companyId: string) => state.autoRules.get(companyId) ?? []),
     getKillSwitch: vi.fn(async (_db: unknown, companyId: string) => state.killSwitch.get(companyId) ?? false),
-    recordAction: vi.fn(async (_db: unknown, input: Record<string, unknown>) => {
-      const tier = String(input.tier) as FakeAction["tier"];
-      const status = String(input.status);
-      const authority = Boolean(input.decisionCardId) || Boolean(input.autoRuleId);
-      if (((tier === "K2" && !authority) || (tier === "K3" && !input.decisionCardId)) && status !== "blocked") throw new DbError("actions_tier_requires_authority");
-      const id = nextId("action");
-      state.actions.push({
-        id,
-        companyId: String(input.companyId),
-        taskId: (input.taskId as string | null) ?? null,
-        agentRole: String(input.agentRole),
-        kind: String(input.kind),
-        tier,
-        description: String(input.description),
-        status,
-        externalRef: (input.externalRef as string | undefined) ?? null,
-        decisionCardId: (input.decisionCardId as string | undefined) ?? null,
-        autoRuleId: (input.autoRuleId as string | undefined) ?? null,
-        sandbox: (input.sandbox as boolean | undefined) ?? true,
-        payload: (input.payload as Record<string, unknown>) ?? {},
-        supersedes: null,
-        createdAt: new Date().toISOString(),
-      });
-      return id;
-    }),
+    recordAction: vi.fn(async (_db: unknown, input: Record<string, unknown>) => recordActionRow(input)),
     recordActionTransition: vi.fn(async (_db: unknown, input: { actionId: string; status: string; externalRef?: string; note?: string }) => {
       const prev = must(state.actions.find((a) => a.id === input.actionId), "action");
       if (state.actions.some((a) => a.supersedes === prev.id)) throw new DbError("actions_supersedes_idx");
@@ -240,30 +252,7 @@ export function fakeDbModule(state: FakeState) {
       const head = heads(state.actions.filter((a) => a.decisionCardId === cardId)).find((a) => a.status === "pending");
       return head ? toRecord(head) : null;
     }),
-    openCard: vi.fn(async (_db: unknown, draft: Record<string, unknown>) => {
-      if (state.quotaExhausted) throw new QuotaExceededError("quota");
-      const id = nextId("card");
-      const openedAt = typeof draft.openedAt === "string" ? draft.openedAt : new Date().toISOString();
-      const card: FakeCard = {
-        id,
-        companyId: String(draft.companyId),
-        taskId: (draft.taskId as string | null) ?? null,
-        tier: draft.tier as "K2" | "K3",
-        question: String(draft.question),
-        rationale: String(draft.rationale),
-        options: draft.options as { id: string; label: string }[],
-        defaultOptionId: (draft.defaultOptionId as string | null) ?? null,
-        dueAt: String(draft.dueAt),
-        openedAt,
-        day: openedAt.slice(0, 10),
-        actionKind: String(draft.actionKind),
-        answeredOptionId: null,
-        answeredAt: null,
-        answeredBy: null,
-      };
-      state.cards.set(id, card);
-      return { ...card, seq: state.cards.size };
-    }),
+    openCard: vi.fn(async (_db: unknown, draft: Record<string, unknown>) => openCardRow(draft)),
     getCard: vi.fn(async (_db: unknown, id: string) => (state.cards.get(id) ? { ...state.cards.get(id) } : null)),
     listPendingCardsForTask: vi.fn(async (_db: unknown, taskId: string) => [...state.cards.values()].filter((c) => c.taskId === taskId && !c.answeredAt).map((c) => ({ ...c }))),
     listCards: vi.fn(async (_db: unknown, companyId: string) => [...state.cards.values()].filter((c) => c.companyId === companyId).map((c) => ({ ...c }))),

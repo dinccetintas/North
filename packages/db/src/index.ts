@@ -16,6 +16,7 @@ export * from "./attribution";
 export * from "./campaigns";
 export * from "./leads";
 export * from "./leads-csv";
+export * from "./outreach";
 export * from "./actions";
 export * from "./agentRuns";
 export * from "./metrics";

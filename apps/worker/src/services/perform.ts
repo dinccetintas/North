@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { isHttpUrl, signalPayload, signalTaskInput, type ActionSpec } from "@north/core";
-import { createTask, getBudget, getLead, getSignal, raiseDailyCap, raiseTotalCap, siteUrls, type CampaignRecord, type LeadRecord } from "@north/db";
+import { claimLeadForContact, createTask, getBudget, getLead, getSignal, raiseDailyCap, raiseTotalCap, siteUrls, type CampaignRecord, type LeadRecord } from "@north/db";
 import { parseGmailRef, RepoFileSchema, type InReplyTo, type ProviderAuth } from "@north/integrations";
 import { z } from "zod";
 import type { WorkerDeps } from "../deps";
@@ -9,12 +10,14 @@ import { ownerDay } from "./dates";
 import { TASK_REF_PREFIX } from "./outcomes";
 import { providerAuthFor } from "./provider-auth";
 
-/** What the action row knows that the spec does not: the card that approved it (null for K1 and auto-rule runs). */
+/** What the action row knows that the spec does not: the card that approved it (null for K1 and auto-rule runs) and the row itself. */
 export interface PerformContext {
   readonly decisionCardId: string | null;
+  /** The pending row being performed: a first contact claims its lead in this action's name (0018). Null for a direct call, which claims under a one-off id. */
+  readonly actionId?: string | null;
 }
 
-const NO_CARD: PerformContext = Object.freeze({ decisionCardId: null });
+const NO_CARD: PerformContext = Object.freeze({ decisionCardId: null, actionId: null });
 
 export interface PerformResult {
   readonly externalRef: string;
@@ -96,13 +99,25 @@ async function toggleCampaigns(deps: WorkerDeps, action: ActionSpec, payload: Pa
 }
 
 /** The lead a send names (`payload.leadId`), of this company, in the required status, whose email is the recipient (M4 review H2/H3). */
-async function leadFor(deps: WorkerDeps, action: ActionSpec, payload: Payload, status: LeadRecord["status"]): Promise<LeadRecord> {
+async function leadFor(deps: WorkerDeps, action: ActionSpec, payload: Payload, status: LeadRecord["status"], claimant: string | null = null): Promise<LeadRecord> {
   const leadId = str(payload, "leadId");
   const lead = UUID.test(leadId) ? await getLead(deps.db, action.companyId, leadId) : null;
   if (!lead) throw new Error(`${action.kind} refused: payload.leadId must name a lead of this company`);
-  if (lead.status !== status) throw new Error(`${action.kind} refused: lead ${lead.id} is ${lead.status}, not ${status}`);
+  // A first contact's own earlier claim (a retried perform step) still counts as `new` for it; the claim decides.
+  const ownClaim = claimant !== null && lead.contactActionId === claimant && lead.messageId === null;
+  if (lead.status !== status && !ownClaim) throw new Error(`${action.kind} refused: lead ${lead.id} is ${claimant ? `no longer ${status} (${lead.status})` : `${lead.status}, not ${status}`}`);
   if (lead.email !== str(payload, "to").trim().toLowerCase()) throw new Error(`${action.kind} refused: the recipient is not the lead's email`);
   return lead;
+}
+
+/**
+ * SLS-K2 (0018): the one conditional write that lets this first contact, and
+ * no other, email the lead. Lost → refused, nothing reaches the provider; a
+ * failed send gives the claim back (`completeAction`).
+ */
+async function claimLead(deps: WorkerDeps, action: ActionSpec, lead: LeadRecord, claimant: string): Promise<void> {
+  const claimed = await claimLeadForContact(deps.db, action.companyId, lead.id, claimant);
+  if (!claimed) throw new Error(`${action.kind} refused: lead ${lead.id} is no longer new`);
 }
 
 /** The thread a reply must stay in: the lead's sent message (`gmail:<id>:<thread>` parsed; a sandbox ref is its own thread). */
@@ -114,14 +129,17 @@ function threadOf(lead: LeadRecord): InReplyTo {
 
 /**
  * Every email leaves through the user's own mailbox (ADR 0010). A first
- * contact goes to a `new` lead of the company (H3); a reply goes to a
+ * contact goes to a `new` lead of the company (H3) that it has just claimed
+ * (0018: one email per person, whatever approved it); a reply goes to a
  * `replied` lead, inside the thread it replied in (H2). Anything else is refused.
  */
-async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload): Promise<PerformResult> {
+async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload, ctx: PerformContext): Promise<PerformResult> {
   const first = action.kind === "email.send.first_contact";
-  const lead = await leadFor(deps, action, payload, first ? "new" : "replied");
+  const claimant = first ? (ctx.actionId ?? randomUUID()) : null;
+  const lead = await leadFor(deps, action, payload, first ? "new" : "replied", claimant);
   const inReplyTo = first ? {} : { inReplyTo: threadOf(lead) };
   const auth = await providerAuthFor(deps, action.companyId, action.kind);
+  if (claimant) await claimLead(deps, action, lead, claimant);
   const sent = await deps.integrations.outreach(auth).send({
     companyId: action.companyId,
     to: lead.email,
@@ -205,7 +223,7 @@ export async function performAction(deps: WorkerDeps, action: ActionSpec, ctx: P
       return toggleCampaigns(deps, action, payload, ctx);
     case "email.send.first_contact":
     case "email.send.reply":
-      return sendMail(deps, action, payload);
+      return sendMail(deps, action, payload, ctx);
     case "budget.cap.raise":
       return raiseCap(deps, action, payload);
     case "repo.create":

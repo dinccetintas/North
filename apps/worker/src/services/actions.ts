@@ -10,16 +10,20 @@ import {
   listBudgets,
   markTaskWaiting,
   openCard,
+  openFirstContactCard,
   recordAction,
   recordActionTransition,
+  recordAutoFirstContact,
   type ActionRecord,
   type DbClient,
+  type FirstContactOpen,
+  type OpenCardInput,
   type TaskRecord,
 } from "@north/db";
 import type { WorkerDeps } from "../deps";
-import { batchOpenRefusal, batchReuseRefusal, BATCH_MISMATCH } from "./batch-scope";
+import { batchReuseRefusal, BATCH_MISMATCH, firstContactRefusal, heldRefusal } from "./batch-scope";
 import { BudgetCapReachedError } from "./budget-check";
-import { applyOutcome, loadActionRow } from "./outcomes";
+import { applyFailed, applyOutcome, loadActionRow } from "./outcomes";
 import { performAction } from "./perform";
 import { ConnectionRequiredError } from "./provider-auth";
 import type { StepRunner } from "./steps";
@@ -172,7 +176,9 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
       const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef: "internal" });
       return { kind: "executed", actionId, externalRef: "internal" };
     }
-    const actionId = await recordAction(db, { ...base, payload, status: "pending", ...(decision.kind === "run" && decision.autoRuleId ? { autoRuleId: decision.autoRuleId } : {}) });
+    const autoRuleId = decision.kind === "run" ? decision.autoRuleId : undefined;
+    if (action.kind === "email.send.first_contact" && autoRuleId) return autoFirstContact(deps, { ...base, payload, autoRuleId }, action, decision.tier);
+    const actionId = await recordAction(db, { ...base, payload, status: "pending", ...(autoRuleId ? { autoRuleId } : {}) });
     return { kind: "execute", actionId, tier: decision.tier };
   }
 
@@ -181,19 +187,47 @@ export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpe
     if (reused.kind !== "blocked") await parkTask(db, ctx.task);
     return reused;
   }
-  const refusal = action.kind === "email.send.first_contact" ? await batchOpenRefusal(deps, ctx.companyId, action) : null;
+  const refusal = action.kind === "email.send.first_contact" ? await firstContactRefusal(deps, ctx.companyId, action) : null;
   if (refusal) return blockWith(db, base, payload, BATCH_MISMATCH, refusal);
   try {
-    const card = await openCard(db, { ...decision.card, taskId: ctx.taskId, openedAt });
-    const actionId = await recordAction(db, { ...base, payload, status: "pending", decisionCardId: card.id });
+    const opened = await openCardWithAction(db, { ...decision.card, taskId: ctx.taskId, openedAt }, { ...base, payload });
+    if (opened.kind === "held") return blockWith(db, base, payload, BATCH_MISMATCH, heldRefusal(opened.email));
     await parkTask(db, ctx.task);
-    return { kind: "card", actionId, cardId: card.id, dueAt: card.dueAt };
+    return { kind: "card", actionId: opened.actionId, cardId: opened.card.id, dueAt: opened.card.dueAt };
   } catch (error) {
     if (!(error instanceof QuotaExceededError)) throw error;
     const actionId = await recordAction(db, { ...base, payload: { ...payload, quota_deferred: true }, status: "blocked" });
     await parkTask(db, ctx.task);
     return { kind: "deferred", actionId };
   }
+}
+
+/**
+ * SLS-K2: an auto rule approves a first contact only through the checks a
+ * card would get. Its own recipient must be a new lead of the company that
+ * no open batch holds (an auto-approved batch's earlier sends are already
+ * settled, so each send is checked on its own); the pending row is written
+ * under the company's outreach lock (0017). Then it runs like any `execute`.
+ */
+async function autoFirstContact(deps: WorkerDeps, row: RecordBase & { readonly payload: Record<string, unknown>; readonly autoRuleId: string }, action: ActionSpec, tier: Tier): Promise<GatedAction> {
+  const refusal = await firstContactRefusal(deps, row.companyId, action, "own");
+  if (refusal) return blockWith(deps.db, row, row.payload, BATCH_MISMATCH, refusal);
+  const recorded = await recordAutoFirstContact(deps.db, row);
+  if (recorded.kind === "held") return blockWith(deps.db, row, row.payload, BATCH_MISMATCH, heldRefusal(recorded.email));
+  return { kind: "execute", actionId: recorded.actionId, tier };
+}
+
+/**
+ * Opens the card and records the pending action it decides on. A first
+ * contact does both in one transaction under the company's outreach lock and
+ * is refused `held` when another open first contact names a recipient (0017,
+ * SLS-K2); every other kind opens the card, then records the row.
+ */
+async function openCardWithAction(db: DbClient, card: OpenCardInput, action: RecordBase & { readonly payload: Record<string, unknown> }): Promise<FirstContactOpen> {
+  if (action.kind === "email.send.first_contact") return openFirstContactCard(db, { card, action });
+  const opened = await openCard(db, card);
+  const actionId = await recordAction(db, { ...action, status: "pending", decisionCardId: opened.id });
+  return { kind: "opened", card: opened, actionId };
 }
 
 /**
@@ -237,7 +271,7 @@ export async function performPending(deps: WorkerDeps, actionId: string): Promis
   if (await getKillSwitch(deps.db, row.companyId)) return KILLED;
   if (await subscriptionEnded(deps.db, row.companyId, row.spec.kind)) return ENDED;
   try {
-    const result = await performAction(deps, row.spec, { decisionCardId: row.decisionCardId });
+    const result = await performAction(deps, row.spec, { decisionCardId: row.decisionCardId, actionId: row.id });
     return { ok: true, externalRef: result.externalRef, sandbox: result.sandbox, ...(result.meta ? { meta: result.meta } : {}) };
   } catch (cause) {
     if (cause instanceof ConnectionRequiredError) return { ok: false, error: cause.message, connectionRequired: cause.provider };
@@ -260,7 +294,9 @@ export interface CompletedAction {
 export async function completeAction(deps: WorkerDeps, input: { readonly actionId: string; readonly tier: Tier; readonly outcome: PerformOutcome }): Promise<CompletedAction> {
   if (!input.outcome.ok) {
     if (input.outcome.killed || input.outcome.ended) return { status: "pending", externalRef: null };
-    await recordActionTransition(deps.db, { actionId: input.actionId, status: "failed", note: input.outcome.error.slice(0, 500) });
+    // A failed first contact gives its lead back (0018), and the failed row says so.
+    const released = await applyFailed(deps, input.actionId);
+    await recordActionTransition(deps.db, { actionId: input.actionId, status: "failed", note: `${released}${input.outcome.error}`.slice(0, 500) });
     return { status: "failed", externalRef: null };
   }
   const status = input.tier === "K1" ? "notified" : "executed";

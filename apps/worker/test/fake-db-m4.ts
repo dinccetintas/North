@@ -59,6 +59,8 @@ export interface FakeLead {
   status: string;
   batchId: string | null;
   messageId: string | null;
+  /** 0018: the first-contact action that claimed the lead; null while `new`. */
+  contactActionId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,6 +93,7 @@ export interface FakeActionLike {
   status: string;
   decisionCardId: string | null;
   supersedes: string | null;
+  payload: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -101,6 +104,16 @@ export interface M4Helpers<A extends FakeActionLike> {
   readonly heads: (rows: readonly A[]) => A[];
   readonly toRecord: (a: A) => unknown;
   readonly ledger: () => unknown[];
+  /** The base fake's card insert (throws the quota refusal) and action insert, composed by `openFirstContactCard`. */
+  readonly openCard: (draft: Record<string, unknown>) => { readonly id: string };
+  readonly recordAction: (input: Record<string, unknown>) => string;
+}
+
+interface LeadQuery {
+  readonly status?: readonly string[];
+  readonly emails?: readonly string[];
+  readonly limit?: number;
+  readonly offset?: number;
 }
 
 const effective = (b: FakeBudget) => b.dailyLimitUsd + (b.dailyExtraUsd ?? 0);
@@ -129,6 +142,23 @@ export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<
     if (caps.capTotal) throw new BudgetCapError(`budget_cap: the ads total cap ${b.totalLimitUsd} is spent (${b.spentTotalUsd})`);
   };
   const frozenCampaign = (row: FakeCampaign) => ({ ...row });
+  /** 0017 `first_contact_addresses`: `to` and `recipients` of a payload, trimmed and lowercased. */
+  const addressesOf = (payload: Record<string, unknown>): string[] =>
+    [payload.to, ...(Array.isArray(payload.recipients) ? payload.recipients : [])].filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim().toLowerCase());
+  /** 0017 `held_outreach_addresses`: the addresses of every first-contact chain head still `pending`. */
+  const heldBy = (companyId: string): Set<string> =>
+    new Set(
+      h
+        .heads(h.actions().filter((a) => a.companyId === companyId && a.kind === "email.send.first_contact"))
+        .filter((a) => a.status === "pending")
+        .flatMap((a) => addressesOf(a.payload)),
+    );
+  /** `listLeads` as the repository runs it: oldest first, 500 by default, `offset`, exact `emails` (an empty list matches none). */
+  const leadsOf = (companyId: string, q: LeadQuery = {}) =>
+    [...state.leads.values()]
+      .filter((l) => l.companyId === companyId && (!q.status || q.status.length === 0 || q.status.includes(l.status)) && (!q.emails || q.emails.includes(l.email)))
+      .slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 500))
+      .map((l) => ({ ...l }));
 
   return {
     BudgetCapError,
@@ -244,13 +274,51 @@ export function fakeDbM4<A extends FakeActionLike>(state: M4State, h: M4Helpers<
         if ([...state.leads.values()].some((l) => l.companyId === companyId && l.email === r.email)) continue;
         const now = new Date().toISOString();
         const id = randomUUID();
-        state.leads.set(id, { id, companyId, name: r.name, email: r.email, companyName: r.company ?? "", why: r.why ?? "", source, status: "new", batchId: null, messageId: null, createdAt: now, updatedAt: now });
+        state.leads.set(id, { id, companyId, name: r.name, email: r.email, companyName: r.company ?? "", why: r.why ?? "", source, status: "new", batchId: null, messageId: null, contactActionId: null, createdAt: now, updatedAt: now });
         imported += 1;
       }
       return { imported, skipped: rows.length - imported };
     }),
     nextUnsentLeads: vi.fn(async (_db: unknown, companyId: string, limit = 5) => [...state.leads.values()].filter((l) => l.companyId === companyId && l.status === "new").slice(0, limit).map((l) => ({ ...l }))),
-    listLeads: vi.fn(async (_db: unknown, companyId: string, opts: { status?: readonly string[] } = {}) => [...state.leads.values()].filter((l) => l.companyId === companyId && (!opts.status || opts.status.includes(l.status))).map((l) => ({ ...l }))),
+    heldOutreachRecipients: vi.fn(async (_db: unknown, companyId: string): Promise<ReadonlySet<string>> => heldBy(companyId)),
+    leadsFreeForOutreach: vi.fn(async (_db: unknown, companyId: string, limit = 5) => {
+      const held = heldBy(companyId);
+      return leadsOf(companyId, { status: ["new"], limit: Number.MAX_SAFE_INTEGER }).filter((l) => !held.has(l.email.toLowerCase())).slice(0, limit);
+    }),
+    countLeadsFreeForOutreach: vi.fn(async (_db: unknown, companyId: string) => {
+      const held = heldBy(companyId);
+      return leadsOf(companyId, { status: ["new"], limit: Number.MAX_SAFE_INTEGER }).filter((l) => !held.has(l.email.toLowerCase())).length;
+    }),
+    /** 0017 `open_first_contact_card`: held → nothing written; else the card (quota trigger) and its pending row together. */
+    openFirstContactCard: vi.fn(async (_db: unknown, input: { card: Record<string, unknown>; action: Record<string, unknown> }) => {
+      const held = heldBy(String(input.card.companyId));
+      const taken = addressesOf((input.action.payload as Record<string, unknown> | undefined) ?? {}).sort().find((a) => held.has(a));
+      if (taken) return { kind: "held" as const, email: taken };
+      const card = h.openCard(input.card);
+      const actionId = h.recordAction({ ...input.action, status: "pending", decisionCardId: card.id });
+      return { kind: "opened" as const, card, actionId };
+    }),
+    listLeads: vi.fn(async (_db: unknown, companyId: string, opts: LeadQuery = {}) => leadsOf(companyId, opts)),
+    /** 0018: one conditional write; only one action wins, the same one may claim again until its message is recorded. */
+    claimLeadForContact: vi.fn(async (_db: unknown, companyId: string, id: string, actionId: string) => {
+      const lead = state.leads.get(id);
+      const free = lead && lead.companyId === companyId && (lead.status === "new" || (lead.status === "contacted" && lead.contactActionId === actionId && lead.messageId === null));
+      if (!lead || !free) return null;
+      Object.assign(lead, { status: "contacted", contactActionId: actionId });
+      return { ...lead };
+    }),
+    releaseLeadContact: vi.fn(async (_db: unknown, companyId: string, id: string, actionId: string) => {
+      const lead = state.leads.get(id);
+      if (!lead || lead.companyId !== companyId || lead.status !== "contacted" || lead.contactActionId !== actionId || lead.messageId !== null) return false;
+      Object.assign(lead, { status: "new", contactActionId: null });
+      return true;
+    }),
+    /** 0017 `record_auto_first_contact`: the send's own recipient held → nothing written; else its pending row with the auto rule. */
+    recordAutoFirstContact: vi.fn(async (_db: unknown, input: Record<string, unknown>) => {
+      const to = addressesOf({ to: (input.payload as Record<string, unknown> | undefined)?.to })[0] ?? "";
+      if (heldBy(String(input.companyId)).has(to)) return { kind: "held" as const, email: to };
+      return { kind: "recorded" as const, actionId: h.recordAction({ ...input, status: "pending" }) };
+    }),
     getLead: vi.fn(async (_db: unknown, companyId: string, id: string) => {
       const lead = state.leads.get(id);
       return lead && lead.companyId === companyId ? { ...lead } : null;

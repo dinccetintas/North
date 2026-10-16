@@ -61,7 +61,7 @@ export interface AgentRunInput {
    *   (`parsePreviousPlanVar`); absent for a company's first plan.
    * - `ledger.report`: JSON `ChannelReportRow[]` (core `channelReport`) for the
    *   ledger entries since that plan (`parseLedgerReportVar`).
-   * - `leads.count`: the company's lead count as a string (`parseLeadsCountVar`).
+   * - `leads.count`: the company's free leads (not held by an open first-contact batch) as a string (`parseLeadsCountVar`).
    * - `site.url`: the live site, else the latest preview, else empty
    *   (`parseSiteUrlVar`).
    */

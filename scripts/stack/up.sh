@@ -83,6 +83,10 @@ wait_http() { # url, label
   die "$2 did not answer at $1 (see $STACK/logs)"
 }
 : >"$STACK/pids"
+# A Turbopack dev cache that survives a hard container restart serves stale
+# client chunks, and every page then reloads itself ("HMR hash mismatch").
+# The stack only comes up after a restart, so the cache goes with it.
+rm -rf "$REPO/apps/web/.next/dev"
 
 start_bg storage "$STACK/logs/storage.log" env -C "$TOOLS/storage-src" NODE_ENV=production SERVER_HOST=127.0.0.1 SERVER_PORT=$STORAGE_PORT SERVER_REGION=local \
   AUTH_JWT_SECRET="$JWT_SECRET" AUTH_JWT_ALGORITHM=HS256 ANON_KEY="$ANON_KEY" SERVICE_KEY="$SERVICE_KEY" \

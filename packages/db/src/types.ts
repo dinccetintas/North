@@ -1095,6 +1095,7 @@ export type Database = {
           batch_id: string | null;
           company_id: string;
           company_name: string;
+          contact_action_id: string | null;
           created_at: string;
           email: string;
           id: string;
@@ -1110,6 +1111,7 @@ export type Database = {
           batch_id?: string | null;
           company_id: string;
           company_name?: string;
+          contact_action_id?: string | null;
           created_at?: string;
           email: string;
           id?: string;
@@ -1124,6 +1126,7 @@ export type Database = {
           batch_id?: string | null;
           company_id?: string;
           company_name?: string;
+          contact_action_id?: string | null;
           created_at?: string;
           email?: string;
           id?: string;
@@ -1868,13 +1871,26 @@ export type Database = {
         Args: { p_ref: string; p_user_id: string };
         Returns: string;
       };
+      first_contact_addresses: { Args: { p_payload: Json }; Returns: string[] };
       grant_trial_entitlement: {
         Args: { p_user_id: string };
         Returns: undefined;
       };
+      held_outreach_addresses: {
+        Args: { p_company: string };
+        Returns: string[];
+      };
       is_company_owner: {
         Args: { target_company_id: string };
         Returns: boolean;
+      };
+      lock_outreach_held: {
+        Args: { p_addresses: string[]; p_company: string };
+        Returns: string;
+      };
+      open_first_contact_card: {
+        Args: { p_action: Json; p_card: Json };
+        Returns: Json;
       };
       owner_local_date: { Args: { p_company_id: string }; Returns: string };
       public_page_view: { Args: { p_slug: string }; Returns: Json };
@@ -1897,6 +1913,7 @@ export type Database = {
         Returns: Json;
       };
       record_attribution: { Args: { payload: Json }; Returns: Json };
+      record_auto_first_contact: { Args: { p_action: Json }; Returns: Json };
       search_memory: {
         Args: { p_company_id: string; p_limit?: number; p_query: string };
         Returns: {

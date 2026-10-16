@@ -131,38 +131,42 @@ export function toCardRecord(row: unknown): CardRecord {
   });
 }
 
-const isQuotaError = (error: { code?: string; message?: string } | null): boolean =>
+/** Whether a database error is the daily quota trigger's refusal (DEC-3). */
+export const isQuotaError = (error: { code?: string; message?: string } | null): boolean =>
   Boolean(error && (error.code === "23514" || error.code === "P0001") && /decision quota/i.test(error.message ?? ""));
+
+/** The `decision_cards` columns of a validated card (the insert here and `open_first_contact_card`'s `p_card`). */
+export function cardInsertRow(input: OpenCardInput) {
+  const d = OpenCardInputSchema.parse(input);
+  return {
+    company_id: d.companyId,
+    task_id: d.taskId,
+    action_id: d.actionId ?? null,
+    action_kind: d.actionKind,
+    tier: d.tier,
+    question: d.question,
+    options: toJson(d.options),
+    recommended_option_id: d.recommendedOptionId,
+    default_option_id: d.defaultOptionId,
+    rationale: d.rationale,
+    expected_impact: d.expectedImpact,
+    cost_usd: d.costUsd,
+    due_at: d.dueAt,
+    merge_key: d.mergeKey,
+    ...(d.openedAt === undefined ? {} : { opened_at: d.openedAt }),
+  };
+}
 
 /**
  * Opens a decision card (DEC-1/2). The trigger assigns `seq` and refuses the
  * card when the owner's daily quota is spent, surfaced as `QuotaExceededError`
- * so the caller can defer the action instead of dropping it (DEC-3).
+ * so the caller can defer the action instead of dropping it (DEC-3). A first
+ * contact's card opens through `openFirstContactCard` instead (0017).
  */
 export async function openCard(db: DbClient, input: OpenCardInput): Promise<CardRecord> {
-  const d = OpenCardInputSchema.parse(input);
-  const { data, error } = await db
-    .from("decision_cards")
-    .insert({
-      company_id: d.companyId,
-      task_id: d.taskId,
-      action_id: d.actionId ?? null,
-      action_kind: d.actionKind,
-      tier: d.tier,
-      question: d.question,
-      options: toJson(d.options),
-      recommended_option_id: d.recommendedOptionId,
-      default_option_id: d.defaultOptionId,
-      rationale: d.rationale,
-      expected_impact: d.expectedImpact,
-      cost_usd: d.costUsd,
-      due_at: d.dueAt,
-      merge_key: d.mergeKey,
-      ...(d.openedAt === undefined ? {} : { opened_at: d.openedAt }),
-    })
-    .select(CARD_COLUMNS)
-    .single();
-  if (isQuotaError(error)) throw new QuotaExceededError(`Daily decision quota reached for company ${d.companyId}`, error);
+  const row = cardInsertRow(input);
+  const { data, error } = await db.from("decision_cards").insert(row).select(CARD_COLUMNS).single();
+  if (isQuotaError(error)) throw new QuotaExceededError(`Daily decision quota reached for company ${row.company_id}`, error);
   if (error || !data) throw dbError("Could not open decision card", error);
   return toCardRecord(data);
 }

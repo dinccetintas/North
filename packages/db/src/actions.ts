@@ -90,30 +90,31 @@ const toRecord = (row: unknown): ActionRecord => {
   });
 };
 
+/** The `actions` columns of a validated action (the insert here and `open_first_contact_card`'s `p_action`). */
+export function actionInsertRow(input: RecordActionInput) {
+  const a = RecordActionInputSchema.parse(input);
+  return {
+    company_id: a.companyId,
+    task_id: a.taskId,
+    agent_role: a.agentRole,
+    kind: a.kind,
+    tier: a.tier,
+    description: a.description,
+    payload: toJson(a.payload),
+    status: a.status,
+    external_ref: a.externalRef ?? null,
+    decision_card_id: a.decisionCardId ?? null,
+    auto_rule_id: a.autoRuleId ?? null,
+    sandbox: a.sandbox,
+  };
+}
+
 /**
  * Appends one action to the audit log (append-only). The database rejects K2
  * without a card or auto rule and K3 without a card (DEC-1), surfaced as `DbError`.
  */
 export async function recordAction(db: DbClient, input: RecordActionInput): Promise<string> {
-  const a = RecordActionInputSchema.parse(input);
-  const { data, error } = await db
-    .from("actions")
-    .insert({
-      company_id: a.companyId,
-      task_id: a.taskId,
-      agent_role: a.agentRole,
-      kind: a.kind,
-      tier: a.tier,
-      description: a.description,
-      payload: toJson(a.payload),
-      status: a.status,
-      external_ref: a.externalRef ?? null,
-      decision_card_id: a.decisionCardId ?? null,
-      auto_rule_id: a.autoRuleId ?? null,
-      sandbox: a.sandbox,
-    })
-    .select("id")
-    .single();
+  const { data, error } = await db.from("actions").insert(actionInsertRow(input)).select("id").single();
   if (error || !data) throw dbError("Could not record action", error);
   return data.id;
 }

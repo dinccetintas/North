@@ -1,6 +1,6 @@
 import type { TaskType } from "@north/core";
 import { LEADS_VAR, type LeadVar } from "@north/agents";
-import { currentThesis, listBudgets, listGoals, memoryDigest, nextUnsentLeads, siteUrls, type DbClient } from "@north/db";
+import { currentThesis, leadsFreeForOutreach, listBudgets, listGoals, memoryDigest, siteUrls, type DbClient } from "@north/db";
 
 export interface CompanyContext {
   /** Labeled lines every prompt and fixture can parse: Company, Thesis, Target customer, Why now. */
@@ -14,9 +14,14 @@ export interface CompanyContext {
 /** How many unsent leads one outreach batch receives (SLS-K2: five while the message is unproven). */
 export const OUTREACH_BATCH_SIZE = 5;
 
-/** `vars.leads` for an outreach batch: the next unsent leads as the JSON `LeadVar[]` the fixtures and the guide read. */
+/**
+ * `vars.leads` for an outreach batch: the next unsent leads no open batch
+ * holds (SLS-K2: a lead is in at most one open batch), as the JSON
+ * `LeadVar[]` the fixtures and the guide read. `[]` when every new lead is
+ * held, the same hand-over as for a company with no new lead.
+ */
 async function leadsVar(db: DbClient, companyId: string): Promise<string> {
-  const leads = await nextUnsentLeads(db, companyId, OUTREACH_BATCH_SIZE);
+  const leads = await leadsFreeForOutreach(db, companyId, OUTREACH_BATCH_SIZE);
   const rows: LeadVar[] = leads.map((l) => ({ id: l.id, name: l.name, email: l.email, company: l.companyName, why: l.why }));
   return JSON.stringify(rows);
 }

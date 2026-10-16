@@ -137,6 +137,61 @@ describe("planWeek (PLN-1, PLN-2)", () => {
   });
 });
 
+describe("SLS-K2 / PLN-2: plan_week schedules outreach only when a lead is free", () => {
+  /** A pending first contact of an open batch card: it holds every address on its recipient list. */
+  const hold = (recipients: readonly string[]) => {
+    const id = `held-${state.actions.length}`;
+    state.actions.push({ id, companyId: "company-1", taskId: null, agentRole: "sales", kind: "email.send.first_contact", tier: "K2", description: "Hi", status: "pending", externalRef: null, decisionCardId: "card-held", autoRuleId: null, sandbox: true, payload: { batchId: "batch-held", recipients: [...recipients], to: recipients[0] }, supersedes: null, createdAt: new Date().toISOString() });
+    return id;
+  };
+  const outreachTypes = (planId: string) => planTasks(planId).filter((t) => t.taskType === "outreach_batch");
+
+  it("leads.count is the free leads: 0 while an open batch holds every new lead, so the first plan has no outreach_batch", async () => {
+    await dbModule.importLeads(null, "company-1", [{ name: "A", email: "a@example.test" }, { name: "B", email: "b@example.test" }], "upload");
+    const held = hold(["a@example.test", "b@example.test"]);
+    expect((await planContext(deps(), "company-1")).vars["leads.count"]).toBe("0");
+    const first = await planWeek(deps(), "company-1");
+    if (first.kind !== "created") throw new Error(first.kind);
+    expect(outreachTypes(first.planId)).toEqual([]);
+    state.actions.push({ ...state.actions.find((a) => a.id === held)!, id: "held-declined", status: "declined", supersedes: held, payload: {} });
+    expect((await planContext(deps(), "company-1")).vars["leads.count"]).toBe("2");
+  });
+
+  it("the Monday rewrite drops a carried-over outreach_batch with the platform's reason when no lead is free (PLN-2 still holds)", async () => {
+    await dbModule.importLeads(null, "company-1", [{ name: "A", email: "a@example.test" }], "upload");
+    const first = await planWeek(deps(), "company-1");
+    if (first.kind !== "created") throw new Error(first.kind);
+    expect(outreachTypes(first.planId)).toHaveLength(1);
+    for (const lead of state.leads.values()) Object.assign(lead, { status: "contacted" });
+    clock.set(WEEK2_PLAN_HOUR);
+    const second = await planWeek(deps(), "company-1");
+    if (second.kind !== "created") throw new Error(second.kind);
+    expect(outreachTypes(second.planId)).toEqual([]);
+    const revisions = state.plans[1]!.revisions as PlanRevision[];
+    expect(revisions.filter((r) => r.taskType === "outreach_batch")).toEqual([{ taskType: "outreach_batch", change: "dropped", reason: expect.stringContaining("no free lead") }]);
+    expect(missingRevisionReasons({ tasks: planTasks(second.planId), revisions }, planTasks(first.planId))).toEqual([]);
+  });
+
+  it("a planner that adds outreach_batch anyway (any runtime) has it removed before the plan is stored", async () => {
+    const eager: AgentRuntime = {
+      name: "mock",
+      run: async () => {
+        const output: PlanOutput = {
+          summary: "PRD and a batch.",
+          rationale: "r",
+          tasks: [{ taskType: "prd", title: "PRD v1", input: "", metricKey: "artifacts", expectedDelta: 1, costEstimateUsd: 0 }, { taskType: "outreach_batch", title: "Batch", input: "", metricKey: "email_replies", expectedDelta: 2, costEstimateUsd: 0.5 }],
+          revisions: [{ taskType: "outreach_batch", change: "added", reason: "leads are waiting" }],
+        };
+        return { status: "succeeded" as const, output, actions: [], sessionId: "mock-plan", usage: { model: "mock", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 } };
+      },
+    };
+    const result = await planWeek(deps(eager), "company-1");
+    if (result.kind !== "created") throw new Error(result.kind);
+    expect(planTasks(result.planId).map((t) => t.taskType)).toEqual(["prd"]);
+    expect(state.plans[0]!.revisions).toEqual([]);
+  });
+});
+
 describe("planTick (plan-week-cron)", () => {
   it("fires only at the owner's Monday 06:00 and only when the latest plan is older than the week; a stopped company is skipped", async () => {
     clock.set(WEEK2_PLAN_HOUR);

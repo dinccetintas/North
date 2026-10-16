@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { PlanOutputSchema, missingRevisionReasons, outputJsonSchema, weekStartLocal, type DispatchBlockReason, type PlanOutput } from "@north/core";
+import { PlanOutputSchema, dropTaskType, missingRevisionReasons, outputJsonSchema, weekStartLocal, type DispatchBlockReason, type PlanOutput } from "@north/core";
 import { LEADS_COUNT_VAR, LEDGER_REPORT_VAR, PLAN_PREVIOUS_VAR, SITE_URL_VAR, sandboxMinutesOf, type AgentRunResult, type PreviousPlanVar } from "@north/agents";
-import { companyOwnerId, countLeads, createPlanWithTasks, createTask, getProfile, latestPlan, listGoals, listMemoryItems, listSignals, markTaskDone, markTaskFailed, markTaskRunning, recordAgentRun, siteUrls, type PlanRecord, type TaskRecord } from "@north/db";
+import { companyOwnerId, countLeadsFreeForOutreach, createPlanWithTasks, createTask, getProfile, latestPlan, listGoals, listMemoryItems, listSignals, markTaskDone, markTaskFailed, markTaskRunning, recordAgentRun, siteUrls, type PlanRecord, type TaskRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { companyContext, type CompanyContext } from "./company-context";
 import { chargeRun, releaseRun, reserveRun, type RunReservation } from "./credits";
@@ -26,7 +26,14 @@ export interface PlanContext extends CompanyContext {
   readonly weekStart: string;
   /** Escalations and open signals, as text lines for the planning task's input. */
   readonly notes: readonly string[];
+  /** New leads no open batch holds (SLS-K2): `vars["leads.count"]`; at 0 no outreach run is scheduled. */
+  readonly freeLeads: number;
 }
+
+const NO_FREE_LEAD = "no free lead: every new lead is already contacted or held by an open batch (0 free leads), so an outreach run could contact no one this week";
+
+/** SLS-K2: whatever the planner wrote, no `outreach_batch` is scheduled while no lead is free; the plan still explains the drop (PLN-2). */
+const withoutIdleOutreach = (plan: PlanOutput, context: PlanContext): PlanOutput => (context.freeLeads > 0 ? plan : dropTaskType(plan, "outreach_batch", NO_FREE_LEAD, context.previousTasks));
 
 const previousVar = (plan: PlanRecord): string => {
   const value: PreviousPlanVar = { weekStart: plan.weekStart, tasks: plan.tasks.slice(0, 50).map((t) => ({ taskType: t.taskType, title: t.title.slice(0, 200), status: t.status })) };
@@ -36,14 +43,15 @@ const previousVar = (plan: PlanRecord): string => {
 /**
  * PLN-2: what the Chief of Staff plans from: the company context, the previous
  * plan and its task statuses (`vars["plan.previous"]`), the channel report of
- * the ledger entries since that plan (`vars["ledger.report"]`), the lead count
- * and the site URL, plus escalations and open signals as notes.
+ * the ledger entries since that plan (`vars["ledger.report"]`), the free lead
+ * count (new leads no open batch holds) and the site URL, plus escalations and
+ * open signals as notes.
  */
 export async function planContext(deps: WorkerDeps, companyId: string): Promise<PlanContext> {
   const { db } = deps;
   const now = deps.clock();
   const base = await companyContext(db, companyId);
-  const [previous, ownerId, leads, site, memory, signals] = await Promise.all([latestPlan(db, companyId), companyOwnerId(db, companyId), countLeads(db, companyId), siteUrls(db, companyId), listMemoryItems(db, companyId, 100), listSignals(db, companyId, { status: [...OPEN_SIGNAL_STATUSES], sinceDays: 14, limit: 20 })]);
+  const [previous, ownerId, leads, site, memory, signals] = await Promise.all([latestPlan(db, companyId), companyOwnerId(db, companyId), countLeadsFreeForOutreach(db, companyId), siteUrls(db, companyId), listMemoryItems(db, companyId, 100), listSignals(db, companyId, { status: [...OPEN_SIGNAL_STATUSES], sinceDays: 14, limit: 20 })]);
   const timezone = (await getProfile(db, ownerId))?.timezone ?? "UTC";
   const report = await ledgerReport(db, companyId, previous?.createdAt ?? null);
   const escalations = memory.filter((m) => m.kind === "learning" && m.title.startsWith(ESCALATION_PREFIX) && (!previous || m.createdAt >= previous.createdAt)).slice(0, MAX_CONTEXT_LINES);
@@ -55,7 +63,7 @@ export async function planContext(deps: WorkerDeps, companyId: string): Promise<
     [LEADS_COUNT_VAR]: String(leads),
     [SITE_URL_VAR]: site.live ?? site.preview ?? "",
   };
-  return Object.freeze({ ...base, vars: Object.freeze(vars), previous, previousTasks: previous?.tasks.map((t) => ({ taskType: t.taskType })) ?? [], timezone, weekStart: weekStartLocal(timezone, now), notes });
+  return Object.freeze({ ...base, vars: Object.freeze(vars), previous, previousTasks: previous?.tasks.map((t) => ({ taskType: t.taskType })) ?? [], timezone, weekStart: weekStartLocal(timezone, now), notes, freeLeads: leads });
 }
 
 /** A planning run's id and its credit, reserved before it starts (M6 review L9). */
@@ -181,7 +189,8 @@ export async function planWeek(deps: WorkerDeps, companyId: string): Promise<Pla
     await markTaskFailed(db, planningTask.id, run.error);
     throw new Error(`plan_week failed: ${run.error}`);
   }
-  const created = await createPlanWithTasks(db, { companyId, goalId: goal?.id ?? null, weekStart: context.weekStart, summary: run.plan.summary, rationale: run.plan.rationale, tasks: run.plan.tasks, revisions: run.plan.revisions });
-  await markTaskDone(db, planningTask.id, { evidence: { kind: "artifact_id", ref: `plan:${created.planId}`, verified: true, sandbox: deps.runtime.name === "mock" }, costUsd: run.costUsd, outputSummary: run.plan.summary });
+  const plan = withoutIdleOutreach(run.plan, context);
+  const created = await createPlanWithTasks(db, { companyId, goalId: goal?.id ?? null, weekStart: context.weekStart, summary: plan.summary, rationale: plan.rationale, tasks: plan.tasks, revisions: plan.revisions });
+  await markTaskDone(db, planningTask.id, { evidence: { kind: "artifact_id", ref: `plan:${created.planId}`, verified: true, sandbox: deps.runtime.name === "mock" }, costUsd: run.costUsd, outputSummary: plan.summary });
   return { kind: "created", planId: created.planId, taskIds: created.taskIds };
 }

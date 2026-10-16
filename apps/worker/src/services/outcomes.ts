@@ -1,5 +1,5 @@
 import { ActionSpecSchema, signalPayload, type ActionKind, type ActionSpec } from "@north/core";
-import { markLeads, updateSignal, type DbClient } from "@north/db";
+import { markLeads, releaseLeadContact, updateSignal, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { resolveCampaigns } from "./campaign-lookup";
 import { markCampaignActive, markCampaignPaused, registerCampaignFor, type PauseReason } from "./campaign-rows";
@@ -79,6 +79,21 @@ export async function applyOutcome(deps: WorkerDeps, row: PendingRow, outcome: E
     default:
       return;
   }
+}
+
+/**
+ * What a failed action leaves behind: a first contact that claimed its lead
+ * (0018) and then failed at the provider gives the claim back, conditionally
+ * (its own claim, no message recorded), so the lead is `new` again and a later
+ * batch may contact it. Returns the note for the failed row ("" when nothing
+ * was released). Idempotent.
+ */
+export async function applyFailed(deps: WorkerDeps, actionId: string): Promise<string> {
+  const row = await loadActionRow(deps.db, actionId);
+  if (row?.kind !== "email.send.first_contact" || !row.spec) return "";
+  const leadId = row.spec.payload?.leadId;
+  if (typeof leadId !== "string" || !UUID.test(leadId)) return "";
+  return (await releaseLeadContact(deps.db, row.companyId, leadId, row.id)) ? `lead ${leadId} released to new; ` : "";
 }
 
 /** What a declined action leaves behind: a `signal.pursue` card declined marks its signal `declined` (the default answer, ADR 0012). Idempotent. */

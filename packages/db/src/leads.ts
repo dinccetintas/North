@@ -21,6 +21,8 @@ export interface LeadRecord {
   readonly status: LeadStatus;
   readonly batchId: string | null;
   readonly messageId: string | null;
+  /** The first-contact action that claimed the lead for its send (0018); null while the lead is `new`. */
+  readonly contactActionId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -41,10 +43,23 @@ export interface ListLeadsOptions {
   readonly limit?: number;
   /** Rows to skip in the (created_at, email) order: how a reader pages past PostgREST's 1000 rows. */
   readonly offset?: number;
+  /** Only the leads with exactly these emails (a batch's recipients, at most `MAX_EMAIL_FILTER`); an empty list matches none. */
+  readonly emails?: readonly string[];
 }
 
-const LEAD_COLUMNS = "id, company_id, name, email, company_name, why, source, status, batch_id, message_id, created_at, updated_at";
+/** The most emails one `emails` filter carries (two batches' worth; the request URL stays short). */
+export const MAX_EMAIL_FILTER = 100;
+
+const LEAD_COLUMNS = "id, company_id, name, email, company_name, why, source, status, batch_id, message_id, contact_action_id, created_at, updated_at";
 const LeadRowsSchema = z.array(LeadInputSchema).max(MAX_LEADS_PER_IMPORT);
+const EmailFilterSchema = z.array(z.string().min(1).max(254)).max(MAX_EMAIL_FILTER).optional();
+
+/** The status and email filters of a leads query, validated; `none` when an empty email list can match nothing. */
+function leadFilters(opts: Pick<ListLeadsOptions, "status" | "emails">): { readonly status: readonly LeadStatus[] | null; readonly emails: readonly string[] | null; readonly none: boolean } {
+  const status = opts.status && opts.status.length > 0 ? z.array(z.enum(LEAD_STATUSES)).parse(opts.status) : null;
+  const emails = EmailFilterSchema.parse(opts.emails) ?? null;
+  return { status, emails, none: emails !== null && emails.length === 0 };
+}
 
 const LeadRowSchema = z.object({
   id: z.string(),
@@ -57,6 +72,7 @@ const LeadRowSchema = z.object({
   status: z.enum(LEAD_STATUSES),
   batch_id: z.string().nullable(),
   message_id: z.string().nullable(),
+  contact_action_id: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -74,6 +90,7 @@ const toRecord = (row: unknown): LeadRecord => {
     status: r.status,
     batchId: r.batch_id,
     messageId: r.message_id,
+    contactActionId: r.contact_action_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   });
@@ -109,13 +126,16 @@ export async function nextUnsentLeads(db: DbClient, companyId: string, limit = 5
   return listLeads(db, companyId, { status: ["new"], limit });
 }
 
-/** Leads of the company, oldest first (email breaks ties, so the order is total), optionally filtered by status; `offset` pages. */
+/** Leads of the company, oldest first (email breaks ties, so the order is total), optionally filtered by status and exact emails; `offset` pages. */
 export async function listLeads(db: DbClient, companyId: string, opts: ListLeadsOptions = {}): Promise<readonly LeadRecord[]> {
   const id = UuidSchema.parse(companyId);
   const limit = z.number().int().positive().max(1000).default(500).parse(opts.limit);
   const offset = z.number().int().nonnegative().default(0).parse(opts.offset);
+  const filters = leadFilters(opts);
+  if (filters.none) return Object.freeze([]);
   const base = db.from("leads").select(LEAD_COLUMNS).eq("company_id", id);
-  const filtered = opts.status && opts.status.length > 0 ? base.in("status", z.array(z.enum(LEAD_STATUSES)).parse(opts.status)) : base;
+  const byStatus = filters.status ? base.in("status", [...filters.status]) : base;
+  const filtered = filters.emails ? byStatus.in("email", [...filters.emails]) : byStatus;
   const { data, error } = await filtered.order("created_at", { ascending: true }).order("email", { ascending: true }).range(offset, offset + limit - 1);
   if (error) throw dbError("Could not list leads", error);
   return Object.freeze((data ?? []).map(toRecord));
@@ -150,11 +170,61 @@ export async function markLeads(db: DbClient, companyId: string, leadIds: readon
   return data?.length ?? 0;
 }
 
-/** How many leads the company has, optionally in the given statuses (the Team page's "Leads" count). */
-export async function countLeads(db: DbClient, companyId: string, opts: Pick<ListLeadsOptions, "status"> = {}): Promise<number> {
+/**
+ * Worker only (SLS-K2, 0018): claims a lead for one first-contact action right
+ * before the provider call, in one conditional update only one action can
+ * win: a `new` lead becomes `contacted` with the action in `contact_action_id`.
+ * The same action may claim again (a retried perform step) until its message
+ * id is recorded. Returns the claimed lead, or null when the lead is no longer
+ * new for this action (another action won, it was sent, or it is not this
+ * company's): nothing may be sent then.
+ */
+export async function claimLeadForContact(db: DbClient, companyId: string, leadId: string, actionId: string): Promise<LeadRecord | null> {
+  const company = UuidSchema.parse(companyId);
+  const id = UuidSchema.parse(leadId);
+  const action = UuidSchema.parse(actionId);
+  const { data, error } = await db
+    .from("leads")
+    .update({ status: "contacted", contact_action_id: action })
+    .eq("company_id", company)
+    .eq("id", id)
+    .or(`status.eq.new,and(status.eq.contacted,contact_action_id.eq.${action},message_id.is.null)`)
+    .select(LEAD_COLUMNS)
+    .maybeSingle();
+  if (error) throw dbError("Could not claim lead", error);
+  return data ? toRecord(data) : null;
+}
+
+/**
+ * Worker only: a failed first contact gives its claim back, conditionally (the
+ * claiming action, no message recorded): the lead is `new` again, as a failed
+ * send always left it. True when this call released it.
+ */
+export async function releaseLeadContact(db: DbClient, companyId: string, leadId: string, actionId: string): Promise<boolean> {
+  const company = UuidSchema.parse(companyId);
+  const id = UuidSchema.parse(leadId);
+  const action = UuidSchema.parse(actionId);
+  const { data, error } = await db
+    .from("leads")
+    .update({ status: "new", contact_action_id: null })
+    .eq("company_id", company)
+    .eq("id", id)
+    .eq("status", "contacted")
+    .eq("contact_action_id", action)
+    .is("message_id", null)
+    .select("id");
+  if (error) throw dbError("Could not release lead", error);
+  return (data?.length ?? 0) > 0;
+}
+
+/** How many leads the company has, optionally in the given statuses and among exact emails (the Team page's "Leads" count). */
+export async function countLeads(db: DbClient, companyId: string, opts: Pick<ListLeadsOptions, "status" | "emails"> = {}): Promise<number> {
   const id = UuidSchema.parse(companyId);
+  const filters = leadFilters(opts);
+  if (filters.none) return 0;
   const base = db.from("leads").select("id", { count: "exact", head: true }).eq("company_id", id);
-  const filtered = opts.status && opts.status.length > 0 ? base.in("status", z.array(z.enum(LEAD_STATUSES)).parse(opts.status)) : base;
+  const byStatus = filters.status ? base.in("status", [...filters.status]) : base;
+  const filtered = filters.emails ? byStatus.in("email", [...filters.emails]) : byStatus;
   const { count, error } = await filtered;
   if (error) throw dbError("Could not count leads", error);
   return count ?? 0;

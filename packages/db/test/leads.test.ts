@@ -86,6 +86,16 @@ describe("leads repository (SLS-K2 input)", () => {
     expect(await markLeads(service, owned.companyId, [], "replied")).toBe(0);
   });
 
+  it("listLeads and countLeads filter by exact email (a batch's recipients, ≤ 100), within the company and the statuses", async () => {
+    const wanted = ["cy@example.test", "dee@example.test", "nobody@example.test", "Cy@example.test"];
+    expect((await listLeads(service, owned.companyId, { emails: wanted, limit: wanted.length })).map((l) => l.email)).toEqual(["cy@example.test", "dee@example.test"]);
+    expect((await listLeads(service, owned.companyId, { emails: wanted, status: ["contacted"] })).map((l) => l.email)).toEqual([]);
+    expect(await countLeads(service, owned.companyId, { emails: wanted, status: ["new"] })).toBe(2);
+    expect(await listLeads(service, owned.companyId, { emails: [] })).toEqual([]);
+    expect(await countLeads(service, owned.companyId, { emails: [] })).toBe(0);
+    await expect(listLeads(service, owned.companyId, { emails: Array.from({ length: 101 }, (_, i) => `x${i}@example.test`) })).rejects.toThrow();
+  });
+
   it("M4 review H3/M3: markLeads and getLead are company-scoped; a foreign company id changes and finds nothing", async () => {
     const foreign = await createCompanyFor(owned.owner, "leads-foreign");
     const [lead] = await listLeads(service, owned.companyId, { status: ["new"] });
