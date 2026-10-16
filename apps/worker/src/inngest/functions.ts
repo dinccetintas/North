@@ -1,6 +1,6 @@
 import { cron } from "inngest";
 import { CompanyEventSchema, ConnectionOauthCodeSchema, ConnectionRevokedSchema, DecisionAnsweredSchema, DecisionOpenedSchema, EVENT, TaskDispatchSchema } from "@north/core";
-import { dropOrphanSecrets, getKillSwitch, getTask, markTaskFailed } from "@north/db";
+import { dropOrphanSecrets, getTask, markTaskFailed } from "@north/db";
 import { inngest } from "./client";
 import { buildDeps } from "../deps";
 import { createOnboardingTasks, seedAgents } from "../services/onboard";
@@ -8,7 +8,8 @@ import { executeTask } from "../services/execute-task";
 import { completeAction, gateAction, performPending } from "../services/actions";
 import { planWeek } from "../services/plan-week";
 import { notifyByEmail, notifyByPush } from "../services/notify";
-import { deferredTaskIds, pauseEverything, queuedTaskIds, unsettledAnsweredCards } from "../services/kill-switch";
+import { deferredTaskIds, pauseEverything, queuedTaskIds, resumeAllowed, unsettledAnsweredCards } from "../services/kill-switch";
+import { retryDeferredIncidents } from "../services/incidents";
 import { killSwitchResumeCard } from "../services/campaigns";
 import { applyOverdueDefaults, finishTaskIfIdle, followUp, settleDecision } from "../services/settle";
 import { runBuildPipeline, type PipelineOutcome } from "../services/build-pipeline";
@@ -183,14 +184,12 @@ export const onboardCompany = inngest.createFunction(
   },
 );
 
-/** plan/requested → Chief of Staff writes the weekly plan and fans tasks out. */
+/** plan/requested → Chief of Staff writes the weekly plan and fans tasks out; `planWeek` asks dispatch first (kill switch, entitlement, credits). */
 export const planWeekFn = inngest.createFunction(
   { id: "plan-week", triggers: [{ event: EVENT.planRequested }], cancelOn: cancelOnKillSwitch, retries: 1 },
   async ({ event, step }) => {
     const { companyId } = CompanyEventSchema.parse(event.data);
     const deps = await buildDeps();
-    const killed = await step.run("check-kill-switch", () => getKillSwitch(deps.db, companyId));
-    if (killed) return { skipped: "kill_switch", companyId };
     const plan = await step.run("plan", () => planWeek(deps, companyId));
     // PLN-2: a plan rejected twice fails its planning task; the brief shows it, no event is sent.
     if (plan.kind !== "created") return plan;
@@ -214,12 +213,14 @@ export const killSwitch = inngest.createFunction(
   },
 );
 
-/** company/resume → queued tasks are dispatched again, answered-but-unsettled cards are settled, and paused campaigns wait for one K2 resume card. */
+/** company/resume → queued tasks are dispatched again, answered-but-unsettled cards are settled, and paused campaigns wait for one K2 resume card. Refused (`skipped`, nothing sent) while the subscription has ended or the company is archived (ADR 0014). */
 export const resumeCompany = inngest.createFunction(
   { id: "resume-company", triggers: [{ event: EVENT.companyResume }], retries: 1 },
   async ({ event, step }) => {
     const { companyId } = CompanyEventSchema.parse(event.data);
     const deps = await buildDeps();
+    const allowed = await step.run("resume-allowed", () => resumeAllowed(deps, companyId));
+    if (!allowed.ok) return { companyId, skipped: allowed.reason };
     const taskIds = await step.run("queued", () => queuedTaskIds(deps, companyId));
     if (taskIds.length > 0) {
       await step.sendEvent("redispatch", taskIds.map((taskId) => ({ name: EVENT.taskDispatch, data: { companyId, taskId } })));
@@ -236,7 +237,7 @@ export const resumeCompany = inngest.createFunction(
   },
 );
 
-/** Hourly: tasks whose decisions were deferred by the quota get another chance (next day's quota). */
+/** Hourly: tasks whose decisions were deferred by the quota get another chance (next day's quota); `error` signals deferred on an earlier local day are detected again (D6-6). */
 export const retryDeferred = inngest.createFunction(
   { id: "retry-deferred", triggers: [cron("5 * * * *")], retries: 0 },
   async ({ step }) => {
@@ -245,7 +246,9 @@ export const retryDeferred = inngest.createFunction(
     if (deferred.length > 0) {
       await step.sendEvent("redispatch", deferred.map((d) => ({ name: EVENT.taskDispatch, data: { companyId: d.companyId, taskId: d.taskId } })));
     }
-    return { redispatched: deferred.length };
+    const incidents = await step.run("deferred-incidents", () => retryDeferredIncidents(deps));
+    if (incidents.length > 0) await step.sendEvent("redetect", incidents.map((i) => ({ name: EVENT.signalDetected, data: { companyId: i.companyId, signalId: i.signalId, kind: "error" as const } })));
+    return { redispatched: deferred.length, redetected: incidents.length };
   },
 );
 

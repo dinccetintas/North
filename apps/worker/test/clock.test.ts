@@ -73,6 +73,21 @@ describe("POST /sandbox/clock", () => {
     expect((await post(sandboxRoutes(integrations, "127.0.0.1", null), JSON.stringify({ now: START }))).status).toBe(404);
     expect(clock.offsetMs).toBe(0);
   });
+
+  it("D6-1: the sandbox billing pages exist only in sandbox mode on loopback (404 in live mode and off loopback)", async () => {
+    const clock = new SimClock();
+    const delivered: string[] = [];
+    const billing = { clock: () => clock.now(), appUrl: "http://localhost:3100", deliver: async (signed: { eventId: string; body: string; signature: string }, type: string) => (delivered.push(signed.eventId), { eventId: signed.eventId, type, status: 200, response: {}, applied: true, request: signed }) };
+    const { customerId } = await integrations.billing.ensureCustomer({ userId: "7a1f0c4e-2b3d-4e5f-8a9b-0c1d2e3f4a5b", email: "ceo@example.test" });
+    const paths = [`/sandbox/billing/portal/${customerId}`, "/sandbox/billing/checkout/cs_sandbox_1"];
+    expect((await sandboxRoutes(integrations, "127.0.0.1", clock, billing).request(paths[0]!)).status).toBe(200);
+    const live = { ...integrations, mode: "live" } as unknown as Integrations;
+    for (const app of [sandboxRoutes(live, "127.0.0.1", clock, billing), sandboxRoutes(integrations, "0.0.0.0", clock, billing), sandboxRoutes(integrations, "worker.internal", clock, billing), sandboxRoutes(integrations, "127.0.0.1", clock, null)]) {
+      for (const path of paths) expect((await app.request(path)).status).toBe(404);
+      expect((await app.request(`/sandbox/billing/portal/${customerId}/end`, { method: "POST" })).status).toBe(404);
+    }
+    expect(delivered).toEqual([]);
+  });
 });
 
 describe("gateFor stamps the card from the clock (DEC-3)", () => {

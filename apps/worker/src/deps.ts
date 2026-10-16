@@ -2,7 +2,9 @@ import { createServiceClient, getKillSwitch, searchMemory, type DbClient } from 
 import { loadRoles, minimalSubprocessEnv, MOCK_LLM_RESPONSES, selectLlm, selectRuntime, type AgentRuntime, type LlmClient, type RoleDefinition } from "@north/agents";
 import { selectIntegrations, type Integrations } from "@north/integrations";
 import { workerEnv, type WorkerEnv } from "./env";
+import { createTracer, type Tracer } from "./observability";
 import { SimClock, wallClock, type Clock } from "./services/clock";
+import { withPinnedCompetitorFetch } from "./services/pinned-fetch";
 import { hostIsPrivate, type VerifierConfig } from "./services/verifier";
 
 /** Everything a worker function needs; built once per process, injectable in tests. */
@@ -19,6 +21,8 @@ export interface WorkerDeps {
   readonly simClock: SimClock | null;
   /** Single-call structured model client (signal scoring); `MockLlm` with the sandbox fixtures unless the SDK runtime and a key are configured. */
   readonly llm: LlmClient;
+  /** OBS-1 (M6): one Langfuse trace per agent run; `NO_TRACER` without the three keys. */
+  readonly tracer: Tracer;
 }
 
 /** Audit payloads are capped so a hostile tool input cannot bloat the log. */
@@ -62,17 +66,18 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const roles = await loadRoles(env.AGENTS_DIR);
   const siteBaseUrl = process.env.SANDBOX_SITE_BASE_URL ?? `http://127.0.0.1:${env.WORKER_PORT}`;
   const { clock, simClock } = clockFor(env);
-  const integrations = selectIntegrations(
-    { ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE, SANDBOX_ROOT: env.SANDBOX_ROOT, SANDBOX_SITE_BASE_URL: siteBaseUrl },
-    undefined,
-    undefined,
-    { allowUrl: allowPublicUrl, clock },
+  // D6-11: the competitor source fetches through the pinned fetch (resolve once, vet, connect to that address only).
+  const integrations = withPinnedCompetitorFetch(
+    selectIntegrations({ ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE, SANDBOX_ROOT: env.SANDBOX_ROOT, SANDBOX_SITE_BASE_URL: siteBaseUrl }, undefined, undefined, { allowUrl: allowPublicUrl, clock }),
+    allowPublicUrl,
   );
   // Sandbox previews live on the worker itself (loopback); live previews must be public hosts (M3 security review M3).
   const verifier: VerifierConfig = env.INTEGRATIONS_MODE === "sandbox" ? { timeoutMs: 10_000, allowedOrigins: [new URL(siteBaseUrl).origin], allowPrivate: true } : { timeoutMs: 10_000, allowPrivate: false };
+  const tracer = createTracer(env);
   const runtime = selectRuntime(
     {
       roles,
+      onToolCall: (call) => tracer.toolCall(call),
       workspaceRoot: env.WORKSPACE_ROOT,
       subprocessEnv: minimalSubprocessEnv(process.env),
       memorySearch: async (companyId, query) => searchMemory(db, companyId, query),
@@ -92,5 +97,5 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
     { AGENT_RUNTIME: env.AGENT_RUNTIME },
   );
   const llm = selectLlm({ AGENT_RUNTIME: env.AGENT_RUNTIME, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }, { ...MOCK_LLM_RESPONSES });
-  return Object.freeze({ env, db, roles, runtime, integrations, verifier, clock, simClock, llm });
+  return Object.freeze({ env, db, roles, runtime, integrations, verifier, clock, simClock, llm, tracer });
 }

@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { AdDeliverySchema } from "@north/core";
-import { isSandboxAds, isSandboxOutreach, type Integrations } from "@north/integrations";
+import { isSandboxAds, isSandboxBilling, isSandboxOutreach, type Integrations } from "@north/integrations";
 import { z } from "zod";
 import { isLoopbackHost } from "./host";
+import { sandboxBillingRoutes, type SandboxBillingRoutesOptions } from "./sandbox-billing";
 import type { SimClock } from "./services/clock";
 
 export { isLoopbackHost };
@@ -21,14 +22,16 @@ const parseJson = (text: string): unknown => {
 };
 
 /**
- * Simulation routes for the sandbox adapters (M4) and the worker's clock
- * (M5): the e2e flow, the smoke script and a developer "report" a delivery
- * window or a reply, or move the clock, through the worker's loopback server.
- * Mounted in sandbox mode on a loopback host only; in live mode, or on a
- * worker bound to any other address, these paths do not exist (404), so
- * nothing can inject figures into a real ledger or move a real day.
+ * Simulation routes for the sandbox adapters (M4), the worker's clock (M5)
+ * and the sandbox Stripe's checkout and portal pages (M6, BIL-1): the e2e
+ * flow, the smoke script and a developer "report" a delivery window or a
+ * reply, move the clock, or click through a checkout, through the worker's
+ * loopback server. Mounted in sandbox mode on a loopback host only; in live
+ * mode, or on a worker bound to any other address, these paths do not exist
+ * (404), so nothing can inject figures into a real ledger, move a real day or
+ * sign a billing event with the public sandbox secret.
  */
-export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1", simClock: SimClock | null = null): Hono {
+export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1", simClock: SimClock | null = null, billing: Omit<SandboxBillingRoutesOptions, "billing"> | null = null): Hono {
   const app = new Hono();
   const ads = integrations.ads(null);
   const outreach = integrations.outreach(null);
@@ -56,6 +59,8 @@ export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1", si
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
+
+  if (billing && isSandboxBilling(integrations.billing)) app.route("/", sandboxBillingRoutes({ ...billing, billing: integrations.billing }));
 
   if (simClock) {
     app.post("/sandbox/clock", async (c) => {

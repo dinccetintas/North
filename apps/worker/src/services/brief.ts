@@ -1,4 +1,4 @@
-import { BRIEF_HOUR, composeBrief, localDay, localHour, type Brief } from "@north/core";
+import { composeBrief, localDay, localHour, type Brief } from "@north/core";
 import { createBrief, getBrief, listActiveCompanies } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { gatherBriefInput } from "./brief-input";
@@ -12,16 +12,17 @@ export interface BriefDue {
 
 /**
  * BRF-1, the hourly tick: every active, onboarded company whose owner-local
- * hour is `BRIEF_HOUR` and whose brief for the local day does not exist yet.
- * The kill switch does not exclude: a stopped company still gets its brief,
- * which says so. Idempotent: one row per company-day, so a second tick in
+ * hour is the owner's `BriefHour` (`users.brief_hour`, default `BRIEF_HOUR`
+ * 7, M6) and whose brief for the local day does not exist yet. The kill
+ * switch does not exclude: a stopped company (by the user or by billing)
+ * still gets its brief, which says so. Idempotent: one row per company-day, so a second tick in
  * the same hour finds the row and emits nothing.
  */
 export async function briefTick(deps: WorkerDeps): Promise<readonly BriefDue[]> {
   const now = deps.clock();
   const due: BriefDue[] = [];
   for (const company of await listActiveCompanies(deps.db)) {
-    if (localHour(company.timezone, now) !== BRIEF_HOUR) continue;
+    if (localHour(company.timezone, now) !== company.briefHour) continue;
     const day = localDay(company.timezone, now);
     if (await getBrief(deps.db, company.companyId, day)) continue;
     due.push({ companyId: company.companyId, day });

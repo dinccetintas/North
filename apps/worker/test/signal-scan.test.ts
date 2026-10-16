@@ -17,6 +17,13 @@ vi.mock("@north/db", () => dbModule);
 
 const { competitorUrlsFromMemory, communitiesFromMemory, detectDrops, scanContext, scanCompanySignals, scanSource, scoreNewSignals } = await import("../src/services/signal-scan");
 
+/** A scan that ran (dispatch allowed); a skipped one fails the test. */
+async function scanned(d: ReturnType<typeof deps>) {
+  const result = await scanCompanySignals(d, directSteps, "company-1");
+  if ("skipped" in result) throw new Error(`scan skipped: ${result.skipped}`);
+  return result;
+}
+
 const DAY0 = "2026-10-19T10:00:00.000Z";
 let events: SandboxEvent[];
 let clock: SimClock;
@@ -48,7 +55,7 @@ describe("scanContext", () => {
 
 describe("scanCompanySignals on the sandbox sources", () => {
   it("day 0 inserts the two reddit rows, scores them with MockLlm (0.85 → scored, 0.4 → below threshold) and opens one card; the same sources again insert nothing", async () => {
-    const result = await scanCompanySignals(deps(), directSteps, "company-1");
+    const result = await scanned(deps());
     expect(result.sources.map((s) => [s.source, s.inserted, s.skipped])).toEqual([
       ["reddit", 2, null],
       ["producthunt", 0, null],
@@ -72,7 +79,7 @@ describe("scanCompanySignals on the sandbox sources", () => {
 
   it("the next scan advances the progression by one step: Product Hunt once the reddit refs are known", async () => {
     await scanCompanySignals(deps(), directSteps, "company-1");
-    const second = await scanCompanySignals(deps(), directSteps, "company-1");
+    const second = await scanned(deps());
     expect(second.sources.map((s) => [s.source, s.inserted])).toEqual([
       ["reddit", 0],
       ["producthunt", 1],
@@ -150,5 +157,19 @@ describe("detectDrops (metric_drop)", () => {
     expect(rows()).toEqual(["metrics:metrics:site_visitors:2026-10-19:scored:0.75"]);
     expect([...state.signals.values()][0]?.title).toContain("100 → 60");
     expect(await detectDrops(deps(), "company-1", "2026-10-19")).toEqual([]);
+  });
+});
+
+describe("D6-3 the scan asks dispatch first (ADR 0014)", () => {
+  it("an ended owner's scan returns skipped: subscription_ended and inserts nothing; zero credits skip with credits_exhausted", async () => {
+    const owner = state.companies.get("company-1")!.ownerId;
+    const trial = (await dbModule.getEntitlement({} as never, owner))!;
+    state.entitlements.set(owner, { ...trial, status: "ended", endedAt: DAY0, retentionUntil: "2027-01-17T10:00:00.000Z" });
+    expect(await scanCompanySignals(deps(), directSteps, "company-1")).toEqual({ skipped: "subscription_ended" });
+    expect(state.signals.size).toBe(0);
+    state.entitlements.set(owner, { ...trial, status: "active" });
+    state.credits.set(owner, []);
+    expect(await scanCompanySignals(deps(), directSteps, "company-1")).toEqual({ skipped: "credits_exhausted" });
+    expect(state.signals.size).toBe(0);
   });
 });

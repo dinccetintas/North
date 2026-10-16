@@ -1,10 +1,10 @@
 import type { ConnectionOauthCodeEvent, ConnectionProvider } from "@north/core";
 import { dropConnectionSecret, getConnection, readConnectionSecret, setConnectionStatus, storeConnectionSecret, upsertConnection } from "@north/db";
 import type { WorkerDeps } from "../deps";
-import { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeVercelCode, oauthClients, revokeProviderToken, serializeProviderToken, timedFetch, type ExchangedToken, type FetchLike, type OauthClient, type OauthClientProvider } from "./oauth-providers";
+import { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeStripeCode, exchangeVercelCode, oauthClients, revokeProviderToken, serializeProviderToken, timedFetch, type ExchangedToken, type FetchLike, type OauthClient, type OauthClientProvider } from "./oauth-providers";
 import { TEAM_SCOPE_PREFIX } from "./provider-auth";
 
-export { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeVercelCode, oauthClients, parseProviderToken, refreshGoogleToken, revokeProviderToken, serializeProviderToken, timedFetch, type ExchangedToken, type FetchLike, type OauthClient } from "./oauth-providers";
+export { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeStripeCode, exchangeVercelCode, oauthClients, parseProviderToken, refreshGoogleToken, revokeProviderToken, serializeProviderToken, timedFetch, type ExchangedToken, type FetchLike, type OauthClient } from "./oauth-providers";
 
 type Exchange = (client: OauthClient, code: string, redirectUri: string, fetchImpl: FetchLike) => Promise<ExchangedToken>;
 
@@ -13,6 +13,7 @@ const EXCHANGES: Readonly<Record<OauthClientProvider, Exchange>> = Object.freeze
   vercel: exchangeVercelCode,
   meta_ads: exchangeMetaCode,
   gmail: exchangeGoogleCode,
+  stripe: exchangeStripeCode,
 });
 
 const isOauthProvider = (provider: ConnectionProvider): provider is OauthClientProvider => provider in EXCHANGES;

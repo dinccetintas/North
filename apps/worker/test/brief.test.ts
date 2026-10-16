@@ -106,3 +106,38 @@ describe("generateBrief", () => {
     expect(state.briefs.map((b) => b.day)).toEqual(["2026-10-19", "2026-10-20"]);
   });
 });
+
+describe("D6-5 brief hour and the blocked line (BRF-1, BIL-1, BIL-2)", () => {
+  it("an owner with brief_hour 9 gets nothing at 07:00 and a brief at 09:00 local", async () => {
+    state.briefHours.set("user-1", 9);
+    clock.set("2026-10-19T04:10:00.000Z"); // 07:10 Istanbul
+    expect(await briefTick(deps())).toEqual([]);
+    clock.set("2026-10-19T06:10:00.000Z"); // 09:10 Istanbul
+    expect(await briefTick(deps())).toEqual([{ companyId: "company-1", day: "2026-10-19" }]);
+  });
+
+  it("an ended owner's brief still comes and says paused: subscription ended, first after the headline", async () => {
+    const ended = (await dbModule.getEntitlement({} as never, "user-1"))!;
+    state.entitlements.set("user-1", { ...ended, status: "ended", endedAt: ISTANBUL_MORNING, retentionUntil: "2027-01-17T04:30:00.000Z" });
+    state.killSwitch.set("company-1", true);
+    state.pausedReasons.set("company-1", "subscription_ended");
+    expect(await briefTick(deps())).toEqual([{ companyId: "company-1", day: "2026-10-19" }]);
+    await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");
+    const brief = state.briefs[0]?.content as Brief;
+    expect(brief.blocked).toEqual({ reason: "subscription_ended" });
+    expect(briefMarkdown(brief).split("\n")[1]).toMatch(/paused: subscription ended/);
+  });
+
+  it("zero credits → waiting for credits; a user's own kill switch shows the stopped line, not a billing one", async () => {
+    state.credits.set("user-1", [{ kind: "grant_plan", amount: 300, ref: "trial:user-1", note: "" }, { kind: "adjust", amount: -300, ref: "adjust:drain", note: "" }]);
+    await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");
+    const brief = state.briefs[0]?.content as Brief;
+    expect(brief.blocked).toEqual({ reason: "credits_exhausted" });
+    expect(briefMarkdown(brief)).toContain("waiting for credits");
+    state.briefs = [];
+    state.killSwitch.set("company-1", true);
+    state.pausedReasons.set("company-1", "user");
+    await generateBrief(deps(), directSteps, "company-1", "2026-10-19", "http://localhost:3100");
+    expect((state.briefs[0]?.content as Brief).blocked).toBeNull();
+  });
+});

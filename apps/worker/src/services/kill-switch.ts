@@ -1,7 +1,24 @@
-import { listCards, listTasks, pendingActionForCard } from "@north/db";
+import { isActive } from "@north/core";
+import { getCompanyById, getEntitlementForCompany, listCards, listTasks, pendingActionForCard } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./actions";
 import { pauseForKillSwitch, type KillSwitchPause } from "./campaigns";
+
+export type ResumeDecision = { readonly ok: true } | { readonly ok: false; readonly reason: "subscription_ended" | "retention" };
+
+/**
+ * ADR 0014: `company/resume` is refused while the owner's entitlement is not
+ * active (`subscription_ended`: the pause billing set stays, and a pause the
+ * user lifted meanwhile reopens no campaign) or the company is archived
+ * (`retention`). Only a new subscription (`reactivate`) lifts those.
+ */
+export async function resumeAllowed(deps: WorkerDeps, companyId: string): Promise<ResumeDecision> {
+  const company = await getCompanyById(deps.db, companyId);
+  if (company && (company.status === "archived" || company.pausedReason === "retention")) return Object.freeze({ ok: false, reason: "retention" });
+  const entitlement = await getEntitlementForCompany(deps.db, companyId);
+  if (!entitlement || !isActive(entitlement)) return Object.freeze({ ok: false, reason: "subscription_ended" });
+  return Object.freeze({ ok: true });
+}
 
 export interface UnsettledCard {
   readonly cardId: string;

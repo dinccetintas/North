@@ -1,11 +1,11 @@
-import { capExceeded, windowDelta, type CapKind, type MetricCollectEvent } from "@north/core";
+import { capExceeded, localDay, windowDelta, type CapKind, type MetricCollectEvent } from "@north/core";
 import { getBudget, latestChannelSample, listCampaigns, recordAttributionWindow, recordMetric, updateCampaignTotals, type CampaignRecord, type DbClient } from "@north/db";
 import { isSandboxAds, NotConfiguredError, type CampaignInsights } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
 import { completeAction, performPending } from "./actions";
 import { openCapCard } from "./cap-card";
 import { pauseForCap, resumeAfterDayRoll, resumeCampaign } from "./campaigns";
-import { todayIsoDate } from "./dates";
+import { ownerTimezone } from "./dates";
 import { ConnectionRequiredError, providerAuthFor } from "./provider-auth";
 import { collectReplies, type RepliesResult } from "./replies";
 import type { StepRunner } from "./steps";
@@ -61,9 +61,12 @@ const attributedValue = (campaign: CampaignRecord, insights: CampaignInsights): 
 /**
  * One attribution window for one campaign (OUT-1, BUD-1): cumulative channel
  * samples, the ledger delta and the spend applied, in one RPC. A window whose
- * figures did not move writes nothing; a replayed window is a duplicate.
+ * figures did not move writes nothing; a replayed window is a duplicate. The
+ * spend lands on the owner-local day (M6, ADR 0011 follow-up).
  */
-export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord, insights: CampaignInsights, today: string = todayIsoDate(deps.clock()), now: Date = deps.clock()): Promise<AttributedWindow> {
+export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord, insights: CampaignInsights, day?: string, now: Date = deps.clock()): Promise<AttributedWindow> {
+  const timezone = await ownerTimezone(deps, campaign.companyId);
+  const today = day ?? localDay(timezone, now);
   const key = `${campaign.channel}:${campaign.providerCampaignId}`;
   const [prevSpend, prevMetric] = await Promise.all([latestChannelSample(deps.db, campaign.companyId, "ad_spend_usd", key), latestChannelSample(deps.db, campaign.companyId, campaign.metricKey, key)]);
   const value = attributedValue(campaign, insights);
@@ -98,7 +101,7 @@ export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord
     day: today,
     note: `${campaign.name}: $${raw.spendUsd} spent, ${raw.clicks} clicks, ${raw.conversions} conversions in the window`,
   });
-  const updated = await updateCampaignTotals(deps.db, campaign.id, { ...(await totalsFromSamples(deps.db, campaign, key, insights, today)), lastCollectedAt: now.toISOString() });
+  const updated = await updateCampaignTotals(deps.db, campaign.id, { ...(await totalsFromSamples(deps.db, campaign, key, insights, today, timezone)), lastCollectedAt: now.toISOString() });
   return { skipped: false, duplicate: result.duplicate, capDaily: result.capDaily, capTotal: result.capTotal, campaign: updated };
 }
 
@@ -106,12 +109,12 @@ export async function attributeWindow(deps: WorkerDeps, campaign: CampaignRecord
  * The campaign row's figures follow the latest channel samples, never the
  * step's local delta (M4 review L2): a step retried after a successful RPC
  * finds the samples already written and lands on the same numbers. Today's
- * spend grows by what the row has not reflected yet.
+ * spend grows by what the row has not reflected yet; "today" is the owner's.
  */
-async function totalsFromSamples(db: DbClient, campaign: CampaignRecord, key: string, insights: CampaignInsights, today: string) {
+async function totalsFromSamples(db: DbClient, campaign: CampaignRecord, key: string, insights: CampaignInsights, today: string, timezone: string) {
   const sample = async (metricKey: "ad_spend_usd" | "ad_impressions" | "ad_clicks", fallback: number): Promise<number> => (await latestChannelSample(db, campaign.companyId, metricKey, key))?.value ?? fallback;
   const spentTotalUsd = await sample("ad_spend_usd", insights.spendUsd);
-  const spentBefore = campaign.lastCollectedAt?.slice(0, 10) === today ? campaign.spentTodayUsd : 0;
+  const spentBefore = campaign.lastCollectedAt !== null && localDay(timezone, new Date(campaign.lastCollectedAt)) === today ? campaign.spentTodayUsd : 0;
   return {
     spentTodayUsd: round2(spentBefore + Math.max(0, spentTotalUsd - campaign.spentTotalUsd)),
     spentTotalUsd,
@@ -204,10 +207,11 @@ async function retryCapCards(deps: WorkerDeps, step: StepRunner, companyId: stri
  * OUT-2: one company's hourly collection, every I/O its own durable step:
  * pace (sandbox + cron) → insights and attribution per campaign → cap pause
  * and card → day roll → cap cards still owed → outreach replies → analytics
- * and payments samples.
+ * and payments samples. Budgets, cap cards and the day roll use the owner's
+ * local day, computed once in its own step (M6).
  */
 export async function collectCompanyMetrics(deps: WorkerDeps, step: StepRunner, companyId: string, reason: MetricCollectEvent["reason"], now: () => Date = deps.clock): Promise<CollectResult> {
-  const today = todayIsoDate(now());
+  const today = await step.run("today", async () => localDay(await ownerTimezone(deps, companyId), now()));
   const campaigns = await step.run("campaigns", () => listCampaigns(deps.db, companyId, { status: ["active", "paused_cap"] }));
   if (reason === "cron" && deps.integrations.mode === "sandbox") await step.run("pace", () => paceSandbox(deps, campaigns));
   const out: CapTally = { paused: [], cards: [], asked: new Set() };

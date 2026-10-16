@@ -12,7 +12,7 @@ export interface OauthClient {
   readonly clientSecret: string;
 }
 
-export const OAUTH_CLIENT_PROVIDERS = ["github", "vercel", "meta_ads", "gmail"] as const;
+export const OAUTH_CLIENT_PROVIDERS = ["github", "vercel", "meta_ads", "gmail", "stripe"] as const;
 export type OauthClientProvider = (typeof OAUTH_CLIENT_PROVIDERS)[number];
 
 const PROVIDER_TIMEOUT_MS = 10_000;
@@ -21,6 +21,7 @@ export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
+export const STRIPE_CONNECT_TOKEN_URL = "https://connect.stripe.com/oauth/token";
 
 /** Every call to a provider carries a timeout so a hung endpoint never holds an Inngest step open. */
 export const timedFetch: FetchLike = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
@@ -33,6 +34,8 @@ export function oauthClients(env: NodeJS.ProcessEnv): Readonly<Record<OauthClien
     vercel: pick(env.VERCEL_CLIENT_ID, env.VERCEL_CLIENT_SECRET),
     meta_ads: pick(env.META_APP_ID, env.META_APP_SECRET),
     gmail: pick(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET),
+    // OUT-2 (M6): the user's own Stripe through Stripe Connect; optional, like every other provider.
+    stripe: pick(env.STRIPE_CONNECT_CLIENT_ID, env.STRIPE_CONNECT_CLIENT_SECRET),
   });
 }
 
@@ -148,6 +151,25 @@ export async function exchangeGoogleCode(client: OauthClient, code: string, redi
   });
 }
 
+/**
+ * Stripe Connect (OUT-2, ADR 0010, `read_only` scope): the one-time code →
+ * the connected account's read-only access token (and refresh token); the
+ * account id (`acct_…`) is the label. The token is the account's own, so the
+ * read sends no `Stripe-Account` header. The secret travels in the form body
+ * Stripe requires, never in an error.
+ */
+export async function exchangeStripeCode(client: OauthClient, code: string, _redirectUri: string, fetchImpl: FetchLike): Promise<ExchangedToken> {
+  const body = new URLSearchParams({ grant_type: "authorization_code", code, client_secret: client.clientSecret });
+  const response = await fetchImpl(STRIPE_CONNECT_TOKEN_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: body.toString() });
+  const data = await json<{ access_token?: string; refresh_token?: string; scope?: string; stripe_user_id?: string; error?: string }>(response);
+  if (!response.ok || !data.access_token || !data.stripe_user_id) throw new Error(`Stripe Connect token exchange failed: ${data.error ?? response.status}`);
+  return Object.freeze({
+    token: { accessToken: data.access_token, ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}) },
+    scopes: (data.scope ?? "read_only").split(/[\s,]+/).filter(Boolean),
+    accountLabel: data.stripe_user_id,
+  });
+}
+
 /** `grant_type=refresh_token`: a fresh access token with the same refresh token (Google does not rotate it) and a new expiry. */
 export async function refreshGoogleToken(client: OauthClient, refreshToken: string, fetchImpl: FetchLike, now: () => Date = () => new Date()): Promise<ProviderToken> {
   const data = await googleToken(client, { refresh_token: refreshToken, grant_type: "refresh_token" }, fetchImpl, "token refresh");
@@ -173,8 +195,9 @@ export const serializeProviderToken = (token: ProviderToken): string => (typeof 
 /**
  * Tells the provider the token is no longer wanted (best effort, before the
  * ciphertext is dropped). GitHub and Google have endpoints; Vercel tokens are
- * revoked by uninstalling the integration and Meta ones by removing the app in
- * the user's Facebook settings, both documented on the settings page.
+ * revoked by uninstalling the integration, Meta ones by removing the app in
+ * the user's Facebook settings and Stripe Connect ones by disconnecting North
+ * in the user's Stripe dashboard, all documented on the settings page.
  */
 export async function revokeProviderToken(provider: OauthClientProvider, client: OauthClient | null, secret: string, fetchImpl: FetchLike): Promise<boolean> {
   if (provider === "github" && client) {

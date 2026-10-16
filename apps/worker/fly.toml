@@ -1,13 +1,29 @@
-# Fly.io app definition for the North worker (ADR 0007). Deploy from the repo root:
+# Fly.io app definition for the North worker (ADR 0007, ADR 0015). Deploy from the repo root:
 #   fly launch --no-deploy --copy-config --config apps/worker/fly.toml   (first time)
-#   fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... ANTHROPIC_API_KEY=... \
-#                   INNGEST_EVENT_KEY=... INNGEST_SIGNING_KEY=... CONNECTIONS_ENCRYPTION_KEY=... \
-#                   GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... VERCEL_CLIENT_ID=... VERCEL_CLIENT_SECRET=...
 #   fly deploy --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
+# docs/runbooks/production.md walks through every step; `pnpm production:check` verifies the result read-only.
 #
-# Integrations default to sandbox and the mock runtime (CLAUDE.md #5). Going
-# live is the founder's decision, made outside this file:
+# Secrets (`fly secrets set NAME=<value> …`; never in this file, never in the web app; ADR 0015's table):
+#   required        SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY  INNGEST_EVENT_KEY  INNGEST_SIGNING_KEY
+#                   NEXT_PUBLIC_APP_URL (the Vercel URL: links in cards, briefs and checkout returns)
+#   billing         STRIPE_SECRET_KEY  STRIPE_WEBHOOK_SECRET   (both or neither; `pnpm stripe:setup` registers the endpoint)
+#   agents          ANTHROPIC_API_KEY                          (read only when AGENT_RUNTIME=claude-agent-sdk)
+#   connections     CONNECTIONS_ENCRYPTION_KEY                 (required when INTEGRATIONS_MODE=live)
+#                   GITHUB_CLIENT_ID  GITHUB_CLIENT_SECRET  VERCEL_CLIENT_ID  VERCEL_CLIENT_SECRET
+#                   META_APP_ID  META_APP_SECRET  GOOGLE_CLIENT_ID  GOOGLE_CLIENT_SECRET
+#                   STRIPE_CONNECT_CLIENT_ID  STRIPE_CONNECT_CLIENT_SECRET   (the user's own Stripe read, OUT-2)
+#   delivery        RESEND_API_KEY  RESEND_FROM  VAPID_PUBLIC_KEY  VAPID_PRIVATE_KEY  VAPID_SUBJECT
+#   observability   SENTRY_DSN (the worker's project)  SENTRY_CLIENT_SECRET (the issue webhook)
+#                   LANGFUSE_PUBLIC_KEY  LANGFUSE_SECRET_KEY  LANGFUSE_HOST   (LANGFUSE_REDACT defaults to 1)
+#   retention       RETENTION_PURGE_ENABLED   (unset/0 = the sweep only marks purge_due; ADR 0016)
+#
+# Integrations default to sandbox and the mock runtime (CLAUDE.md #5), here too.
+# Going live is the founder's decision, made outside this file, after a green
+# `pnpm production:check` in sandbox:
 #   fly secrets set INTEGRATIONS_MODE=live AGENT_RUNTIME=claude-agent-sdk
+# On 0.0.0.0 the loopback-only sandbox routes (sites, simulation, clock,
+# billing pages) are never mounted, and the Stripe webhook exists only with
+# STRIPE_WEBHOOK_SECRET (the sandbox default secret is loopback-only).
 app = "north-worker"
 primary_region = "ams"
 
@@ -40,6 +56,11 @@ primary_region = "ams"
   source = "north_workspaces"
   destination = "/data"
 
+# The mock runtime fits a shared machine. With AGENT_RUNTIME=claude-agent-sdk the
+# agent subprocesses and their workspaces need more: switch this block to
+#   size = "performance-2x"
+#   memory = "4gb"
+# (or `fly scale vm performance-2x --memory 4096`) before the flip, and back if the flip is reverted.
 [[vm]]
   size = "shared-cpu-2x"
   memory = "2gb"

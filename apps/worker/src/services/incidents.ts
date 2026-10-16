@@ -1,11 +1,14 @@
-import { SentryIssueSchema, fixTaskInput, incidentReportMarkdown, localDay, type SentryIssue, type SentryLevel } from "@north/core";
-import { companyOwnerId, createArtifact, createTask, getCompanyById, getProfile, getSignal, insertSignals, listArtifacts, listTasksByType, setSignalPayload, signalByRef, updateSignal, writeMemoryItems, type SignalRecord } from "@north/db";
+import { DAY_SCHEMA, SentryIssueSchema, fixTaskInput, incidentReportMarkdown, localDay, type DispatchBlockReason, type SentryIssue, type SentryLevel } from "@north/core";
+import { companyOwnerId, createArtifact, createTask, getCompanyById, getProfile, getSignal, insertSignals, listActiveCompanies, listArtifacts, listSignals, listTasksByType, setSignalPayload, signalByRef, updateSignal, writeMemoryItems, type SignalRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
+import { dispatchAllowed } from "./entitlements";
 
 /** The role the incident report and the learning are recorded under: Operations, without a model (docs/plans/M5.md "Scope decisions"). */
 export const INCIDENT_ROLE = "ops_finance";
-/** M5 review M5: at most this many `fix_error` tasks per company per owner-local day; the rest are `deferred` (nothing retries them in M5). */
+/** M5 review M5: at most this many `fix_error` tasks per company per owner-local day; the rest are `deferred` and the hourly `retry-deferred` re-emits them on a later owner-local day (M6, D6-6). */
 export const FIX_TASKS_PER_DAY = 3;
+/** How many deferred error signals one company contributes to one retry tick. */
+const RETRY_BATCH = 50;
 /** M5 review M5: only these levels open a fix task; the others stay `error` signals `below_threshold`, listed in the brief. */
 export const FIX_LEVELS: ReadonlySet<SentryLevel> = new Set(["fatal", "error"]);
 const SOURCE = "sentry" as const;
@@ -48,11 +51,32 @@ export async function recordIncident(deps: WorkerDeps, companyId: string, issue:
 }
 
 export interface FixTask {
-  /** Null when no task was opened (`below_threshold`, `deferred`). */
+  /** Null when no task was opened (`below_threshold`, `deferred`, `skipped`). */
   readonly taskId: string | null;
   /** True when an open fix task for the same issue already existed (an Inngest retry, a replayed event). */
   readonly reused: boolean;
-  readonly outcome: "opened" | "reused" | "below_threshold" | "deferred";
+  readonly outcome: "opened" | "reused" | "below_threshold" | "deferred" | "skipped";
+  /** ADR 0014: why dispatch refused (`skipped`); the signal waits `deferred` for a later day. */
+  readonly skipped?: DispatchBlockReason;
+}
+
+/** `deferred` with the reason, and the owner-local day of the worker's clock on the row's payload (the retry compares days on that clock, ADR 0011). */
+async function deferSignal(deps: WorkerDeps, companyId: string, signal: SignalRecord, day: string, rationale: string): Promise<void> {
+  await updateSignal(deps.db, companyId, signal.id, { status: "deferred", rationale: rationale.slice(0, 300) });
+  await setSignalPayload(deps.db, companyId, signal.id, { ...signal.payload, deferredDay: day });
+}
+
+async function ownerTimezone(deps: WorkerDeps, companyId: string): Promise<string> {
+  return (await getProfile(deps.db, await companyOwnerId(deps.db, companyId)))?.timezone ?? "UTC";
+}
+
+/** Dispatch refused: no report, no task; a new signal is held `deferred` so the retry tick tries again on a later day. */
+async function holdForDispatch(deps: WorkerDeps, companyId: string, signal: SignalRecord, reason: DispatchBlockReason): Promise<FixTask> {
+  if (signal.status === "new" && !signal.convertedTaskId) {
+    const day = localDay(await ownerTimezone(deps, companyId), deps.clock());
+    await deferSignal(deps, companyId, signal, day, `Deferred: agents are paused (${reason}); retried on a later day.`);
+  }
+  return { taskId: null, reused: false, outcome: "skipped", skipped: reason };
 }
 
 const fixTitle = (issue: SentryIssue): string => `Fix ${issue.shortId}: ${issue.title}`.slice(0, 200);
@@ -78,7 +102,7 @@ async function ensureIncidentReport(deps: WorkerDeps, companyId: string, issue: 
 
 /** The owner-local day of the worker's clock and how many `fix_error` tasks the company already opened on it. */
 async function fixTasksToday(deps: WorkerDeps, companyId: string): Promise<{ readonly day: string; readonly count: number }> {
-  const timezone = (await getProfile(deps.db, await companyOwnerId(deps.db, companyId)))?.timezone ?? "UTC";
+  const timezone = await ownerTimezone(deps, companyId);
   const day = localDay(timezone, deps.clock());
   const tasks = await listTasksByType(deps.db, companyId, "fix_error");
   return { day, count: tasks.filter((t) => localDay(timezone, new Date(t.createdAt)) === day).length };
@@ -92,7 +116,9 @@ async function fixTasksToday(deps: WorkerDeps, companyId: string): Promise<{ rea
  * Idempotent: the signal's task, or an open fix task for the same issue, is
  * reused. M5 review M5: a lower level opens nothing (`below_threshold`), and
  * the company's `FIX_TASKS_PER_DAY + 1`th issue of the owner's day is
- * `deferred` with the reason in `rationale`; nothing retries it in M5.
+ * `deferred` with the reason in `rationale` (retried on a later day, D6-6).
+ * Dispatch asks first, once the signal is known to be this company's
+ * (ADR 0014): a refusal is `skipped` with its reason.
  */
 export async function openFixTask(deps: WorkerDeps, companyId: string, signalId: string): Promise<FixTask> {
   const { db } = deps;
@@ -100,6 +126,8 @@ export async function openFixTask(deps: WorkerDeps, companyId: string, signalId:
   if (!signal) throw new Error(`signal ${signalId} not found for company ${companyId}`);
   const issue = issueOf(signal);
   if (signal.convertedTaskId) return { taskId: signal.convertedTaskId, reused: true, outcome: "reused" };
+  const allowed = await dispatchAllowed(deps, companyId);
+  if (!allowed.ok) return holdForDispatch(deps, companyId, signal, allowed.reason);
   if (!FIX_LEVELS.has(issue.level)) {
     await updateSignal(db, companyId, signalId, { status: "below_threshold", rationale: `No fix task: ${issue.level} level (only fatal and error open one).`.slice(0, 300) });
     return { taskId: null, reused: false, outcome: "below_threshold" };
@@ -110,11 +138,41 @@ export async function openFixTask(deps: WorkerDeps, companyId: string, signalId:
   if (!open) {
     const today = await fixTasksToday(deps, companyId);
     if (today.count >= FIX_TASKS_PER_DAY) {
-      await updateSignal(db, companyId, signalId, { status: "deferred", rationale: `Deferred: ${today.count} fix tasks already opened on ${today.day} (at most ${FIX_TASKS_PER_DAY} a day).`.slice(0, 300) });
+      await deferSignal(deps, companyId, signal, today.day, `Deferred: ${today.count} fix tasks already opened on ${today.day} (at most ${FIX_TASKS_PER_DAY} a day).`);
       return { taskId: null, reused: false, outcome: "deferred" };
     }
   }
   const task = open ?? (await createTask(db, { companyId, planId: null, role: "engineering", taskType: "fix_error", title, input: fixTaskInput(issue) }));
   await updateSignal(db, companyId, signalId, { status: "converted", convertedTaskId: task.id });
   return { taskId: task.id, reused: open !== undefined, outcome: open ? "reused" : "opened" };
+}
+
+export interface DeferredIncident {
+  readonly companyId: string;
+  readonly signalId: string;
+}
+
+/** The owner-local day the signal was deferred on: the worker-clock day on its payload, else its `updated_at` day. */
+function deferredDayOf(signal: SignalRecord, timezone: string): string {
+  const stored = DAY_SCHEMA.safeParse((signal.payload as { deferredDay?: unknown }).deferredDay);
+  return stored.success ? stored.data : localDay(timezone, new Date(signal.updatedAt));
+}
+
+/**
+ * D6-6 (M5 review M5): `error` signals left `deferred` (the day's fix-task
+ * cap, or paused agents) on an earlier owner-local day than today, for the
+ * hourly `retry-deferred` to re-emit as `signal/detected`. A second tick on
+ * the same day finds them deferred today again and emits nothing; a company
+ * under the kill switch waits for its resume.
+ */
+export async function retryDeferredIncidents(deps: WorkerDeps): Promise<readonly DeferredIncident[]> {
+  const now = deps.clock();
+  const due: DeferredIncident[] = [];
+  for (const company of await listActiveCompanies(deps.db)) {
+    if (company.killSwitchActive) continue;
+    const today = localDay(company.timezone, now);
+    const deferred = await listSignals(deps.db, company.companyId, { status: ["deferred"], kind: ["error"], limit: RETRY_BATCH });
+    for (const signal of deferred) if (deferredDayOf(signal, company.timezone) < today) due.push({ companyId: company.companyId, signalId: signal.id });
+  }
+  return Object.freeze(due);
 }

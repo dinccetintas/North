@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { z } from "zod";
+import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
 import { isLoopbackHost } from "./host";
 
 const EnvSchema = z
@@ -31,6 +32,21 @@ const EnvSchema = z
     SENTRY_DSN: z.string().url().optional(),
     /** The dev worker's initial simulated instant (ISO, sandbox only): the harness moves it further through `POST /sandbox/clock`. */
     NORTH_CLOCK_START: z.iso.datetime({ offset: true }).optional(),
+    /** BIL-1 (ADR 0014): the platform's Stripe key; read by `@north/integrations` (`stripeBillingConfig`). Without it billing stays sandbox. */
+    STRIPE_SECRET_KEY: z.string().min(10).optional(),
+    /** BIL-1: the Stripe webhook endpoint secret `POST /webhooks/stripe` verifies against. Sandbox mode on a loopback host defaults it; otherwise the route is mounted only when set. */
+    STRIPE_WEBHOOK_SECRET: z.string().min(8).optional(),
+    /** OUT-2: North's Stripe Connect application (the user's own Stripe read). Optional; without both the connection is not configured. */
+    STRIPE_CONNECT_CLIENT_ID: z.string().optional(),
+    STRIPE_CONNECT_CLIENT_SECRET: z.string().optional(),
+    /** OBS-1 (M6): Langfuse traces per agent run; on only when all three are set. */
+    LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
+    LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
+    LANGFUSE_HOST: z.string().url().optional(),
+    /** `1` (default): prompts and tool inputs never leave the worker; `0` sends them to Langfuse. */
+    LANGFUSE_REDACT: z.enum(["0", "1"]).default("1"),
+    /** RET-1 (ADR 0016): `1` lets `retention-sweep` purge owners past `retention_until`; `0` (default) only archives and marks `purge_due` (`scripts/purge-due.ts` purges on request). */
+    RETENTION_PURGE_ENABLED: z.enum(["0", "1"]).default("0"),
   })
   .refine((env) => env.NODE_ENV !== "production" || Boolean(env.INNGEST_SIGNING_KEY), {
     message: "INNGEST_SIGNING_KEY is required in production",
@@ -64,6 +80,24 @@ export function sentrySecretFor(env: SentryEnv): string | null {
 
 /** The boot line's word for the webhook. */
 export const sentryWebhookLabel = (env: SentryEnv): string => (sentrySecretFor(env) ? "webhook on" : "webhook off (no secret)");
+
+export type StripeEnv = Pick<WorkerEnv, "STRIPE_WEBHOOK_SECRET" | "INTEGRATIONS_MODE" | "WORKER_HOST">;
+
+/**
+ * The secret `POST /webhooks/stripe` verifies against, or null when the route
+ * must not be mounted (BIL-1, the `sentrySecretFor` rule): live mode without
+ * `STRIPE_WEBHOOK_SECRET`, or sandbox mode off loopback, where the public
+ * sandbox secret would let anyone forge an entitlement.
+ */
+export function stripeSecretFor(env: StripeEnv): string | null {
+  if (env.STRIPE_WEBHOOK_SECRET) return env.STRIPE_WEBHOOK_SECRET;
+  return env.INTEGRATIONS_MODE === "sandbox" && isLoopbackHost(env.WORKER_HOST) ? SANDBOX_STRIPE_WEBHOOK_SECRET : null;
+}
+
+export const stripeWebhookLabel = (env: StripeEnv): string => (stripeSecretFor(env) ? "webhook on" : "webhook off (no secret)");
+
+/** OBS-1: Langfuse needs all three keys; anything less is a no-op tracer. */
+export const langfuseConfigured = (env: Pick<WorkerEnv, "LANGFUSE_PUBLIC_KEY" | "LANGFUSE_SECRET_KEY" | "LANGFUSE_HOST">): boolean => Boolean(env.LANGFUSE_PUBLIC_KEY && env.LANGFUSE_SECRET_KEY && env.LANGFUSE_HOST);
 
 /** Validated worker environment; fails fast with the missing keys named. */
 export function workerEnv(source: NodeJS.ProcessEnv = process.env): WorkerEnv {

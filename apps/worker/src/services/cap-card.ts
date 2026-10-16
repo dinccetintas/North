@@ -3,7 +3,7 @@ import { getBudget, listActionsByKind, recordActionTransition, type ActionRecord
 import type { WorkerDeps } from "../deps";
 import { specsByHead } from "./action-specs";
 import { gateAction, gateStandalone } from "./actions";
-import { todayIsoDate } from "./dates";
+import { ownerDay } from "./dates";
 
 export type CapCardOutcome =
   | { readonly kind: "opened"; readonly cardId: string; readonly actionId: string }
@@ -47,10 +47,12 @@ async function priorCards(db: DbClient, rows: readonly ActionRecord[], key: CapK
  * request. An open or answered card for the same key means none; a
  * quota-deferred one is retried by the next collection (the campaign is
  * already paused, so waiting costs nothing). Approving raises the cap for
- * the day and resumes the campaign (settle's follow-up).
+ * the day and resumes the campaign (settle's follow-up). The day is the
+ * owner-local day (M6), the same day the card's quota counts on.
  */
-export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate(deps.clock())): Promise<CapCardOutcome> {
-  const budget = await getBudget(deps.db, campaign.companyId, "ads");
+export async function openCapCard(deps: WorkerDeps, campaign: CampaignRecord, cap: CapKind, today?: string): Promise<CapCardOutcome> {
+  const day = today ?? (await ownerDay(deps, campaign.companyId));
+  const budget = await getBudget(deps.db, campaign.companyId, "ads", day);
   if (!budget) return { kind: "none", reason: "no ads budget" };
   const spec: ActionSpec = capCardSpec({ campaign, budget, cap, day });
   const key = keyOf(spec.payload);

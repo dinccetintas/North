@@ -1,5 +1,5 @@
 import { briefMarkdown, type Brief } from "@north/core";
-import { companyOwnerId, getCard, getCompanyById, getProfile, listPushSubscriptions, recordNotification, type CardRecord } from "@north/db";
+import { companyOwnerId, getCard, getCompanyById, getProfile, listCompaniesByOwner, listPushSubscriptions, recordNotification, type CardRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 
 /** Deep link to the card detail screen (WP-C2); the web app resolves the slug under RLS. */
@@ -103,4 +103,43 @@ export async function notifyBrief(deps: WorkerDeps, companyId: string, brief: Br
   const push = await notifyBriefPush(deps, companyId, brief, appUrl);
   const email = await notifyBriefEmail(deps, companyId, brief, appUrl);
   return { push, email };
+}
+
+/** A billing message to the owner (BIL-1, BIL-2): not about a card or a brief, so it lands on the owner's first running company's log. */
+export interface OwnerNotice {
+  /** `usage_alert`, `billing_past_due`. */
+  readonly kind: string;
+  readonly title: string;
+  readonly body: string;
+  /** Where the link goes (`/settings/billing` on the app). */
+  readonly url: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Push to every subscription of the owner and one email, each recorded with
+ * the notice's kind. `notifications.company_id` is required, so the row is
+ * filed under the owner's oldest company that is not archived; an owner
+ * without one gets nothing (there is nothing to run).
+ */
+export async function notifyOwner(deps: WorkerDeps, userId: string, notice: OwnerNotice): Promise<{ readonly push: number; readonly email: boolean }> {
+  const { db, integrations } = deps;
+  const company = (await listCompaniesByOwner(db, userId)).find((c) => c.status !== "archived");
+  if (!company) return { push: 0, email: false };
+  let push = 0;
+  for (const subscription of await listPushSubscriptions(db, userId)) {
+    const sent = await integrations.push.send(subscription, { title: notice.title.slice(0, 120), body: notice.body.slice(0, PUSH_BODY_MAX), url: notice.url });
+    await recordNotification(db, { companyId: company.id, userId, channel: "push", kind: notice.kind, payload: { ...notice.payload, endpoint: subscription.endpoint, error: sent.error ?? null }, status: sent.sandbox ? "sandbox" : sent.ok ? "sent" : "failed" });
+    if (sent.ok) push += 1;
+  }
+  const profile = await getProfile(db, userId);
+  if (!profile?.email) return { push, email: false };
+  try {
+    const sent = await integrations.mail.send({ companyId: company.id, to: profile.email, subject: notice.title, text: `${notice.body}\n\n${notice.url}`, kind: "notification" });
+    await recordNotification(db, { companyId: company.id, userId, channel: "email", kind: notice.kind, payload: { ...notice.payload, messageId: sent.messageId }, status: sent.sandbox ? "sandbox" : "sent" });
+    return { push, email: true };
+  } catch (error) {
+    await recordNotification(db, { companyId: company.id, userId, channel: "email", kind: notice.kind, payload: { ...notice.payload, error: error instanceof Error ? error.message : String(error) }, status: "failed" });
+    return { push, email: false };
+  }
 }

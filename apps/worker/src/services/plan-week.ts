@@ -1,14 +1,18 @@
-import { PlanOutputSchema, missingRevisionReasons, outputJsonSchema, weekStartLocal, type PlanOutput } from "@north/core";
-import { LEADS_COUNT_VAR, LEDGER_REPORT_VAR, PLAN_PREVIOUS_VAR, SITE_URL_VAR, type AgentRunResult, type PreviousPlanVar } from "@north/agents";
+import { PlanOutputSchema, missingRevisionReasons, outputJsonSchema, weekStartLocal, type DispatchBlockReason, type PlanOutput } from "@north/core";
+import { LEADS_COUNT_VAR, LEDGER_REPORT_VAR, PLAN_PREVIOUS_VAR, SITE_URL_VAR, sandboxMinutesOf, type AgentRunResult, type PreviousPlanVar } from "@north/agents";
 import { companyOwnerId, countLeads, createPlanWithTasks, createTask, getProfile, latestPlan, listGoals, listMemoryItems, listSignals, markTaskDone, markTaskFailed, markTaskRunning, recordAgentRun, siteUrls, type PlanRecord, type TaskRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { companyContext, type CompanyContext } from "./company-context";
+import { chargeRun } from "./credits";
+import { dispatchAllowed } from "./entitlements";
 import { ledgerReport } from "./plan-report";
 
 export type PlanWeekResult =
   | { readonly kind: "created"; readonly planId: string; readonly taskIds: readonly string[] }
   /** PLN-2: the Chief of Staff could not explain a shrunk task type twice; the planning task is failed and the brief shows it. */
-  | { readonly kind: "rejected"; readonly taskId: string; readonly missing: readonly string[] };
+  | { readonly kind: "rejected"; readonly taskId: string; readonly missing: readonly string[] }
+  /** ADR 0014: dispatch refused (kill switch, ended subscription, credits); nothing was created. */
+  | { readonly kind: "skipped"; readonly skipped: DispatchBlockReason };
 
 const MAX_CONTEXT_LINES = 5;
 const ESCALATION_PREFIX = "Escalated:";
@@ -53,8 +57,9 @@ export async function planContext(deps: WorkerDeps, companyId: string): Promise<
   return Object.freeze({ ...base, vars: Object.freeze(vars), previous, previousTasks: previous?.tasks.map((t) => ({ taskType: t.taskType })) ?? [], timezone, weekStart: weekStartLocal(timezone, now), notes });
 }
 
-async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult): Promise<void> {
-  await recordAgentRun(deps.db, {
+/** The planning run's `agent_runs` row, its trace and, in the same call, its credit and usage (BIL-2). */
+async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null): Promise<void> {
+  const agentRunId = await recordAgentRun(deps.db, {
     companyId: task.companyId,
     taskId: task.id,
     role: "chief_of_staff",
@@ -67,7 +72,9 @@ async function recordPlanningRun(deps: WorkerDeps, task: TaskRecord, result: Age
     durationMs: result.usage.durationMs,
     status: result.status,
     ...(result.status === "failed" ? { error: result.error } : {}),
+    traceId,
   });
+  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) });
 }
 
 const revisionRetryNote = (missing: readonly string[]): string =>
@@ -77,18 +84,22 @@ type RunOutcome = { readonly kind: "plan"; readonly plan: PlanOutput; readonly c
 
 /** One planning run, parsed and checked against PLN-2; `retryNote` names the missing types on the second attempt. */
 async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanContext, retryNote: string | null): Promise<RunOutcome> {
+  const instructions = [retryNote, context.header, task.input, ...context.notes].filter((line): line is string => line !== null && line.length > 0).join("\n\n");
+  const traceId = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: "chief_of_staff", taskType: "plan_week", instructions });
   const result = await deps.runtime.run({
     companyId: task.companyId,
     taskId: task.id,
     role: "chief_of_staff",
     taskType: "plan_week",
-    instructions: [retryNote, context.header, task.input, ...context.notes].filter((line): line is string => line !== null && line.length > 0).join("\n\n"),
+    instructions,
     memoryDigest: context.digest,
     workspaceDir: `${deps.env.WORKSPACE_ROOT}/${task.id}`,
     outputSchema: outputJsonSchema("plan_week"),
     vars: context.vars,
+    ...(traceId ? { traceId } : {}),
   });
-  await recordPlanningRun(deps, task, result);
+  deps.tracer.endRun(traceId, { model: result.usage.model, costUsd: result.usage.costUsd, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, status: result.status });
+  await recordPlanningRun(deps, task, result, result.traceId ?? traceId);
   if (result.status !== "succeeded") return { kind: "failed", error: result.status === "failed" ? result.error : "planning cannot wait on a decision" };
   const parsed = PlanOutputSchema.safeParse(result.output);
   if (!parsed.success) return { kind: "failed", error: `plan output invalid: ${parsed.error.issues[0]?.message ?? "schema"}` };
@@ -103,9 +114,12 @@ async function runPlanning(deps: WorkerDeps, task: TaskRecord, context: PlanCont
  * that shrinks a task type without a reason is retried once with the types
  * named, then the planning task fails. The week is the owner's local week;
  * the Monday cron (`planTick`) asks only when the latest plan is older.
+ * Dispatch asks first (ADR 0014): a refusal plans nothing.
  */
 export async function planWeek(deps: WorkerDeps, companyId: string): Promise<PlanWeekResult> {
   const { db } = deps;
+  const allowed = await dispatchAllowed(deps, companyId);
+  if (!allowed.ok) return { kind: "skipped", skipped: allowed.reason };
   const context = await planContext(deps, companyId);
   const goal = (await listGoals(db, companyId)).find((g) => g.status === "active") ?? null;
   const planningTask = await createTask(db, {

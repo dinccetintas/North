@@ -1,8 +1,9 @@
-import { OUTCOME_METRIC_KEYS, SIGNAL_SCORE_BATCH, SIGNAL_THRESHOLD, SignalCandidateSchema, detectMetricDrops, isHttpUrl, localDay, metricDropCandidate, signalQueries, type SignalCandidate } from "@north/core";
+import { OUTCOME_METRIC_KEYS, SIGNAL_SCORE_BATCH, SIGNAL_THRESHOLD, SignalCandidateSchema, detectMetricDrops, isHttpUrl, localDay, metricDropCandidate, signalQueries, type DispatchBlockReason, type SignalCandidate } from "@north/core";
 import { scoreSignals } from "@north/agents";
 import { companyOwnerId, currentThesis, getProfile, insertSignals, knownSourceRefs, listMemoryItems, listSignals, metricSeries, updateSignal, type MemoryItemRecord } from "@north/db";
 import { NotConfiguredError, SIGNAL_SOURCE_IDS, type SignalSource } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
+import { dispatchAllowed } from "./entitlements";
 import { convertSignals, type ConvertResult } from "./signal-cards";
 import type { StepRunner } from "./steps";
 
@@ -140,8 +141,15 @@ export interface ScanResult {
   readonly converted: ConvertResult;
 }
 
-/** PRO-1, one company's scan: context → every source its own step → drops → score → convert (at most one card). */
-export async function scanCompanySignals(deps: WorkerDeps, step: StepRunner, companyId: string): Promise<ScanResult> {
+/** ADR 0014: the scan did not run (kill switch, ended subscription, no credits) and inserted nothing. */
+export interface ScanSkipped {
+  readonly skipped: DispatchBlockReason;
+}
+
+/** PRO-1, one company's scan: dispatch check → context → every source its own step → drops → score → convert (at most one card). */
+export async function scanCompanySignals(deps: WorkerDeps, step: StepRunner, companyId: string): Promise<ScanResult | ScanSkipped> {
+  const allowed = await step.run("dispatch-allowed", () => dispatchAllowed(deps, companyId));
+  if (!allowed.ok) return Object.freeze({ skipped: allowed.reason });
   const context = await step.run("context", () => scanContext(deps, companyId));
   const sources: SourceScan[] = [];
   for (const source of deps.integrations.signals) sources.push(await step.run(`scan-${source.id}`, () => scanSource(deps, companyId, source, context)));

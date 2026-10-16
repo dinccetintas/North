@@ -17,8 +17,9 @@ export const PLAN_TICK_EVENT = "plan/tick";
 
 /**
  * BRF-1, hourly (and on `brief/tick`): every company whose owner-local hour
- * is 07:00 and whose brief for the day does not exist gets `brief/generate`.
- * A stopped company is included: its brief says so.
+ * is the owner's brief hour (`users.brief_hour`, 07:00 by default) and whose
+ * brief for the day does not exist gets `brief/generate`. A stopped company
+ * is included, by the user or by billing: its brief says so.
  */
 export const dailyBrief = inngest.createFunction(
   { id: "daily-brief", triggers: [cron("3 * * * *"), { event: EVENT.briefTick }], retries: 0 },
@@ -62,6 +63,7 @@ export const scanCompanySignalsFn = inngest.createFunction(
     const deps = await buildDeps();
     const runner: StepRunner = { run: (id, fn) => step.run(id, fn) as unknown as ReturnType<typeof fn> };
     const result = await scanCompanySignals(deps, runner, companyId);
+    if ("skipped" in result) return { companyId, reason, ...result };
     if (result.converted.cardsOpened.length > 0) {
       await step.sendEvent("cards-opened", result.converted.cardsOpened.map((cardId) => ({ name: EVENT.decisionOpened, data: { companyId, cardId, taskId: null } })));
     }

@@ -57,11 +57,11 @@ export async function applyOutcome(deps: WorkerDeps, row: PendingRow, outcome: E
       const reason: PauseReason = payload.reason === "cap" ? "cap" : payload.reason === "kill_switch" ? "kill_switch" : "user";
       const day = typeof payload.day === "string" ? payload.day : undefined;
       // The same company-scoped resolution the perform step used (H1): provider ids map back to the company's rows.
-      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignPaused(deps, campaign.id, reason, day);
+      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignPaused(deps, campaign, reason, day);
       return;
     }
     case "ads.resume":
-      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignActive(deps, campaign.id);
+      for (const campaign of await resolveCampaigns(deps, row.companyId, payload)) await markCampaignActive(deps, campaign);
       return;
     case "email.send.first_contact": {
       const leadId = typeof payload.leadId === "string" ? payload.leadId : null;

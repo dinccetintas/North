@@ -1,7 +1,7 @@
 import type { ActionSpec, MetricKey } from "@north/core";
 import { BudgetCapError, getTask, registerCampaign, setCampaignStatus, type CampaignRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
-import { todayIsoDate } from "./dates";
+import { ownerDay } from "./dates";
 
 /**
  * The `campaigns` summary row (ADR 0009): one per executed `ads.start`, moved
@@ -51,18 +51,18 @@ export async function registerCampaignFor(deps: WorkerDeps, input: RegisterCampa
     if (!(error instanceof BudgetCapError)) throw error;
     console.error(`[campaigns] ${input.providerCampaignId} registered paused: ${error.message}`);
     const row = await registerCampaign(deps.db, { ...base, status: "paused_cap" });
-    return setCampaignStatus(deps.db, row.id, "paused_cap", { pausedDay: todayIsoDate(deps.clock()), lastError: error.message.slice(0, 2000) });
+    return setCampaignStatus(deps.db, row.id, "paused_cap", { pausedDay: await ownerDay(deps, input.companyId), lastError: error.message.slice(0, 2000) });
   }
 }
 
-/** The row becomes `active`; when the database refuses (cap spent since), it stays paused for the cap with today as the pause day. */
-export async function markCampaignActive(deps: WorkerDeps, campaignId: string): Promise<CampaignRecord> {
+/** The row becomes `active`; when the database refuses (cap spent since), it stays paused for the cap with the owner's today as the pause day. */
+export async function markCampaignActive(deps: WorkerDeps, campaign: Pick<CampaignRecord, "id" | "companyId">): Promise<CampaignRecord> {
   try {
-    return await setCampaignStatus(deps.db, campaignId, "active", { pausedDay: null, lastError: null });
+    return await setCampaignStatus(deps.db, campaign.id, "active", { pausedDay: null, lastError: null });
   } catch (error) {
     if (!(error instanceof BudgetCapError)) throw error;
-    console.error(`[campaigns] ${campaignId} stays paused: ${error.message}`);
-    return setCampaignStatus(deps.db, campaignId, "paused_cap", { pausedDay: todayIsoDate(deps.clock()), lastError: error.message.slice(0, 2000) });
+    console.error(`[campaigns] ${campaign.id} stays paused: ${error.message}`);
+    return setCampaignStatus(deps.db, campaign.id, "paused_cap", { pausedDay: await ownerDay(deps, campaign.companyId), lastError: error.message.slice(0, 2000) });
   }
 }
 
@@ -70,7 +70,8 @@ export type PauseReason = "cap" | "kill_switch" | "user";
 
 const PAUSED_STATUS = { cap: "paused_cap", kill_switch: "paused_kill", user: "paused_user" } as const;
 
-/** The row reflects a pause the provider confirmed; a cap pause remembers its day so the day roll can resume it. */
-export function markCampaignPaused(deps: WorkerDeps, campaignId: string, reason: PauseReason, day: string = todayIsoDate(deps.clock())): Promise<CampaignRecord> {
-  return setCampaignStatus(deps.db, campaignId, PAUSED_STATUS[reason], { pausedDay: reason === "cap" ? day : null, lastError: null });
+/** The row reflects a pause the provider confirmed; a cap pause remembers its owner-local day (the spec's, else today's) so the day roll can resume it. */
+export async function markCampaignPaused(deps: WorkerDeps, campaign: Pick<CampaignRecord, "id" | "companyId">, reason: PauseReason, day?: string): Promise<CampaignRecord> {
+  const pausedDay = reason === "cap" ? (day ?? (await ownerDay(deps, campaign.companyId))) : null;
+  return setCampaignStatus(deps.db, campaign.id, PAUSED_STATUS[reason], { pausedDay, lastError: null });
 }

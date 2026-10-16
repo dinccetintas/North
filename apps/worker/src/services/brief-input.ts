@@ -1,5 +1,5 @@
-import { ACTION_KINDS, AGENT_ROLES, BRIEF_LIST_MAX, CHANNELS, OUTCOME_METRIC_KEYS, type ActionKind, type AgentRole, type BriefInput, type Channel, type OutcomeMetricKey } from "@north/core";
-import { getCompanyById, latestPlan, listBriefs, listBudgets, listCards, listGoals, listLedgerEntries, listMemoryItems, listPendingCards, listRecentActions, listSignals, metricSeries, type DbClient } from "@north/db";
+import { ACTION_KINDS, AGENT_ROLES, BRIEF_LIST_MAX, CHANNELS, OUTCOME_METRIC_KEYS, canDispatch, isActive, type ActionKind, type AgentRole, type BriefInput, type Channel, type OutcomeMetricKey } from "@north/core";
+import { creditBalance, getCompanyById, getEntitlementForCompany, latestPlan, listBriefs, listBudgets, listCards, listGoals, listLedgerEntries, listMemoryItems, listPendingCards, listRecentActions, listSignals, metricSeries, type CompanySummary, type DbClient } from "@north/db";
 import type { WorkerDeps } from "../deps";
 import { listDeferredRows } from "./deferred";
 
@@ -68,8 +68,23 @@ async function todaySection(db: DbClient, companyId: string): Promise<BriefInput
     .map((t) => ({ taskId: t.id, title: t.title.slice(0, 200), role: t.role as AgentRole, status: t.status }));
 }
 
-async function spendSection(db: DbClient, companyId: string): Promise<BriefInput["spend"]> {
-  return (await listBudgets(db, companyId)).slice(0, BRIEF_LIST_MAX.spend).map((b) => ({ category: b.category, spentTodayUsd: b.spentTodayUsd, dailyCapUsd: b.dailyLimitUsd + b.dailyExtraUsd, spentTotalUsd: b.spentTotalUsd, totalCapUsd: b.totalLimitUsd }));
+/** Today's spend per category on the owner's local day (ADR 0011 follow-up: the brief's day and the budget's day are one). */
+async function spendSection(db: DbClient, companyId: string, day: string): Promise<BriefInput["spend"]> {
+  return (await listBudgets(db, companyId, day)).slice(0, BRIEF_LIST_MAX.spend).map((b) => ({ category: b.category, spentTodayUsd: b.spentTodayUsd, dailyCapUsd: b.dailyLimitUsd + b.dailyExtraUsd, spentTotalUsd: b.spentTotalUsd, totalCapUsd: b.totalLimitUsd }));
+}
+
+/**
+ * BIL-1 / BIL-2 (D6-5): the line after the headline when billing keeps the
+ * agents from running although the user did not stop them: the subscription
+ * ended (or the company is archived for retention), or the credits are spent.
+ * A user's own kill switch has the stopped line instead.
+ */
+async function blockedLine(db: DbClient, company: CompanySummary): Promise<BriefInput["blocked"]> {
+  if (company.pausedReason === "subscription_ended" || company.pausedReason === "retention") return { reason: "subscription_ended" };
+  const entitlement = await getEntitlementForCompany(db, company.id);
+  if (!entitlement || !isActive(entitlement)) return { reason: "subscription_ended" };
+  if (company.killSwitchActive) return null;
+  return canDispatch(await creditBalance(db, entitlement.userId)) ? null : { reason: "credits_exhausted" };
 }
 
 async function signalsSection(db: DbClient, companyId: string, since: string): Promise<BriefInput["signals"]> {
@@ -104,12 +119,13 @@ export async function gatherBriefInput(deps: WorkerDeps, companyId: string, day:
     day,
     companyName: company.name.slice(0, 200),
     stopped: company.killSwitchActive,
+    blocked: await blockedLine(db, company),
     yesterday: await yesterdaySection(db, companyId, since),
     metrics,
     goal: await goalSection(db, companyId, metrics),
     decisions: await decisionsSection(db, companyId, since),
     today: await todaySection(db, companyId),
-    spend: await spendSection(db, companyId),
+    spend: await spendSection(db, companyId, day),
     signals: await signalsSection(db, companyId, since),
     escalations: await escalationsSection(db, companyId, since),
   });

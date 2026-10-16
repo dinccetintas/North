@@ -16,7 +16,7 @@ const state: FakeState = emptyState();
 const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
-const { openFixTask, recordIncident, FIX_TASKS_PER_DAY, INCIDENT_ROLE } = await import("../src/services/incidents");
+const { openFixTask, recordIncident, retryDeferredIncidents, FIX_TASKS_PER_DAY, INCIDENT_ROLE } = await import("../src/services/incidents");
 
 const issueOf = (over: Record<string, unknown> = {}) =>
   SentryIssueSchema.parse({ id: "4501-id", shortId: "NORTH-1", title: "TypeError: Cannot read properties of undefined (reading 'map')", culprit: "app/page.tsx in HomePage", level: "error", permalink: "https://sentry.io/organizations/north/issues/4501/", firstSeen: "2026-10-21T06:00:00.000Z", project: { slug: "lumen-web" }, ...over });
@@ -129,5 +129,46 @@ describe("openFixTask", () => {
     expect((await openFixTask(d, "company-1", fourth.signalId)).outcome).toBe("opened");
     expect([...state.tasks.values()]).toHaveLength(4);
     expect(state.signals.get(fourth.signalId)).toMatchObject({ status: "converted" });
+  });
+});
+
+describe("D6-6 retry of deferred error signals", () => {
+  it("the 4th issue of Monday opens on Tuesday's tick and not on a second Monday tick", async () => {
+    const d = deps();
+    for (let i = 1; i <= FIX_TASKS_PER_DAY; i++) {
+      const { signalId } = await recordIncident(d, "company-1", issueOf({ id: `m-${i}`, shortId: `NORTH-M${i}` }));
+      await openFixTask(d, "company-1", signalId);
+    }
+    const fourth = await recordIncident(d, "company-1", issueOf({ id: "m-4", shortId: "NORTH-M4" }));
+    expect((await openFixTask(d, "company-1", fourth.signalId)).outcome).toBe("deferred");
+    expect(state.signals.get(fourth.signalId)?.payload).toMatchObject({ deferredDay: localDay("Europe/Istanbul", clock.now()), issue: expect.objectContaining({ shortId: "NORTH-M4" }) });
+    expect(await retryDeferredIncidents(d)).toEqual([]);
+    clock.set(new Date(clock.now().getTime() + 86_400_000).toISOString());
+    expect(await retryDeferredIncidents(d)).toEqual([{ companyId: "company-1", signalId: fourth.signalId }]);
+    expect((await openFixTask(d, "company-1", fourth.signalId)).outcome).toBe("opened");
+    expect(await retryDeferredIncidents(d)).toEqual([]);
+  });
+
+  it("a stopped company's deferred signals wait for the resume", async () => {
+    const d = deps();
+    const { signalId } = await recordIncident(d, "company-1", issueOf({ id: "s-1", shortId: "NORTH-S1" }));
+    state.signals.get(signalId)!.status = "deferred";
+    state.signals.get(signalId)!.payload = { ...state.signals.get(signalId)!.payload, deferredDay: "2020-01-01" };
+    state.killSwitch.set("company-1", true);
+    expect(await retryDeferredIncidents(d)).toEqual([]);
+    state.killSwitch.set("company-1", false);
+    expect(await retryDeferredIncidents(d)).toEqual([{ companyId: "company-1", signalId }]);
+  });
+});
+
+describe("D6-3 openFixTask asks dispatch first (ADR 0014)", () => {
+  it("an ended subscription opens nothing: the result is skipped with the reason and the signal is held deferred for a later day", async () => {
+    const d = deps();
+    const { signalId } = await recordIncident(d, "company-1", issue);
+    const owner = state.companies.get("company-1")!.ownerId;
+    state.entitlements.set(owner, { ...(await dbModule.getEntitlement({} as never, owner))!, status: "ended", endedAt: clock.now().toISOString(), retentionUntil: "2099-01-01T00:00:00.000Z" });
+    expect(await openFixTask(d, "company-1", signalId)).toEqual({ taskId: null, reused: false, outcome: "skipped", skipped: "subscription_ended" });
+    expect([...state.tasks.values()]).toHaveLength(0);
+    expect(state.signals.get(signalId)).toMatchObject({ status: "deferred", rationale: expect.stringContaining("subscription_ended") });
   });
 });

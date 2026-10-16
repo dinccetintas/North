@@ -2,8 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { localDay } from "@north/core";
 import type { SandboxEvent, SandboxIntegrations } from "@north/integrations";
-import { directSteps, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState } from "./fake-db";
+import { SimClock } from "../src/services/clock";
+import { directSteps, emptyState, fakeDbModule, fakeDeps, seedCompany, seedTask, type FakeState } from "./fake-db";
 
 /**
  * D4-4 the collector on the sandbox adapters (OUT-1, OUT-2, BUD-1, BUD-3):
@@ -32,6 +34,8 @@ beforeEach(async () => {
   state.budgets.set("company-1", [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 0, spentTodayUsd: 0 }]);
   events = [];
   root = await mkdtemp(join(tmpdir(), "north-collect-"));
+  // M6: budget days are the owner's, so the company and its (UTC) owner exist as they do in Postgres.
+  seedCompany(state);
 });
 
 async function activeCampaign(deps: ReturnType<typeof fakeDeps>, taskId: string) {
@@ -151,5 +155,35 @@ describe("collectCompanyMetrics (OUT-1/OUT-2, BUD-1/BUD-3)", () => {
     const insights = await deps.integrations.ads(null).insights("company-1", campaign.providerCampaignId);
     expect(insights.spendUsd).toBeCloseTo(10 / 24, 2);
     expect(state.budgets.get("company-1")?.[0]?.spentTodayUsd).toBeCloseTo(10 / 24, 2);
+  });
+});
+
+describe("D6-9 budgets on the owner-local day (ADR 0011 follow-up)", () => {
+  it("an Istanbul owner at 23:30 local spends on today's Istanbul date; at 00:30 local the day has rolled although UTC has not; the cap card day matches the decision card day", async () => {
+    Object.assign(state, { ...emptyState(), budgets: state.budgets });
+    seedCompany(state, { timezone: "Europe/Istanbul" });
+    const clock = new SimClock("2026-11-03T20:30:00.000Z"); // 23:30 on 3 November in Istanbul
+    const task = seedTask(state, { status: "done" });
+    const deps = fakeDeps(state, events, 200, "sandbox", root, clock);
+    const campaign = await activeCampaign(deps, task.id);
+    const sandbox = sandboxOf(deps);
+    dbModule.recordAttributionWindow.mockClear();
+    const days = () => dbModule.recordAttributionWindow.mock.calls.map((call) => (call[1] as unknown as { day: string }).day);
+
+    await sandbox.ads.deliver(campaign.providerCampaignId, { spendUsd: 4, impressions: 800, clicks: 12, conversions: 1 });
+    await collect(deps);
+    expect(days()).toEqual(["2026-11-03"]);
+
+    clock.set("2026-11-03T21:30:00.000Z"); // 00:30 on 4 November in Istanbul; UTC is still the 3rd
+    await sandbox.ads.deliver(campaign.providerCampaignId, { spendUsd: 11, impressions: 900, clicks: 14, conversions: 1 });
+    const rolled = await collect(deps);
+    expect(days()).toEqual(["2026-11-03", "2026-11-04"]);
+    expect(state.campaigns.get(campaign.id)).toMatchObject({ status: "paused_cap", pausedDay: "2026-11-04" });
+    expect(rolled.cardsOpened).toHaveLength(1);
+    const card = state.cards.get(rolled.cardsOpened[0]!)!;
+    const capAction = state.actions.find((a) => a.kind === "budget.cap.raise")!;
+    expect(capAction.payload.day).toBe("2026-11-04");
+    expect(localDay("Europe/Istanbul", new Date(card.openedAt))).toBe(capAction.payload.day);
+    expect(card.question).toContain("Raise today's cap");
   });
 });

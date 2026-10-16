@@ -3,7 +3,7 @@ import { getBudget, listActionsByKind, listCampaigns, recordAction, setCampaignS
 import type { WorkerDeps } from "../deps";
 import { gateAction, gateStandalone, runGated, type GatedAction, type GatedRun } from "./actions";
 import { markCampaignPaused } from "./campaign-rows";
-import { isBefore, todayIsoDate } from "./dates";
+import { isBefore, ownerDay } from "./dates";
 import { ConnectionRequiredError, providerAuthFor } from "./provider-auth";
 import type { StepRunner } from "./steps";
 
@@ -18,8 +18,8 @@ function gateCampaignAction(deps: WorkerDeps, campaign: CampaignRecord, spec: Ac
   return campaign.taskId ? gateAction(deps, campaign.taskId, spec, { origin: "worker" }) : gateStandalone(deps, spec);
 }
 
-/** BUD-3, first half: pause the campaign at the provider (K1 `ads.pause` through the gate, `notified`) and mark the row `paused_cap` for the day. */
-export function pauseForCap(deps: WorkerDeps, step: StepRunner, campaign: CampaignRecord, cap: CapKind, day: string = todayIsoDate(deps.clock()), stepId = `cap-pause-${campaign.id}`): Promise<GatedRun> {
+/** BUD-3, first half: pause the campaign at the provider (K1 `ads.pause` through the gate, `notified`) and mark the row `paused_cap` for the owner-local day (the caller's step computed it). */
+export function pauseForCap(deps: WorkerDeps, step: StepRunner, campaign: CampaignRecord, cap: CapKind, day: string, stepId = `cap-pause-${campaign.id}`): Promise<GatedRun> {
   const spec: ActionSpec = {
     kind: "ads.pause",
     companyId: campaign.companyId,
@@ -47,13 +47,15 @@ export function resumeCampaign(deps: WorkerDeps, step: StepRunner, campaign: Cam
 
 /**
  * Day roll: campaigns paused for the daily cap on an earlier day resume by
- * themselves (K1); a total-cap pause never resumes without a card. Returns
- * the ids resumed.
+ * themselves (K1); a total-cap pause never resumes without a card. The day
+ * is the owner's (M6): the roll happens at the owner's midnight. Returns the
+ * ids resumed.
  */
-export async function resumeAfterDayRoll(deps: WorkerDeps, step: StepRunner, companyId: string, today: string = todayIsoDate(deps.clock())): Promise<readonly string[]> {
+export async function resumeAfterDayRoll(deps: WorkerDeps, step: StepRunner, companyId: string, day?: string): Promise<readonly string[]> {
+  const today = day ?? (await ownerDay(deps, companyId));
   const paused = (await listCampaigns(deps.db, companyId, { status: ["paused_cap"] })).filter((c) => c.pausedDay !== null && isBefore(c.pausedDay, today));
   if (paused.length === 0) return Object.freeze([]);
-  const budget = await getBudget(deps.db, companyId, "ads");
+  const budget = await getBudget(deps.db, companyId, "ads", today);
   if (!budget || capExceeded(budget).total) return Object.freeze([]);
   const resumed: string[] = [];
   for (const campaign of paused) {
@@ -135,7 +137,7 @@ export async function pauseForKillSwitch(deps: WorkerDeps, companyId: string): P
     });
     for (const a of failed) console.error(`[kill-switch] campaign ${a.campaign.id} not paused: ${a.error}`);
   }
-  for (const campaign of paused.filter((c) => c.status === "active")) await markCampaignPaused(deps, campaign.id, "kill_switch");
+  for (const campaign of paused.filter((c) => c.status === "active")) await markCampaignPaused(deps, campaign, "kill_switch");
   for (const a of failed) await setCampaignStatus(deps.db, a.campaign.id, a.campaign.status, { lastError: a.error?.slice(0, 2000) ?? null });
   return Object.freeze({ paused: Object.freeze(paused.map((c) => c.id)), failed: Object.freeze(failed.map((a) => a.campaign.id)) });
 }

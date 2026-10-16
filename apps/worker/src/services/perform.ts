@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { WorkerDeps } from "../deps";
 import { activationRefusal, BudgetCapReachedError } from "./budget-check";
 import { resolveCampaigns } from "./campaign-lookup";
-import { todayIsoDate } from "./dates";
+import { ownerDay } from "./dates";
 import { TASK_REF_PREFIX } from "./outcomes";
 import { providerAuthFor } from "./provider-auth";
 
@@ -137,7 +137,8 @@ async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload):
 async function raiseCap(deps: WorkerDeps, action: ActionSpec, payload: Payload): Promise<PerformResult> {
   const category = action.category ?? "ads";
   const amountUsd = action.amountUsd ?? 0;
-  const day = str(payload, "day", todayIsoDate(deps.clock()));
+  // The card carries its owner-local day (M6, ADR 0011): the raise lands on that day or not at all.
+  const day = str(payload, "day") || (await ownerDay(deps, action.companyId));
   if (payload.cap === "total") await raiseTotalCap(deps.db, { companyId: action.companyId, category, amountUsd });
   else {
     const result = await raiseDailyCap(deps.db, { companyId: action.companyId, category, amountUsd, day });

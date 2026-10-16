@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeVercelCode, oauthClients, parseProviderToken, refreshGoogleToken, revokeProviderToken, serializeProviderToken, type FetchLike } from "../src/services/oauth";
+import { exchangeGithubCode, exchangeGoogleCode, exchangeMetaCode, exchangeStripeCode, exchangeVercelCode, oauthClients, parseProviderToken, refreshGoogleToken, revokeProviderToken, serializeProviderToken, type FetchLike } from "../src/services/oauth";
 
 const client = { clientId: "id", clientSecret: "s3cret" };
 const now = () => new Date("2026-10-15T10:00:00.000Z");
@@ -19,13 +19,27 @@ function fakeFetch(answers: Record<string, { status?: number; body: unknown }>):
 
 describe("ONB-3 OAuth code exchange (worker side: client secrets never leave here)", () => {
   it("oauthClients reads id and secret pairs from the env; a missing half means not configured", () => {
-    expect(oauthClients({})).toEqual({ github: null, vercel: null, meta_ads: null, gmail: null });
-    expect(oauthClients({ GITHUB_CLIENT_ID: "a", GITHUB_CLIENT_SECRET: "b", VERCEL_CLIENT_ID: "c", META_APP_ID: "m", META_APP_SECRET: "ms", GOOGLE_CLIENT_ID: "g" })).toEqual({
+    expect(oauthClients({})).toEqual({ github: null, vercel: null, meta_ads: null, gmail: null, stripe: null });
+    expect(oauthClients({ GITHUB_CLIENT_ID: "a", GITHUB_CLIENT_SECRET: "b", VERCEL_CLIENT_ID: "c", META_APP_ID: "m", META_APP_SECRET: "ms", GOOGLE_CLIENT_ID: "g", STRIPE_CONNECT_CLIENT_ID: "ca_1" })).toEqual({
       github: { clientId: "a", clientSecret: "b" },
       vercel: null,
       meta_ads: { clientId: "m", clientSecret: "ms" },
       gmail: null,
+      stripe: null,
     });
+    expect(oauthClients({ STRIPE_CONNECT_CLIENT_ID: "ca_1", STRIPE_CONNECT_CLIENT_SECRET: "fake-secret" }).stripe).toEqual({ clientId: "ca_1", clientSecret: "fake-secret" });
+  });
+
+  it("OUT-2 Stripe Connect: form-encoded code exchange with the secret, the connected account's read-only token, the account id as the label; nothing secret in an error", async () => {
+    const { fetchImpl, calls } = fakeFetch({ "https://connect.stripe.com/oauth/token": { body: { access_token: "fake-access", refresh_token: "fake-refresh", scope: "read_only", stripe_user_id: "acct_123", livemode: false } } });
+    expect(await exchangeStripeCode(client, "ac_c0de", "http://localhost:3100/api/connections/stripe/callback", fetchImpl)).toEqual({ token: { accessToken: "fake-access", refreshToken: "fake-refresh" }, scopes: ["read_only"], accountLabel: "acct_123" });
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(String(calls[0]?.init?.body)).toBe("grant_type=authorization_code&code=ac_c0de&client_secret=s3cret");
+    const refused = fakeFetch({ "https://connect.stripe.com/oauth/token": { status: 400, body: { error: "invalid_grant", error_description: "code already used" } } });
+    const error = await exchangeStripeCode(client, "ac_c0de", "http://x/cb", refused.fetchImpl).catch((e: Error) => e);
+    expect(String(error)).toContain("invalid_grant");
+    expect(String(error)).not.toContain("s3cret");
+    expect(await revokeProviderToken("stripe", client, JSON.stringify({ accessToken: "fake-access" }), fetchImpl)).toBe(false);
   });
 
   it("GitHub: posts the code with the secret, then reads the login for the account label", async () => {

@@ -1,12 +1,12 @@
-import { isIP } from "node:net";
-import { lookup } from "node:dns/promises";
 import { isHttpUrl, type EvidenceCheck, type EvidenceKind } from "@north/core";
 import { getArtifact, type DbClient } from "@north/db";
 import type { CampaignProviderStatus, MessageStatus } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
+import { createPinnedFetch, vetHost, type FetchLike } from "./pinned-fetch";
 import { providerAuthFor } from "./provider-auth";
 
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+export type { FetchLike } from "./pinned-fetch";
+export { isPrivateAddress } from "./pinned-fetch";
 
 /**
  * How URLs are verified (AGT-2) and what they may point at (M3 security
@@ -34,51 +34,41 @@ export interface VerifierDeps extends VerifierConfig, ProviderChecks {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const defaultFetch: FetchLike = (input, init) => fetch(input, init);
 
-/** True for addresses the worker must never be pointed at from agent-written content. */
-export function isPrivateAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 4) {
-    const [a = 0, b = 0] = address.split(".").map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
-  }
-  if (family === 6) {
-    const lower = address.toLowerCase();
-    if (lower === "::1" || lower === "::") return true;
-    if (lower.startsWith("::ffff:")) return isPrivateAddress(lower.slice(7));
-    return /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower);
-  }
-  return false;
-}
-
-/** Resolves the host (literal or DNS) and says whether any address is private. Unresolvable hosts count as private. */
+/** Resolves the host (literal or DNS) and says whether any address is private; unresolvable hosts count as private. The pinned fetch's rules (`vetHost`). */
 export async function hostIsPrivate(hostname: string): Promise<boolean> {
-  const host = hostname.replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".internal") || host.endsWith(".local")) return true;
-  if (isIP(host)) return isPrivateAddress(host);
   try {
-    const addresses = await lookup(host, { all: true });
-    return addresses.length === 0 || addresses.some((a) => isPrivateAddress(a.address));
+    await vetHost(hostname);
+    return false;
   } catch {
     return true;
   }
 }
 
-/** A URL is evidence when a direct GET answers 2xx within the timeout: no redirects, no private hosts unless the policy lists the origin. */
+/**
+ * A URL is evidence when a direct GET answers 2xx within the timeout: no
+ * redirects, no private hosts unless the policy lists the origin. By default
+ * the GET goes through the pinned fetch (D6-11), which vets the host and
+ * connects only to the address it vetted; an injected fetch (tests) is
+ * preceded by the same host check.
+ */
 export async function verifyUrl(url: string, config: VerifierConfig = {}): Promise<EvidenceCheck> {
   if (!isHttpUrl(url)) return { kind: "url", ref: url, verified: false, detail: "not an http(s) URL" };
   const parsed = new URL(url);
   const listed = config.allowedOrigins?.includes(parsed.origin) ?? false;
   if (config.allowedOrigins && !listed) return { kind: "url", ref: url, verified: false, detail: `origin ${parsed.origin} is not the site server` };
-  if (!listed && !config.allowPrivate && (await hostIsPrivate(parsed.hostname))) return { kind: "url", ref: url, verified: false, detail: `host ${parsed.hostname} is private` };
-  const fetchImpl = config.fetchImpl ?? defaultFetch;
+  const allowPrivate = listed || (config.allowPrivate ?? false);
+  if (config.fetchImpl && !allowPrivate && (await hostIsPrivate(parsed.hostname))) return { kind: "url", ref: url, verified: false, detail: `host ${parsed.hostname} is private` };
+  const fetchImpl = config.fetchImpl ?? createPinnedFetch({ allowPrivate });
   try {
     const response = await fetchImpl(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS), headers: { "user-agent": "north-verifier/1.0" } });
+    // Only the status matters: release the connection now.
+    await response.body?.cancel().catch(() => undefined);
     const ok = response.status >= 200 && response.status < 300;
     const detail = response.status >= 300 && response.status < 400 ? `HTTP ${response.status} redirect to ${response.headers.get("location") ?? "?"} (not followed)` : `HTTP ${response.status}`;
     return { kind: "url", ref: url, verified: ok, detail };
   } catch (error) {
+    // A refused host (`HostRefusedError`: "host … is private") lands here before any connection.
     return { kind: "url", ref: url, verified: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }

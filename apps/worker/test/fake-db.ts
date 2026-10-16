@@ -1,14 +1,16 @@
 import { vi } from "vitest";
-import { transition, type ActionSpec, type TaskEvent } from "@north/core";
+import { transition, type TaskEvent } from "@north/core";
 import { MOCK_LLM_RESPONSES, MockLlm } from "@north/agents";
 import type { WorkerDeps } from "../src/deps";
 import { SimClock } from "../src/services/clock";
 import { createSandboxIntegrations, type SandboxEvent } from "@north/integrations";
 import { emptyM4State, fakeDbM4, type M4State } from "./fake-db-m4";
 import { emptyM5State, fakeDbM5, type M5State } from "./fake-db-m5";
+import { emptyM6State, fakeDbM6, fakeEntitlementsQuery, NO_TRACER, type M6State } from "./fake-db-m6";
 
 export type { FakeBudget, FakeCampaign, FakeLead } from "./fake-db-m4";
 export type { FakeSignal, FakeBrief, FakePlan, FakeArtifact } from "./fake-db-m5";
+export type { FakeBillingEvent, FakeBillingSession } from "./fake-db-m6";
 
 /**
  * In-memory stand-in for the `@north/db` repositories the services use.
@@ -81,7 +83,7 @@ export interface FakeConnection {
   accountLabel: string;
 }
 
-export interface FakeState extends M4State, M5State {
+export interface FakeState extends M4State, M5State, M6State {
   tasks: Map<string, FakeTask>;
   actions: FakeAction[];
   cards: Map<string, FakeCard>;
@@ -98,7 +100,7 @@ export interface FakeState extends M4State, M5State {
 }
 
 export function emptyState(): FakeState {
-  return { ...emptyM4State(), ...emptyM5State(), tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
+  return { ...emptyM4State(), ...emptyM5State(), ...emptyM6State(), tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
 }
 
 let counter = 0;
@@ -298,10 +300,6 @@ export function fakeDbModule(state: FakeState) {
       return id;
     }),
     companyOwnerId: vi.fn(async (_db: unknown, companyId: string) => must(state.companies.get(companyId), "company").ownerId),
-    getCompanyById: vi.fn(async (_db: unknown, companyId: string) => {
-      const company = state.companies.get(companyId);
-      return company ? { ...company, status: "active", killSwitchActive: state.killSwitch.get(companyId) ?? false } : null;
-    }),
     getProfile: vi.fn(async (_db: unknown, userId: string) => state.profiles.get(userId) ?? null),
     getConnection: vi.fn(async (_db: unknown, _userId: string, _provider: string): Promise<FakeConnection | null> => null),
     readConnectionSecret: vi.fn(async (_db: unknown, _connectionId: string): Promise<string> => "token"),
@@ -317,11 +315,12 @@ export function fakeDbModule(state: FakeState) {
     }),
     getArtifact: vi.fn(async (_db: unknown, id: string) => (id.startsWith("art-") ? { id, title: "Artifact", version: 1 } : null)),
     createArtifact: vi.fn(async (_db: unknown, input: { companyId: string; kind: string; title: string; createdByRole: string }) => ({ ...m5.recordArtifact(input.companyId, input.kind, input.title, input.createdByRole) })),
-    recordAgentRun: vi.fn(async () => undefined),
+    recordAgentRun: vi.fn(async () => nextId("run")),
     currentThesis: vi.fn(async () => ({ text: "Bookkeeping for solo consultants.", targetCustomer: "solo consultants", whyNow: "now" })),
     listGoals: vi.fn(async () => []),
     memoryDigest: vi.fn(async () => "Thesis: Bookkeeping for solo consultants."),
     listTasks: vi.fn(async (_db: unknown, companyId: string, opts: { status?: string[] }) => [...state.tasks.values()].filter((t) => t.companyId === companyId && (!opts.status || opts.status.includes(t.status)))),
+    ...fakeDbM6(state, { DbError, companies: () => state.companies, killSwitch: () => state.killSwitch, activeCompanies: () => state.activeCompanies, hasUser: (id) => state.profiles.has(id) || [...state.companies.values()].some((c) => c.ownerId === id), notifications: () => state.notifications }),
   };
 }
 
@@ -332,7 +331,7 @@ export function fakeDbModule(state: FakeState) {
  * connections (ONB-3 connect cards).
  */
 export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifyStatus = 200, mode: "sandbox" | "live" = "sandbox", root = "/tmp/north-test-sandbox", clock: SimClock = new SimClock()): WorkerDeps {
-  const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
+  const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : table === "entitlements" ? fakeEntitlementsQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
   const sandbox = createSandboxIntegrations((e) => void events.push(e), { root, siteBaseUrl: "http://127.0.0.1:3101", clock: () => clock.now() });
   return {
     env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: mode } as WorkerDeps["env"],
@@ -344,6 +343,7 @@ export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifySt
     clock: () => clock.now(),
     simClock: clock,
     llm: MockLlm.fromRecord({ ...MOCK_LLM_RESPONSES }),
+    tracer: NO_TRACER,
   };
 }
 
@@ -374,25 +374,4 @@ export function seedTask(state: FakeState, overrides: Partial<FakeTask> = {}): F
   return task;
 }
 
-/** A company with its owner's profile and zone, listed for the proactive crons. */
-export function seedCompany(state: FakeState, overrides: { id?: string; slug?: string; name?: string; ownerId?: string; timezone?: string; email?: string } = {}): string {
-  const id = overrides.id ?? "company-1";
-  const ownerId = overrides.ownerId ?? "user-1";
-  const slug = overrides.slug ?? "lumen";
-  const name = overrides.name ?? "Lumen";
-  state.companies.set(id, { id, slug, name, ownerId });
-  state.profiles.set(ownerId, { id: ownerId, email: overrides.email ?? "ceo@example.test", timezone: overrides.timezone ?? "UTC", dailyDecisionQuota: 3, plan: "free" });
-  state.activeCompanies.push({ companyId: id, ownerId, timezone: overrides.timezone ?? "UTC", name, slug, killSwitchActive: false });
-  return id;
-}
-
-export const adsStart = (overrides: Partial<ActionSpec> = {}): ActionSpec => ({
-  kind: "ads.start",
-  companyId: "company-1",
-  agentRole: "growth",
-  description: "Start the $10/day launch test",
-  amountUsd: 50,
-  category: "ads",
-  payload: { name: "Launch test", dailyBudgetUsd: 10, audience: "solo consultants", creativeMarkdown: "# Hi" },
-  ...overrides,
-});
+export { adsStart, seedCompany, type SeedCompanyOptions } from "./fake-seeds";

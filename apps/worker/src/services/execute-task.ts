@@ -1,10 +1,9 @@
-import { ActionSpecSchema, AgentOutputSchema, OutputFilesSchema, PlanOutputSchema, outputJsonSchema, type ActionSpec, type AgentOutput, type OutputFile } from "@north/core";
-import { workspaceFiles } from "@north/agents";
+import { ActionSpecSchema, AgentOutputSchema, OutputFilesSchema, PlanOutputSchema, outputJsonSchema, type ActionSpec, type AgentOutput, type DispatchBlockReason, type OutputFile } from "@north/core";
+import { sandboxMinutesOf, workspaceFiles } from "@north/agents";
 import { writeTree } from "@north/integrations";
 import { retryInstructions } from "./escalate";
 import {
   createArtifact,
-  getKillSwitch,
   getTask,
   headActionsForTask,
   importLeads,
@@ -23,6 +22,8 @@ import type { AgentRunResult } from "@north/agents";
 import type { WorkerDeps } from "../deps";
 import { companyContext } from "./company-context";
 import { deferredActionsFor } from "./actions";
+import { chargeRun } from "./credits";
+import { dispatchAllowed } from "./entitlements";
 
 export interface ExecuteTaskResult {
   readonly status: "ran" | "failed" | "blocked";
@@ -37,6 +38,8 @@ export interface ExecuteTaskResult {
   /** Attempt number this run was (1 or 2, AGT-3). */
   readonly attempt: number;
   readonly error?: string;
+  /** BIL-1 / BIL-2: why dispatch refused (`blocked`); the task stays queued. */
+  readonly reason?: DispatchBlockReason;
 }
 
 const noActions = (status: ExecuteTaskResult["status"], taskId: string, extra: Partial<ExecuteTaskResult> = {}): ExecuteTaskResult =>
@@ -76,35 +79,24 @@ async function collectFiles(task: TaskRecord, workspaceDir: string, output: Agen
  * (artifacts, memory, the agent run). Requested actions are returned, not
  * executed: the durable function gates each one (ADR 0001). A task that is
  * waiting on deferred decisions is not re-run; its stored actions are returned.
- * While the kill switch is active nothing runs and the task stays queued.
+ * Dispatch asks first (ADR 0014): under the kill switch, an ended
+ * subscription or an empty credit balance nothing runs, the outcome is
+ * `blocked` with the reason and the task stays queued. The run is traced
+ * (OBS-1) and charged one credit in the same call that records it (BIL-2).
  */
 export async function executeTask(deps: WorkerDeps, taskId: string): Promise<ExecuteTaskResult> {
-  const { db, runtime } = deps;
+  const { db } = deps;
   const task = await getTask(db, taskId);
   if (!task) throw new Error(`task ${taskId} not found`);
   if (task.status === "done") return noActions("ran", taskId, { costUsd: task.costUsd, artifactIds: task.result.artifactIds });
-  if (await getKillSwitch(db, task.companyId)) return noActions("blocked", taskId, { error: "kill switch active" });
+  const allowed = await dispatchAllowed(deps, task.companyId);
+  if (!allowed.ok) return noActions("blocked", taskId, { error: allowed.reason === "kill_switch" ? "kill switch active" : `dispatch blocked: ${allowed.reason}`, reason: allowed.reason });
   if (task.status === "waiting_decision") return resumeParkedTask(deps, task);
   if (task.status === "running") return noActions("blocked", taskId, { error: "already running" });
 
   const running = await markTaskRunning(db, taskId);
-  const context = await companyContext(db, task.companyId, task.taskType);
   const workspaceDir = `${deps.env.WORKSPACE_ROOT}/${task.id}`;
-  await seedWorkspace(deps, task, workspaceDir);
-  const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
-  const result = await runtime.run({
-    companyId: task.companyId,
-    taskId: task.id,
-    role: task.role,
-    taskType: task.taskType,
-    instructions: `${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim(),
-    memoryDigest: context.digest,
-    workspaceDir,
-    outputSchema: outputJsonSchema(task.taskType),
-    vars: context.vars,
-  });
-
-  await recordRun(db, running, result);
+  const result = await runAgent(deps, task, running, workspaceDir);
   if (result.status !== "succeeded") {
     const error = result.status === "failed" ? result.error : "the runtime cannot pause mid-run before M3";
     await markTaskFailed(db, taskId, error);
@@ -125,6 +117,30 @@ export async function executeTask(deps: WorkerDeps, taskId: string): Promise<Exe
     files,
     attempt: running.attempts,
   });
+}
+
+/** One traced agent run for the running task (OBS-1), recorded and charged one credit before it returns (BIL-2). */
+async function runAgent(deps: WorkerDeps, task: TaskRecord, running: TaskRecord, workspaceDir: string): Promise<AgentRunResult> {
+  const context = await companyContext(deps.db, task.companyId, task.taskType);
+  await seedWorkspace(deps, task, workspaceDir);
+  const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
+  const instructions = `${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim();
+  const traceId = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: task.role, taskType: task.taskType, instructions });
+  const result = await deps.runtime.run({
+    companyId: task.companyId,
+    taskId: task.id,
+    role: task.role,
+    taskType: task.taskType,
+    instructions,
+    memoryDigest: context.digest,
+    workspaceDir,
+    outputSchema: outputJsonSchema(task.taskType),
+    vars: context.vars,
+    ...(traceId ? { traceId } : {}),
+  });
+  deps.tracer.endRun(traceId, { model: result.usage.model, costUsd: result.usage.costUsd, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, status: result.status });
+  await recordRun(deps, running, result, result.traceId ?? traceId);
+  return result;
 }
 
 const PIPELINE_KINDS: ReadonlySet<string> = new Set(["repo.create", "repo.push", "deploy.preview"]);
@@ -160,8 +176,9 @@ async function resumeParkedTask(deps: WorkerDeps, task: TaskRecord): Promise<Exe
   return noActions("ran", task.id, { ...carried, files });
 }
 
-async function recordRun(db: DbClient, task: TaskRecord, result: AgentRunResult): Promise<void> {
-  await recordAgentRun(db, {
+/** The `agent_runs` row (with its trace) and, in the same call, its credit and usage (BIL-2). */
+async function recordRun(deps: WorkerDeps, task: TaskRecord, result: AgentRunResult, traceId: string | null): Promise<void> {
+  const agentRunId = await recordAgentRun(deps.db, {
     companyId: task.companyId,
     taskId: task.id,
     role: task.role,
@@ -174,7 +191,9 @@ async function recordRun(db: DbClient, task: TaskRecord, result: AgentRunResult)
     durationMs: result.usage.durationMs,
     status: result.status,
     ...(result.status === "failed" ? { error: result.error } : {}),
+    traceId,
   });
+  await chargeRun(deps, task.companyId, agentRunId, { usage: result.usage, sandboxMinutes: sandboxMinutesOf(result) });
 }
 
 interface Persisted {

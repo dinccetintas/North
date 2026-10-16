@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxEvent, SandboxIntegrations } from "@north/integrations";
 import type { CampaignRecord } from "@north/db";
-import { adsStart, directSteps, emptyState, fakeDbModule, fakeDeps, seedTask, type FakeState } from "./fake-db";
+import { adsStart, directSteps, emptyState, fakeDbModule, fakeDeps, seedCompany, seedTask, type FakeState } from "./fake-db";
 
 /**
  * M4 security review fixes (docs/plans/M4.md): campaign ids resolve through
@@ -40,6 +40,9 @@ beforeEach(async () => {
   state.budgets.set("company-1", [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 0, spentTodayUsd: 0 }]);
   events = [];
   root = await mkdtemp(join(tmpdir(), "north-hardening-"));
+  // M6: budget days are the owner's, so the company and its (UTC) owner exist as they do in Postgres.
+  seedCompany(state);
+  seedCompany(state, { id: "company-2", ownerId: "user-2", slug: "other" });
 });
 
 async function campaign(deps: ReturnType<typeof fakeDeps>, name: string, status: string, companyId = "company-1", pausedAtProvider = status !== "active") {
