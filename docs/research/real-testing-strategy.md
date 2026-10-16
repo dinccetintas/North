@@ -19,13 +19,11 @@ pricing and docs pages listed under Sources (numbers in brackets).
    5.5 ($4/$20) [1]. A full North journey (idea, plan, research, brand, site, campaign
    draft) is about **$5.30 on production routing (budget $7)**, **$2.30 on a Sonnet/Haiku
    "staging" profile** and **$0.40 on Haiku everywhere** (assumptions in section 3.3).
-4. Record-and-replay is cheap to build because the Agent SDK passes its environment to
-   the Claude Code subprocess, which honours `ANTHROPIC_BASE_URL` [5]. A loopback cassette
-   proxy can record real runs and replay them offline at $0. In-process tools such as nock
-   cannot see the subprocess [13].
-5. Long flows need explicit Playwright timeouts. The test default is 30 s, `expect` 5 s,
-   `toPass` 0 [15][16]. Use `test.setTimeout`, `expect.poll` with growing intervals,
-   `test.step` per phase, and `globalTimeout` for the suite.
+4. Record-and-replay is cheap to build: the Agent SDK passes its environment to the Claude
+   Code subprocess, which honours `ANTHROPIC_BASE_URL` [5], so a loopback cassette proxy can
+   record real runs and replay them at $0. In-process nock cannot see the subprocess [13].
+5. Playwright defaults (test 30 s, `expect` 5 s, `toPass` 0) do not fit flows that run for
+   minutes [15][16]; set `test.setTimeout`, poll with growing intervals, add `globalTimeout`.
 6. Magic-link sign-in on hosted Supabase needs custom SMTP. The built-in sender delivers
    only to team addresses, at 2 messages/hour [26][27]. Use Resend (already the production
    sender) and its free receiving addresses plus `GET /emails/receiving` as the test inbox
@@ -42,11 +40,10 @@ pricing and docs pages listed under Sources (numbers in brackets).
    Review [44]. Stripe sandboxes isolate CI [48]. Google Ads test accounts need no approved
    token and no billing [53][54]. The catch is Google OAuth in "Testing" mode: consents
    expire after 7 days [51].
-10. A five-tier pyramid fits in about **$92/month including Vercel Pro**, or about $72 if
-    Pro is booked as production cost (section 6). It needs an Anthropic workspace spend limit
-    as the hard backstop [3], a test-run budget guard in the worker, and a "test-account
-    fence" in `AuthorityEngine.gate()` so a staging run can only touch allow-listed test
-    accounts.
+10. A five-tier pyramid fits in about **$92/month including Vercel Pro** ($72 if Pro counts
+    as production cost; see Monthly cost). It needs an Anthropic workspace spend limit as the
+    hard backstop [3], a test-run budget guard, and a "test-account fence" in
+    `AuthorityEngine.gate()` so staging can only touch allow-listed test accounts.
 
 ## Findings
 
@@ -66,14 +63,12 @@ and named position, verbosity and self-enhancement bias [10].
 | D. Rubric judge | Haiku 5.5 (Batch on nightly), thinking on, JSON `{pass, score, reason}`, threshold, rubric versioned in repo; median of 3 only at acceptance | ~$0.001/judgment | medium |
 | E. Screenshot judge | Playwright screenshot → vision rubric ("hierarchy, contrast, CTA above fold, matches brand palette") | 1280×800 = 1,334 visual tokens [8]; ≈$0.00013 on Haiku | medium |
 
-Screenshot tokens are `⌈w/28⌉ × ⌈h/28⌉`. On Haiku 5.5 and other Claude 4.7+ models the
-cap is 4,784 tokens [8], so a full-page judge stays under a cent even on Sonnet. Pixel-diff
-snapshots (`toHaveScreenshot`) suit North's own UI. They do not suit generated sites, which
-change on every run.
+Screenshot tokens are `⌈w/28⌉ × ⌈h/28⌉`, capped at 4,784 on Claude 4.7+ models including
+Haiku 5.5 [7][8], so a full-page judge stays under a cent even on Sonnet. Pixel-diff snapshots
+(`toHaveScreenshot`) suit North's own UI, not generated sites that change every run.
 
-**1.2 Record and replay (cassettes).** The goal: record a real run once, then replay it
-on every PR and at night at $0, and re-record only when the inputs that shape the prompts
-change.
+**1.2 Record and replay (cassettes).** Record a real run once, replay it on every PR at $0,
+and re-record only when the inputs that shape the prompts change.
 
 | Option | Sees Agent SDK subprocess? | Streams (SSE)? | Maintenance | Fit |
 | --- | --- | --- | --- | --- |
@@ -82,7 +77,7 @@ change.
 | mitmproxy server replay [14] | yes (as HTTPS proxy) | yes | mature, Python | fallback if proxy is hard |
 | Polly.js [59] | no | — | last publish 2023-07 | avoid |
 | promptfoo (eval runner with `llm-rubric`) [11] | n/a (own runner) | n/a | 0.124.1, MIT, Oct 2026 [59] | prompt-level evals |
-| Evalite (Vitest-based, local-first) [12] | n/a | n/a | MIT, 0.19.0 Feb 2026, "breaking changes" [59] | optional prompt evals |
+| Evalite (Vitest-based, local-first) [12] | n/a | n/a | MIT, 0.19.0 (pre-1.0), Feb 2026 [59] | optional prompt evals |
 | vitest-evals (Sentry) [59] | n/a | n/a | 0.17.0, Apache-2.0, Sep 2026 | optional |
 
 Cassette rules:
@@ -114,17 +109,15 @@ are config options [18].
 
 ### 2. Playwright for flows that take minutes
 
-- **Timeouts.** Set the timeouts per test with `test.setTimeout`, starting from the
-  defaults in [15]. The full live journey gets 30 min. The suite gets `globalTimeout` 60 min.
-  The current `WORKER_TIMEOUT_MS` (120 s) suits mock runs only.
-- **Polling.** Use `expect.poll(fn, { timeout, intervals: [5_000, 10_000, 30_000] })`, whose
-  default intervals are 100/250/500/1000 ms. `toPass` has timeout 0 unless set [16]. Poll
-  a JSON read of the task state rather than `page.reload()` every 5 s. Use the user's own
-  session through Supabase REST, so RLS stays in the loop. Reload the page once at the end,
-  for the screenshot.
-- **Structure.** Wrap each phase (sign-up, onboarding, research, brand, site, campaign) in
-  `test.step`. Record the Langfuse trace id and `agent_runs.cost_usd` in
-  `testInfo.annotations`, so the HTML report shows what each step cost.
+- **Timeouts.** Override the defaults [15] per test with `test.setTimeout`: 30 min for the
+  full live journey, `globalTimeout` 60 min for the suite. The current `WORKER_TIMEOUT_MS`
+  (120 s) suits mock runs only.
+- **Polling.** `expect.poll(fn, { timeout, intervals: [5_000, 10_000, 30_000] })` replaces the
+  default 100/250/500/1000 ms intervals; `toPass` has timeout 0 unless set [16]. Poll a JSON
+  read of the task state through Supabase REST with the user's own session (RLS stays in the
+  loop) instead of `page.reload()` every 5 s, and reload once at the end for the screenshot.
+- **Structure.** Wrap each phase in `test.step`, and record the Langfuse trace id and
+  `agent_runs.cost_usd` in `testInfo.annotations` so the HTML report shows each step's cost.
 - **Evidence.** Trace, video and screenshot modes are `on`, `retain-on-failure`,
   `on-first-retry`, and for traces `retain-on-first-failure` [17]. Nightly keeps traces and
   video on failure only; acceptance records `trace: 'on'` and desktop `video: 'on'`.
@@ -168,15 +161,13 @@ That suits nightly judges, not PR gates.
    drafter/classifier on Haiku 5.5) and `smoke` (all Haiku 5.5, effort `low`). Select one
    with `NORTH_MODEL_PROFILE`. Opus 5.5 defaults to effort `medium` and accepts only effort
    as its thinking control [6], so effort belongs in each profile.
-2. Prompt caching is automatic in the Agent SDK [4]. Cache hits on Opus and Sonnet 5.5 cost
-   0.05x input [1], so agent loops are output-dominated. The levers are effort and turn caps.
-3. Keep each role's `maxBudgetUsd` (already in `agents/*.yaml`). Add a per-run test cap.
-   The SDK's `total_cost_usd` is a client-side estimate from a bundled price table [4].
-   Reconcile monthly against the Console.
+2. Prompt caching is automatic in the Agent SDK [4], and cache hits on Opus and Sonnet 5.5
+   cost 0.05x input [1]. Agent loops are output-dominated, so effort and turn caps matter most.
+3. Keep each role's `maxBudgetUsd` (`agents/*.yaml`) and add a per-run test cap. The SDK's
+   `total_cost_usd` is a client-side estimate [4]; reconcile monthly against the Console.
 4. Run judges through the Batch API on nightly and acceptance runs [2].
-5. Use a dedicated Anthropic workspace `north-test` with its own spend limit as the hard
-   stop. Workspaces can carry custom spend and rate limits. A self-set limit returns HTTP 400
-   "specified workspace API usage limits" [3].
+5. A dedicated Anthropic workspace `north-test` with its own spend limit is the hard stop: a
+   self-set limit returns HTTP 400 "specified workspace API usage limits" [3].
 6. Add a test budget guard in the worker. Before each agent run it sums `agent_runs.cost_usd`
    for the current `test_run_id`, refuses once `NORTH_TEST_BUDGET_USD` is reached, and passes
    `maxBudgetUsd = min(role cap, remaining)` to the SDK. On the smoke profile, `max_turns`
@@ -371,11 +362,11 @@ Engineering is about 70% of the production cost: output tokens at $20/MTok, with
 - **Free-tier limits.** Supabase pauses after 7 idle days and has 500 MB [25]; Inngest keeps
   traces 24 h [31]; Langfuse allows 50k units [33] (redaction stays on); Resend 100/day [35].
 - **Consents and access.** Google Testing consents expire weekly [51], and GitHub/Meta OAuth
-  with 2FA cannot be scripted. Live acceptance therefore depends on stored connections the
-  founder refreshes.
-- **Cold starts.** The auto-stopped Fly worker cold-starts on an Inngest call. Verify that
-  the start fits Inngest's request timeout, and that the kill switch still stops a live
-  Agent SDK subprocess within 5 s (a T3 assertion).
+  with 2FA cannot be scripted, so live acceptance depends on stored connections the founder
+  refreshes.
+- **Cold starts.** The auto-stopped Fly worker cold-starts on an Inngest call. Verify the
+  start fits Inngest's request timeout and the kill switch still stops a live Agent SDK
+  subprocess within 5 s (a T3 assertion).
 - **Pricing claims to verify.** Higgsfield plan prices and Inngest Free environments are
   unverified. The Fly 4 GB shared-CPU price is derived, not published [30].
 
