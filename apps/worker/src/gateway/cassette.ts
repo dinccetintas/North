@@ -14,7 +14,7 @@ import { holdsAnthropicKey, scrubCassette, type HeaderInput } from "./cassette-s
 
 // The patterns, markers, scrubber and key test live in cassette-scan.ts; this module is the gateway's one door to them.
 export { ANTHROPIC_KEY, BEARER_TOKEN, REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, holdsAnthropicKey, holdsOpenAddress, northTestAddresses, scrubCassette } from "./cassette-scan";
-export type { AddressSpan, HeaderInput } from "./cassette-scan";
+export type { AddressSpan, BodyText, HeaderInput, TextKind } from "./cassette-scan";
 
 const KeySchema = z.string().regex(/^[0-9a-f]{64}$/, "a cassette key is a sha256 hex digest");
 
@@ -179,7 +179,9 @@ interface StoredRequest {
 }
 
 function storedRequestOf(request: CassetteRequest): StoredRequest {
-  return { method: request.method, path: scrubCassette(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, scrubCassette), body: scrubBody(request.body) };
+  // The body is JSON text (its escapes are respected); the path and the header values are plain text.
+  const plain = (value: string): string => scrubCassette(value, "text");
+  return { method: request.method, path: plain(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, plain), body: scrubBody(request.body) };
 }
 
 /**

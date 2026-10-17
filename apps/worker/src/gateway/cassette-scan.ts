@@ -14,7 +14,8 @@ export const REDACTED_KEY = "sk-ant-REDACTED";
 export const REDACTED_BEARER = "Bearer REDACTED";
 /** What an address under `@north.test` becomes. */
 export const REDACTED_ADDRESS = "redacted@north.test";
-const REDACTED_LOCAL_PART = "redacted";
+/** The local parts the scrubber writes: `redacted`, and, for two addresses that touched (`a@north.test.b@north.test`), `north.testredacted` (the first redaction's domain, then the second's local part). */
+const REDACTED_LOCAL_PARTS: ReadonlySet<string> = new Set(["redacted", "north.testredacted"]);
 
 /** An Anthropic key of any shape. Global: for `replace`; use `holdsAnthropicKey` or `.replace(...) !== text` to test, never `.test` (it keeps state). */
 export const ANTHROPIC_KEY = /sk-ant-[A-Za-z0-9_-]+/g;
@@ -37,6 +38,31 @@ export interface AddressSpan {
   readonly local: string;
 }
 
+/** What a text is: `json` is the raw text of a JSON document (a request body), where `\n` is one character; `text` is plain (a path, a header value, a decoded string). */
+export type TextKind = "json" | "text";
+
+const BACKSLASH = 92;
+const SINGLE_ESCAPE_LETTERS = "ntrbf";
+const FOUR_HEX = /^[0-9A-Fa-f]{4}$/;
+
+/**
+ * Where the local part really starts when `start` is the first local-part
+ * character of a run in JSON text. Right after an escape (`\n`, `\t`, `\r`,
+ * `\b`, `\f`: a backslash with an odd run of backslashes before it, so not an
+ * escaped backslash) the run begins with the escape's letter, or with `uXXXX`;
+ * those belong to the escape, not to the address (`bob` in `\nbob@north.test`,
+ * not `nbob`). The scan stops at `floor`, the end of the previous address.
+ */
+function afterEscape(text: string, start: number, end: number, floor: number): number {
+  if (start <= floor || text.charCodeAt(start - 1) !== BACKSLASH) return start;
+  let backslashes = 0;
+  for (let i = start - 1; i >= floor && text.charCodeAt(i) === BACKSLASH; i -= 1) backslashes += 1;
+  if (backslashes % 2 === 0) return start;
+  const letter = text.charAt(start);
+  if (SINGLE_ESCAPE_LETTERS.includes(letter)) return start + 1;
+  return letter === "u" && start + 5 <= end && FOUR_HEX.test(text.slice(start + 1, start + 5)) ? start + 5 : start;
+}
+
 /**
  * Every address under `@north.test` in `text`: the run of local-part
  * characters before each `@north.test`, never reaching back past the end of the
@@ -44,15 +70,17 @@ export interface AddressSpan {
  * `.b@north.test`). A domain with no local part is not an address. This is
  * `/[A-Za-z0-9._%+-]+@north\.test\b/gi` found from the domain backwards:
  * that pattern is quadratic on a long unbroken run of local-part characters
- * (a base64 body, a minified blob), this reads each character once.
+ * (a base64 body, a minified blob), this reads each character once. In `json`
+ * text a JSON escape ends the run (see {@link afterEscape}).
  */
-export function northTestAddresses(text: string): readonly AddressSpan[] {
+export function northTestAddresses(text: string, kind: TextKind = "text"): readonly AddressSpan[] {
   const spans: AddressSpan[] = [];
   let floor = 0;
   for (const match of text.matchAll(NORTH_TEST_DOMAIN)) {
     const at = match.index;
     let start = at;
     while (start > floor && isLocalPartChar(text.charCodeAt(start - 1))) start -= 1;
+    if (kind === "json") start = afterEscape(text, start, at, floor);
     if (start === at) continue;
     const end = at + match[0].length;
     spans.push(Object.freeze({ start, end, local: text.slice(start, at) }));
@@ -61,12 +89,12 @@ export function northTestAddresses(text: string): readonly AddressSpan[] {
   return spans;
 }
 
-/** True when `text` holds an address under `@north.test` that is not `redacted@north.test`. */
-export const holdsOpenAddress = (text: string): boolean => northTestAddresses(text).some((span) => span.local !== REDACTED_LOCAL_PART);
+/** True when `text` (of the given `kind`, plain by default) holds an address under `@north.test` that the scrubber did not write (see {@link REDACTED_LOCAL_PARTS}). */
+export const holdsOpenAddress = (text: string, kind: TextKind = "text"): boolean => northTestAddresses(text, kind).some((span) => !REDACTED_LOCAL_PARTS.has(span.local));
 
 /** `text` with every address under `@north.test` replaced by {@link REDACTED_ADDRESS}. */
-function redactAddresses(text: string): string {
-  const spans = northTestAddresses(text);
+function redactAddresses(text: string, kind: TextKind): string {
+  const spans = northTestAddresses(text, kind);
   if (spans.length === 0) return text;
   let out = "";
   let last = 0;
@@ -80,13 +108,16 @@ function redactAddresses(text: string): string {
 /**
  * Removes what must never be committed from a request: Anthropic keys, bearer
  * tokens (the scheme in any case and a token of 16 or more characters) and
- * email addresses under `@north.test`. Linear; the replacements keep JSON
- * strings valid. A second pass over its own output changes nothing for
- * ordinary text (two addresses glued together, `a@north.test.b@north.test`,
- * leave `...testredacted@north.test`, which a second pass redacts again).
+ * email addresses under `@north.test`. `kind` says what `text` is: `json` (the
+ * default) is the raw text of a JSON body, whose escapes the address scrub
+ * respects (`"Contact:\nbob@north.test"` keeps its newline); `text` is a path
+ * or a header value. Linear; the replacements keep JSON strings valid. A second
+ * pass over its own output changes nothing for ordinary text (two addresses
+ * glued together, `a@north.test.b@north.test`, leave `...testredacted@north.test`,
+ * which a second pass redacts again).
  */
-export function scrubCassette(text: string): string {
-  return redactAddresses(text.replace(ANTHROPIC_KEY, REDACTED_KEY).replace(BEARER_TOKEN, REDACTED_BEARER));
+export function scrubCassette(text: string, kind: TextKind = "json"): string {
+  return redactAddresses(text.replace(ANTHROPIC_KEY, REDACTED_KEY).replace(BEARER_TOKEN, REDACTED_BEARER), kind);
 }
 
 // ---- reading a body ------------------------------------------------------------
@@ -135,8 +166,7 @@ function sseEvents(text: string): unknown[] {
     }
     data = [];
   };
-  for (const raw of text.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+  for (const line of text.split(/\r\n|\r|\n/)) {
     if (line === "") flush();
     else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
   }
@@ -145,22 +175,29 @@ function sseEvents(text: string): unknown[] {
 }
 
 // `index` is always there on the wire; a stream without one is read as a single block, not skipped.
-const DeltaEventSchema = z.object({ type: z.literal("content_block_delta"), index: z.number().int().optional(), delta: z.record(z.string(), z.unknown()) });
-/** The delta fields a streamed reply spells its content in: text, tool input JSON and thinking. */
-const DELTA_FIELDS: readonly string[] = ["text", "partial_json", "thinking"];
+const BlockEventSchema = z.object({
+  type: z.enum(["content_block_start", "content_block_delta"]),
+  index: z.number().int().optional(),
+  delta: z.record(z.string(), z.unknown()).optional(),
+  content_block: z.record(z.string(), z.unknown()).optional(),
+});
+/** The fields a streamed reply spells its content in: text, tool input JSON and thinking. */
+const CONTENT_FIELDS: readonly string[] = ["text", "partial_json", "thinking"];
 
 /**
- * Each content block's streamed deltas joined in arrival order (`text`,
- * `partial_json` and `thinking`, grouped by the block's `index`): the text the
- * reader of a stream sees. A key split across events (`"sk-"` then
- * `"ant-api03-..."`) is whole here.
+ * Each content block's streamed text joined in arrival order, grouped by the
+ * block's `index`: what a block opens with (`content_block_start`) and its
+ * `text`, `partial_json` and `thinking` deltas. It is the text the reader of a
+ * stream sees: a key split across events (`"sk-"` then `"ant-api03-..."`) is
+ * whole here.
  */
 function joinedDeltas(events: readonly unknown[]): string[] {
   const blocks = new Map<number, string>();
   for (const event of events) {
-    const parsed = DeltaEventSchema.safeParse(event);
+    const parsed = BlockEventSchema.safeParse(event);
     if (!parsed.success) continue;
-    const piece = DELTA_FIELDS.map((field) => parsed.data.delta[field]).find((value): value is string => typeof value === "string");
+    const source = parsed.data.type === "content_block_start" ? parsed.data.content_block : parsed.data.delta;
+    const piece = CONTENT_FIELDS.map((field) => source?.[field]).find((value): value is string => typeof value === "string");
     const index = parsed.data.index ?? -1;
     if (piece !== undefined) blocks.set(index, (blocks.get(index) ?? "") + piece);
   }
@@ -171,24 +208,34 @@ const isEventStream = (contentType: string, raw: string): boolean => contentType
 
 const looksLikeJson = (raw: string): boolean => /^\s*[{["]/.test(raw.slice(0, 64));
 
+/** One reading of a body, and what kind of text it is (see {@link TextKind}). */
+export interface BodyText {
+  readonly text: string;
+  readonly kind: TextKind;
+}
+
 /**
  * The texts a secret can hide in, for one body: the bytes as latin1 characters
- * (one character per byte, so no byte hides from an ASCII pattern); every
- * string of its JSON once parsed (so `sk-ant-...` is read as the key it
- * is); and, for a Server-Sent Events body (by `contentType` or by its first
- * line), each content block's deltas joined, so a key split across events is
- * whole in one of them.
+ * (one character per byte, so no byte hides from an ASCII pattern; `json` when
+ * the body is a JSON document or a stream of JSON events, whose escapes are
+ * then respected); every string of its JSON once parsed (so `\u0073k-ant-...`
+ * is read as the key it is); and, for a Server-Sent Events body (by
+ * `contentType` or by its first line), each content block's text joined, so a
+ * key split across events is whole in one of them. The parsed readings are
+ * plain `text`.
  */
-export function bodyTexts(body: Buffer, contentType = ""): readonly string[] {
+export function bodyTexts(body: Buffer, contentType = ""): readonly BodyText[] {
   const raw = body.toString("latin1");
-  const texts = [raw];
-  const text = body.toString("utf8");
-  if (isEventStream(contentType, raw)) {
-    const events = sseEvents(text);
-    texts.push(jsonStrings(events).join("\n"), ...joinedDeltas(events));
-  } else if (looksLikeJson(raw)) {
+  const stream = isEventStream(contentType, raw);
+  const json = looksLikeJson(raw);
+  const texts: BodyText[] = [{ text: raw, kind: stream || json ? "json" : "text" }];
+  const plain = (text: string): BodyText => ({ text, kind: "text" });
+  if (stream) {
+    const events = sseEvents(body.toString("utf8"));
+    texts.push(plain(jsonStrings(events).join("\n")), ...joinedDeltas(events).map(plain));
+  } else if (json) {
     try {
-      texts.push(jsonStrings(JSON.parse(text) as unknown).join("\n"));
+      texts.push(plain(jsonStrings(JSON.parse(body.toString("utf8")) as unknown).join("\n")));
     } catch {
       // Not JSON after all: the raw text is all there is.
     }
@@ -205,5 +252,5 @@ export function bodyTexts(body: Buffer, contentType = ""): readonly string[] {
  */
 export function holdsAnthropicKey(body: Buffer, headers: HeaderInput = {}): boolean {
   const headerText = Object.values(headers).flat().join("\n");
-  return ANTHROPIC_KEY_ONCE.test(headerText) || bodyTexts(body, contentTypeOf(headers)).some((text) => ANTHROPIC_KEY_ONCE.test(text));
+  return ANTHROPIC_KEY_ONCE.test(headerText) || bodyTexts(body, contentTypeOf(headers)).some((reading) => ANTHROPIC_KEY_ONCE.test(reading.text));
 }

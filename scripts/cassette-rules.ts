@@ -20,7 +20,7 @@
  * A finding names the kind of secret and where it sits, never the secret.
  */
 import { z } from "zod";
-import { ANTHROPIC_KEY, BEARER_TOKEN, CassetteFileSchema, REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, cassetteKey, holdsOpenAddress, sdkVersionOf } from "../apps/worker/src/gateway/cassette";
+import { ANTHROPIC_KEY, BEARER_TOKEN, CassetteFileSchema, REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, cassetteKey, holdsOpenAddress, sdkVersionOf, type BodyText, type TextKind } from "../apps/worker/src/gateway/cassette";
 
 // ---- the file as a strict schema ----------------------------------------------
 
@@ -40,16 +40,17 @@ const ADDRESS_KIND = `a @north.test address other than ${REDACTED_ADDRESS}`;
 
 /**
  * The kinds of secret `text` holds, each named once, in words: an Anthropic key,
- * a bearer token, a `@north.test` address that is not `redacted@north.test`.
+ * a bearer token, a `@north.test` address that is not `redacted@north.test`
+ * (`kind` `json` when `text` is raw JSON, where `\n` is one character).
  * Empty for clean text, including text the gateway's scrubber has already
  * cleaned (a key is what the scrubber would still change). Never returns the
  * secret itself.
  */
-export function secretFindings(text: string): readonly string[] {
+export function secretFindings(text: string, kind: TextKind = "text"): readonly string[] {
   const found: string[] = [];
   if (text.replace(ANTHROPIC_KEY, REDACTED_KEY) !== text) found.push("an Anthropic key (sk-ant-...)");
   if (text.replace(BEARER_TOKEN, REDACTED_BEARER) !== text) found.push("a bearer token (Bearer ...)");
-  if (holdsOpenAddress(text)) found.push(ADDRESS_KIND);
+  if (holdsOpenAddress(text, kind)) found.push(ADDRESS_KIND);
   return found;
 }
 
@@ -67,13 +68,13 @@ interface Findings {
 }
 
 /** Where a secret may sit, and whether an address there is only a warning (a reply echoes made-up addresses). */
-function scanPlaces(data: Cassette): ReadonlyArray<{ readonly label: string; readonly texts: readonly string[]; readonly addressWarns: boolean }> {
+function scanPlaces(data: Cassette): ReadonlyArray<{ readonly label: string; readonly texts: readonly BodyText[]; readonly addressWarns: boolean }> {
   const request = Buffer.from(data.request.body, "base64");
   const response = Buffer.from(data.response.body, "base64");
   return [
     { label: "request body", texts: bodyTexts(request, headerOf(data.request.headers, "content-type")), addressWarns: false },
     { label: "response body", texts: bodyTexts(response, headerOf(data.response.headers, "content-type")), addressWarns: true },
-    { label: "headers, path or metadata", texts: [metadataText(data)], addressWarns: false },
+    { label: "headers, path or metadata", texts: [{ text: metadataText(data), kind: "text" }], addressWarns: false },
   ];
 }
 
@@ -81,7 +82,7 @@ function secretProblems(data: Cassette): Findings {
   const failures: string[] = [];
   const warnings: string[] = [];
   for (const place of scanPlaces(data)) {
-    for (const kind of new Set(place.texts.flatMap(secretFindings))) {
+    for (const kind of new Set(place.texts.flatMap((reading) => secretFindings(reading.text, reading.kind)))) {
       if (kind === ADDRESS_KIND && place.addressWarns) warnings.push(`${place.label} holds ${kind}: replies are stored verbatim, so a made-up address in one is expected`);
       else failures.push(`${place.label} holds ${kind}`);
     }

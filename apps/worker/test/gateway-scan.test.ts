@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, holdsAnthropicKey, northTestAddresses, scrubCassette } from "../src/gateway/cassette";
+import { REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, holdsAnthropicKey, holdsOpenAddress, northTestAddresses, scrubCassette } from "../src/gateway/cassette";
 import { sseEvent } from "./gateway-helpers";
 
 /**
@@ -37,7 +37,7 @@ describe("TST-2 the address scrub is linear and reads what the old pattern read"
     for (const text of ["Bob.O+tag_1%x-y@NORTH.TEST", "ANA@North.Test!", "(ana@north.test)", "a@north.test,b@north.test", "<a@north.test><b@north.test>"]) expect(scrubCassette(text), text).toBe(reference(text));
   });
 
-  it("is the old pattern on 4,000 random strings built from the pieces that make it hard", () => {
+  it("is the old pattern on 4,000 random strings built from the pieces that make it hard (inputs WITHOUT backslashes only: the scrubber reads JSON escapes, the old pattern did not)", () => {
     const pieces = ["a", "b", "x", "@", "@north.test", "north", ".test", ".", "-", "_", "%", "+", " ", "\n", "é", "redacted", "Redacted@NORTH.TEST", "1", "t", "@north.testing"];
     let seed = 20261017;
     const next = (): number => {
@@ -60,6 +60,75 @@ describe("TST-2 the address scrub is linear and reads what the old pattern read"
     expect(scrubbed).toBe(REDACTED_ADDRESS);
     expect(timed(() => scrubCassette("a@north.test.".repeat(60_000)))).toBeLessThan(200);
     expect(timed(() => scrubCassette("a.".repeat(500_000) + "@north.testx".repeat(1000)))).toBeLessThan(200);
+  });
+});
+
+/** A JSON string literal of raw text that is already escaped (`raw` must hold only valid escapes), decoded. */
+const decode = (raw: string): string => JSON.parse(`"${raw}"`) as string;
+
+describe("TST-2 the address scrub reads JSON escapes: the body it scrubs is JSON text, where \\n is one character", () => {
+  it("an address after \\n, \\t, \\r, \\b, \\f or \\u00e9 keeps the escape whole and stays valid JSON", () => {
+    for (const escape of ["\\n", "\\t", "\\r", "\\b", "\\f", "\\u00e9", "\\u0001", "\\\\"]) {
+      const raw = `Contact:${escape}bob@north.test`;
+      expect(scrubCassette(raw), raw).toBe(`Contact:${escape}redacted@north.test`);
+      expect(decode(scrubCassette(raw)), raw).toBe(`${decode(`Contact:${escape}`)}redacted@north.test`);
+    }
+  });
+
+  it("an escaped backslash is a backslash, not an escape: `\\\\nbob` is a backslash and the local part `nbob`", () => {
+    expect(scrubCassette("a\\\\nbob@north.test")).toBe("a\\\\redacted@north.test");
+    expect(scrubCassette("a\\\\\\nbob@north.test")).toBe("a\\\\\\nredacted@north.test");
+  });
+
+  it("one address per line, and two escapes in a row", () => {
+    expect(scrubCassette("ana@north.test\\nbob@north.test\\ncy@north.test")).toBe("redacted@north.test\\nredacted@north.test\\nredacted@north.test");
+    expect(scrubCassette("a\\n\\tbob@north.test")).toBe("a\\n\\tredacted@north.test");
+    expect(scrubCassette("\\u00e9\\u00e9bob@north.test")).toBe("\\u00e9\\u00e9redacted@north.test");
+  });
+
+  it("an escape with nothing after it is not an address, and a non-ASCII letter ends the local part by itself", () => {
+    expect(scrubCassette("a\\n@north.test")).toBe("a\\n@north.test");
+    expect(scrubCassette("a\\u00e9@north.test")).toBe("a\\u00e9@north.test");
+    expect(scrubCassette("xébob@north.test")).toBe("xéredacted@north.test");
+  });
+
+  it("plain text (a path, a header value) has no escapes: a backslash before a name is a backslash", () => {
+    expect(scrubCassette("C:\\temp\\bob@north.test", "text")).toBe("C:\\temp\\redacted@north.test");
+    expect(scrubCassette("C:\\temp\\bob@north.test", "json")).toBe("C:\\temp\\bredacted@north.test");
+    expect(northTestAddresses("a\\nbob@north.test", "text").map((span) => span.local)).toEqual(["nbob"]);
+    expect(northTestAddresses("a\\nbob@north.test", "json").map((span) => span.local)).toEqual(["bob"]);
+  });
+
+  it("is what the JSON means on 5,000 random JSON strings: decode, scrub with the old pattern, compare; and the output is valid JSON", () => {
+    const pieces = ["a", "b", "x", "@", "@north.test", ".test", ".", "-", "_", "+", " ", "\\n", "\\t", "\\r", "\\u00e9", "\\u0001", "\\\\", "é", "redacted", "n", "t", "u00e9", "@north.testing"];
+    let seed = 20261018;
+    const next = (): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed;
+    };
+    let withEscapes = 0;
+    let changed = 0;
+    for (let i = 0; i < 5000; i += 1) {
+      const raw = Array.from({ length: 1 + (next() % 24) }, () => pieces[next() % pieces.length] ?? "").join("");
+      const scrubbed = scrubCassette(raw);
+      expect(decode(scrubbed), JSON.stringify(raw)).toBe(reference(decode(raw)));
+      if (raw.includes("\\")) withEscapes += 1;
+      if (scrubbed !== raw) changed += 1;
+    }
+    expect(withEscapes).toBeGreaterThan(3000);
+    expect(changed).toBeGreaterThan(1000);
+  });
+});
+
+describe("TST-2 holdsOpenAddress accepts exactly what the scrubber writes", () => {
+  it("redacted@north.test, and two redactions that touch; not another address, not a longer local part", () => {
+    expect(holdsOpenAddress("redacted@north.test")).toBe(false);
+    expect(holdsOpenAddress(scrubCassette("a@north.test.b@north.test"))).toBe(false);
+    expect(holdsOpenAddress(scrubCassette("a@north.test-b@north.test_c@north.test"))).toBe(false);
+    expect(holdsOpenAddress("bob@north.test")).toBe(true);
+    expect(holdsOpenAddress("xredacted@north.test")).toBe(true);
+    expect(holdsOpenAddress("north.testredactedx@north.test")).toBe(true);
+    expect(holdsOpenAddress("north.testbob@north.test")).toBe(true);
   });
 });
 
@@ -97,6 +166,16 @@ describe("TST-2 holdsAnthropicKey reads a reply the way its reader does", () => 
     expect(holdsAnthropicKey(Buffer.from(event("sk-") + event("ant-api03-AbCdEf123")), SSE)).toBe(true);
   });
 
+  it("a stream with CR-only line endings is read, and a block's opening text joins its deltas", () => {
+    const crOnly = stream(delta(0, "text", "my key is sk-"), delta(0, "text", "ant-api03-AbCdEf")).toString().replaceAll("\n", "\r");
+    expect(holdsAnthropicKey(Buffer.from(crOnly), SSE)).toBe(true);
+    const start = (index: number, block: Record<string, unknown>) => sseEvent("content_block_start", { index, content_block: block });
+    expect(holdsAnthropicKey(stream(start(0, { type: "text", text: "the key sk-" }), delta(0, "text", "ant-api03-AbCdEf")), SSE)).toBe(true);
+    expect(holdsAnthropicKey(stream(start(0, { type: "thinking", thinking: "sk-" }), delta(0, "thinking", "ant-api03-AbCdEf")), SSE)).toBe(true);
+    expect(holdsAnthropicKey(stream(start(0, { type: "text", text: "sk-" }), delta(1, "text", "ant-api03-AbCdEf")), SSE)).toBe(false);
+    expect(holdsAnthropicKey(stream(start(0, { type: "tool_use", id: "t1", name: "x", input: {} }), delta(0, "partial_json", '{"a":1}')), SSE)).toBe(false);
+  });
+
   it("pieces of different blocks are not joined, and a stream with no key is clean", () => {
     expect(holdsAnthropicKey(stream(delta(0, "text", "sk-"), delta(1, "text", "ant-api03-AbCd")), SSE)).toBe(false);
     expect(holdsAnthropicKey(stream(delta(0, "text", "sk-"), delta(0, "text", "ant-")), SSE)).toBe(false);
@@ -115,11 +194,14 @@ describe("TST-2 holdsAnthropicKey reads a reply the way its reader does", () => 
     expect(holdsAnthropicKey(Buffer.from("event: ping\ndata: not json\n\ndata: [DONE]\n\n"), SSE)).toBe(false);
   });
 
-  it("bodyTexts offers the raw bytes, the JSON strings and each block's deltas joined", () => {
-    const texts = bodyTexts(stream(delta(0, "text", "ab"), delta(0, "text", "cd")), "text/event-stream");
-    expect(texts).toContain("abcd");
-    expect(texts.length).toBeGreaterThanOrEqual(3);
-    expect(bodyTexts(Buffer.from('{"a":"\\u0041"}'), "application/json").some((text) => text.includes("A"))).toBe(true);
+  it("bodyTexts offers the raw bytes (JSON text), the JSON strings and each block's deltas joined (plain text)", () => {
+    const readings = bodyTexts(stream(delta(0, "text", "ab"), delta(0, "text", "cd")), "text/event-stream");
+    expect(readings.map((reading) => reading.text)).toContain("abcd");
+    expect(readings[0]?.kind).toBe("json");
+    expect(readings.slice(1).every((reading) => reading.kind === "text")).toBe(true);
+    const decoded = bodyTexts(Buffer.from('{"a":"\\u0041"}'), "application/json");
+    expect(decoded.some((reading) => reading.text.includes("A"))).toBe(true);
+    expect(bodyTexts(Buffer.from("plain bytes"), "application/octet-stream")).toEqual([{ text: "plain bytes", kind: "text" }]);
   });
 
   it("reads a megabyte stream in linear time", () => {

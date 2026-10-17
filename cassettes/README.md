@@ -90,7 +90,13 @@ values):
 - `Bearer <token>` (the scheme in any case, a token of 16 or more characters)
   becomes `Bearer REDACTED`; the English word "bearer" and a short word after
   it are left alone
-- any email under `@north.test` becomes `redacted@north.test`
+- any email under `@north.test` becomes `redacted@north.test`. The body is
+  scrubbed as the JSON text it is, so an address after a JSON escape keeps the
+  escape whole (`"Contact:\nbob@north.test"` is stored as
+  `"Contact:\nredacted@north.test"`, a newline, not a carriage return and
+  `edacted`); the path and the header values are plain text. Two addresses
+  that touch (`a@north.test.b@north.test`) become
+  `redacted@north.testredacted@north.test`, which the check accepts
 
 Only these request headers are stored (the ones the gateway forwards):
 `content-type`, `accept`, `accept-language`, `user-agent`, `anthropic-version`,

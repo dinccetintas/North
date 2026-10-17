@@ -6,6 +6,7 @@
  * `requestScrubbed` that lies, and a reply that echoes a made-up address.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { bodyTexts, scrubCassette } from "../apps/worker/src/gateway/cassette";
 import { secretFindings, verdictFor } from "./cassette-check";
 import { PIN, b64, edited, editedText, makeDir, parsed, recordIn, removeDir, requestBody, type Recorded } from "./cassette-check-fixtures";
 
@@ -107,6 +108,69 @@ describe("TST-2 a made-up @north.test address in a reply is expected; anywhere e
       j.request.path = "/v1/messages?to=bob@north.test";
     });
     expect(failuresOf(inPath)).toMatch(/@north\.test/);
+  });
+});
+
+describe("TST-2 the check accepts what the gateway's own scrubber writes", () => {
+  /** Records `note` in a request through the real writer and returns the file and the note as stored (decoded). */
+  async function storedNote(note: string, n: number): Promise<{ file: Recorded; stored: string }> {
+    const file = await record(requestBody({ note, n }));
+    const stored = (JSON.parse(Buffer.from(parsed(file).request.body, "base64").toString()) as { note: string }).note;
+    return { file, stored };
+  }
+
+  it("an address after a newline, a tab or a control character keeps the escape whole (it used to become \\r + edacted@north.test and fail)", async () => {
+    const cases: Array<[string, string]> = [
+      ["Contact:\nbob@north.test", "Contact:\nredacted@north.test"],
+      ["a\tbob@north.test", "a\tredacted@north.test"],
+      ["a\rbob@north.test", "a\rredacted@north.test"],
+      ["a\u0001bob@north.test", "a\u0001redacted@north.test"],
+      ["a\u0008bob@north.test", "a\u0008redacted@north.test"],
+      ["ana@north.test\nbob@north.test\ncy@north.test", "redacted@north.test\nredacted@north.test\nredacted@north.test"],
+      ["xébob@north.test", "xéredacted@north.test"],
+      ["a\n\tn_bob@north.test", "a\n\tredacted@north.test"],
+    ];
+    for (const [i, [note, expected]] of cases.entries()) {
+      const { file, stored } = await storedNote(note, i);
+      expect(stored, JSON.stringify(note)).toBe(expected);
+      expect(verdictFor(file, PIN), JSON.stringify(note)).toMatchObject({ failures: [], warnings: [] });
+    }
+  });
+
+  /** Random notes of the pieces that make an address hard to cut out of JSON: real control characters, quotes, backslashes, non-ASCII, escape letters and glued addresses. */
+  function randomNotes(count: number, seed: number): string[] {
+    const pieces = ["\n", "\t", "\r", "\b", "\f", "\u0001", "é", "\\", '"', "/", "n", "t", "r", "b", "f", "u", "u00e9", "bob", "ana", "x", ".", "-", "_", " ", "@north.test", "@north.test", "@", "redacted", "0061"];
+    let state = seed;
+    const next = (): number => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0), state);
+    return Array.from({ length: count }, () => Array.from({ length: 1 + (next() % 16) }, () => pieces[next() % pieces.length] ?? "").join(""));
+  }
+  const oldPattern = (text: string): string => text.replace(/[A-Za-z0-9._%+-]+@north\.test\b/gi, "redacted@north.test");
+
+  it("5,000 random notes: the stored note is what the old pattern makes of the real text, and the check's body scan finds nothing", () => {
+    let scrubbed = 0;
+    for (const note of randomNotes(5000, 7)) {
+      const json = JSON.stringify({ model: "m", messages: [{ role: "user", content: note }] });
+      const stored = scrubCassette(json);
+      const decoded = (JSON.parse(stored) as { messages: Array<{ content: string }> }).messages[0]?.content;
+      expect(decoded, JSON.stringify(note)).toBe(oldPattern(note));
+      const found = bodyTexts(Buffer.from(stored), "application/json").flatMap((reading) => secretFindings(reading.text, reading.kind));
+      expect(found, JSON.stringify(note)).toEqual([]);
+      if (stored !== json) scrubbed += 1;
+    }
+    expect(scrubbed).toBeGreaterThan(1000);
+  });
+
+  it("300 random notes through the real writer: the verdict is clean every time", async () => {
+    for (const [i, note] of randomNotes(300, 11).entries()) {
+      const file = await record(requestBody({ note, i }));
+      expect(verdictFor(file, PIN), JSON.stringify(note)).toMatchObject({ failures: [], warnings: [] });
+    }
+  });
+
+  it("a header value or a path is plain text, not JSON: a backslash before a name is a backslash", async () => {
+    const file = await recordIn(dir, requestBody({ n: 99 }), "claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301) C:\\temp\\bob@north.test");
+    expect(parsed(file).request.headers["user-agent"]).toContain("C:\\temp\\redacted@north.test");
+    expect(verdictFor(file, PIN)).toMatchObject({ failures: [] });
   });
 });
 
