@@ -5,7 +5,7 @@
  * staging). No network, no real key.
  */
 import { describe, expect, it } from "vitest";
-import { extractMagicLink, latestMagicLink, mailProviderOf, pickNewestFor, RESEND_POLL_MS, RESEND_TIMEOUT_MS, type MailDeps } from "./mail";
+import { checkMagicLinkOrigin, extractMagicLink, latestMagicLink, mailProviderOf, pickNewestFor, RESEND_POLL_MS, RESEND_TIMEOUT_MS, type MailDeps } from "./mail";
 
 const EMAIL = "e2e-abc123-mobile@staging.north.example";
 const KEY = "re_fake_key_never_printed_123";
@@ -38,10 +38,11 @@ function fakeDeps(env: Record<string, string>, answer: (url: string, call: numbe
   return { deps, calls, elapsed: () => clock };
 }
 
-const RESEND_ENV = { E2E_MAIL_PROVIDER: "resend", E2E_RESEND_KEY: KEY };
+const SUPABASE = "https://ref.supabase.co";
+const RESEND_ENV = { E2E_MAIL_PROVIDER: "resend", E2E_RESEND_KEY: KEY, E2E_SUPABASE_URL: SUPABASE, E2E_BASE_URL: "https://staging.north.example" };
 const LIST_URL = "https://api.resend.com/emails/receiving?limit=100";
 const listOf = (...data: unknown[]) => ({ object: "list", has_more: false, data });
-const summary = (id: string, to: string[], createdAt: string) => ({ id, to, from: "North <auth@staging.north.example>", created_at: createdAt, subject: "Your sign-in link", cc: [], bcc: [], reply_to: [], message_id: `<${id}@resend>`, attachments: [] });
+const summary = (id: string, to: string[], createdAt: string, from = "North <auth@staging.north.example>") => ({ id, to, from, created_at: createdAt, subject: "Your sign-in link", cc: [], bcc: [], reply_to: [], message_id: `<${id}@resend>`, attachments: [] });
 
 describe("TST-3 extractMagicLink: the first sign-in URL, text first, then HTML", () => {
   it("TST-3 reads the link from the text body", () => {
@@ -86,6 +87,49 @@ describe("TST-3 pickNewestFor: the newest received mail addressed to the e2e use
     const items = Object.freeze([summary("x", [`x${EMAIL}`], "2026-10-17T10:00:00Z"), summary("y", [`${EMAIL}.evil.example`], "2026-10-17T10:00:00Z")]);
     expect(pickNewestFor(items, EMAIL)).toBeNull();
     expect(items.map((i) => i.id)).toEqual(["x", "y"]);
+  });
+});
+
+describe("TST-3 pickNewestFor with a sender domain: only mail from it counts", () => {
+  it("TST-3 keeps mail whose from address is at the domain or a subdomain of it, in any case", () => {
+    const items = [
+      summary("spoof", [EMAIL], "2026-10-17T11:00:00Z", "Supabase <auth@evil.example>"),
+      summary("sub", [EMAIL], "2026-10-17T10:00:00Z", "North <no-reply@Mail.Staging.North.Example>"),
+      summary("exact", [EMAIL], "2026-10-17T09:00:00Z", "auth@staging.north.example"),
+    ];
+    expect(pickNewestFor(items, EMAIL, "staging.north.example")?.id).toBe("sub");
+    expect(pickNewestFor(items.slice(0, 1), EMAIL, "staging.north.example")).toBeNull();
+    expect(pickNewestFor([summary("lookalike", [EMAIL], "2026-10-17T09:00:00Z", "x@notstaging.north.example")], EMAIL, "staging.north.example")).toBeNull();
+    expect(pickNewestFor(items, EMAIL)?.id).toBe("spoof");
+  });
+});
+
+describe("TST-3 checkMagicLinkOrigin: the link must point at the Supabase project or the web", () => {
+  const ALLOWED = [SUPABASE, "https://staging.north.example"];
+
+  it("TST-3 accepts a link on either origin", () => {
+    expect(checkMagicLinkOrigin(LINK, ALLOWED)).toBe(LINK);
+    expect(checkMagicLinkOrigin("https://staging.north.example/auth/confirm?token_hash=abc", ALLOWED)).toBe("https://staging.north.example/auth/confirm?token_hash=abc");
+  });
+
+  it("TST-3 refuses any other origin, naming it and never the token", () => {
+    expect(() => checkMagicLinkOrigin("https://evil.example/?token=x", ALLOWED)).toThrow(/https:\/\/evil\.example/);
+    for (const link of ["https://evil.example/?token=x", "https://ref.supabase.co.evil.example/v?token=x", "http://ref.supabase.co/auth/v1/verify?token=x"]) {
+      const error = (() => {
+        try {
+          checkMagicLinkOrigin(link, ALLOWED);
+          return null;
+        } catch (e) {
+          return e as Error;
+        }
+      })();
+      expect(error?.message, link).toMatch(/magic link points at/);
+      expect(error?.message, link).not.toContain("token=x");
+    }
+  });
+
+  it("TST-3 refuses when no origin is configured", () => {
+    expect(() => checkMagicLinkOrigin(LINK, [])).toThrow(/E2E_SUPABASE_URL/);
   });
 });
 
@@ -181,6 +225,34 @@ describe("TST-3 latestMagicLink on Resend: list the newest 100, filter on to, re
   it("TST-3 refuses a list that is not Resend's shape", async () => {
     const { deps } = fakeDeps(RESEND_ENV, () => ({ body: { data: [{ id: 42 }] } }));
     await expect(latestMagicLink(EMAIL, 30_000, deps)).rejects.toThrow(/Resend receiving list/);
+  });
+
+  it("TST-3 refuses a mail whose link leaves the Supabase project and the web, without printing the token", async () => {
+    const { deps } = fakeDeps(RESEND_ENV, (url) => (url === LIST_URL ? { body: listOf(summary("evil", [EMAIL], "2026-10-17T10:00:00Z")) } : { body: { text: "Sign in: https://evil.example/?token=x" } }));
+    const error = await latestMagicLink(EMAIL, 30_000, deps).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(error?.message).toContain("https://evil.example");
+    expect(error?.message).not.toContain("token=x");
+  });
+
+  it("TST-3 with E2E_MAIL_FROM_DOMAIN ignores mail from other senders", async () => {
+    const env = { ...RESEND_ENV, E2E_MAIL_FROM_DOMAIN: "staging.north.example" };
+    const { deps, calls } = fakeDeps(env, (url) =>
+      url === LIST_URL
+        ? { body: listOf(summary("spoof", [EMAIL], "2026-10-17T11:00:00Z", "attacker@evil.example"), summary("real", [EMAIL], "2026-10-17T10:00:00Z")) }
+        : { body: { text: LINK } },
+    );
+    await expect(latestMagicLink(EMAIL, undefined, deps)).resolves.toBe(LINK);
+    expect(calls.map((c) => c.url)).toContain("https://api.resend.com/emails/receiving/real");
+    expect(calls.map((c) => c.url)).not.toContain("https://api.resend.com/emails/receiving/spoof");
+  });
+
+  it("TST-3 needs the Supabase project (E2E_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL) to check the link", async () => {
+    const { deps, calls } = fakeDeps({ E2E_MAIL_PROVIDER: "resend", E2E_RESEND_KEY: KEY }, () => ({}));
+    await expect(latestMagicLink(EMAIL, 30_000, deps)).rejects.toThrow(/E2E_SUPABASE_URL/);
+    expect(calls).toHaveLength(0);
   });
 
   it("TST-3 needs E2E_RESEND_KEY and names it", async () => {

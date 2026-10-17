@@ -6,10 +6,14 @@
  * receiving API for the staging domain, read with `E2E_RESEND_KEY` (a
  * full-access key, docs/runbooks/staging.md §7). Resend has no recipient
  * filter: the reader lists the newest 100 received mails, keeps those whose
- * `to` holds the address (any case), retrieves the newest and takes the first
- * magic-link URL from its `text`, else its `html`. The key travels only in the
- * `Authorization` header and is never printed: errors name the address, the
- * path and the status.
+ * `to` holds the address (any case) and, with `E2E_MAIL_FROM_DOMAIN`, whose
+ * `from` is at that sender domain, retrieves the newest and takes the first
+ * magic-link URL from its `text`, else its `html`. The link is used only when
+ * its origin is the Supabase project (`E2E_SUPABASE_URL`, else
+ * `NEXT_PUBLIC_SUPABASE_URL`) or the web (`E2E_BASE_URL`): anyone can mail the
+ * predictable address. The key travels only in the `Authorization` header and
+ * is never printed: errors name the address, the path, the status or the
+ * link's origin, never a token.
  */
 import { z } from "zod";
 
@@ -65,6 +69,7 @@ export function extractMagicLink(text: string | null | undefined, html: string |
 export interface ReceivedSummary {
   readonly id: string;
   readonly to: readonly string[];
+  readonly from?: string | null;
   readonly created_at: string;
 }
 
@@ -75,16 +80,53 @@ const timeOf = (createdAt: string): number => {
   return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
 };
 
-/** The newest item whose `to` holds `email` exactly (any case, bare or `Name <addr>`); on equal or unreadable times the earlier in the list (Resend lists newest first). */
-export function pickNewestFor<T extends ReceivedSummary>(items: readonly T[], email: string): T | null {
+/** True when the `from` address's domain is `domain` or a subdomain of it (any case). */
+const sentFrom = (from: string | null | undefined, domain: string): boolean => {
+  const host = addressOf(from ?? "").split("@")[1] ?? "";
+  const wanted = domain.trim().toLowerCase();
+  return host === wanted || host.endsWith(`.${wanted}`);
+};
+
+/**
+ * The newest item whose `to` holds `email` exactly (any case, bare or
+ * `Name <addr>`) and, when `fromDomain` is given, whose `from` is at that
+ * domain or a subdomain; on equal or unreadable times the earlier in the list
+ * (Resend lists newest first).
+ */
+export function pickNewestFor<T extends ReceivedSummary>(items: readonly T[], email: string, fromDomain?: string): T | null {
   const wanted = email.trim().toLowerCase();
   return items
     .filter((item) => item.to.some((recipient) => addressOf(recipient) === wanted))
+    .filter((item) => fromDomain === undefined || sentFrom(item.from, fromDomain))
     .reduce<T | null>((newest, item) => (newest === null || timeOf(item.created_at) > timeOf(newest.created_at) ? item : newest), null);
 }
 
+const originOf = (url: string): string | null => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
+/** The link when its origin is one of `allowedOrigins`; otherwise throws naming the link's origin (never its path, query or token). */
+export function checkMagicLinkOrigin(link: string, allowedOrigins: readonly string[]): string {
+  const allowed = allowedOrigins.map(originOf).filter((o): o is string => o !== null);
+  if (allowed.length === 0) throw new Error("set E2E_SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL): the magic link's origin is checked against the Supabase project before it is opened");
+  const origin = originOf(link);
+  if (origin === null || !allowed.includes(origin)) throw new Error(`the magic link points at ${origin ?? "something that is not a URL"}, not at ${allowed.join(" or ")}: refused`);
+  return link;
+}
+
+/** The origins a staging magic link may point at: the Supabase project (required) and the web (`E2E_BASE_URL`, when set). */
+function allowedLinkOrigins(env: MailDeps["env"]): readonly string[] {
+  const supabase = (env.E2E_SUPABASE_URL ?? "").trim() || (env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim();
+  if (supabase === "") throw new Error("E2E_MAIL_PROVIDER=resend needs E2E_SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL): the magic link's origin is checked against the Supabase project before it is opened");
+  return [supabase, (env.E2E_BASE_URL ?? "").trim()].filter((u) => u !== "");
+}
+
 const ResendListSchema = z.object({
-  data: z.array(z.object({ id: z.string().min(1), to: z.array(z.string()).nullable().transform((to) => to ?? []), created_at: z.string() })),
+  data: z.array(z.object({ id: z.string().min(1), to: z.array(z.string()).nullable().transform((to) => to ?? []), from: z.string().nullable().optional(), created_at: z.string() })),
 });
 const ResendEmailSchema = z.object({ text: z.string().nullable().optional(), html: z.string().nullable().optional() });
 
@@ -112,9 +154,9 @@ async function resendGet<T extends z.ZodType>(deps: MailDeps, key: string, path:
 }
 
 /** One look at the Resend inbox: the newest mail to `email` and its link, or null when none has arrived yet. */
-async function resendOnce(deps: MailDeps, key: string, email: string): Promise<string | null> {
+async function resendOnce(deps: MailDeps, key: string, email: string, fromDomain: string | undefined): Promise<string | null> {
   const list = await resendGet(deps, key, RESEND_LIST_PATH, ResendListSchema, "Resend receiving list");
-  const mail = pickNewestFor(list.data, email);
+  const mail = pickNewestFor(list.data, email, fromDomain);
   if (!mail) return null;
   const full = await resendGet(deps, key, `/emails/receiving/${encodeURIComponent(mail.id)}`, ResendEmailSchema, "Resend received mail");
   return extractMagicLink(full.text, full.html);
@@ -123,12 +165,14 @@ async function resendOnce(deps: MailDeps, key: string, email: string): Promise<s
 async function resendMagicLink(deps: MailDeps, email: string, timeoutMs: number): Promise<string> {
   const key = (deps.env.E2E_RESEND_KEY ?? "").trim();
   if (key === "") throw new Error("E2E_MAIL_PROVIDER=resend needs E2E_RESEND_KEY (a full-access Resend key; docs/runbooks/staging.md §7)");
+  const origins = allowedLinkOrigins(deps.env);
+  const fromDomain = (deps.env.E2E_MAIL_FROM_DOMAIN ?? "").trim() || undefined;
   const deadline = deps.now() + timeoutMs;
   let lastProblem: string | null = null;
   for (;;) {
     try {
-      const link = await resendOnce(deps, key, email);
-      if (link) return link;
+      const link = await resendOnce(deps, key, email, fromDomain);
+      if (link) return checkMagicLinkOrigin(link, origins);
     } catch (error) {
       if (!(error instanceof ResendError) || !error.retry) throw error;
       lastProblem = error.message;

@@ -8,28 +8,50 @@
 import { describe, expect, it } from "vitest";
 import {
   assertWithin,
+  BYPASS_HEADER,
   DRY_RUN_REASON,
   e2eAddress,
   evidenceDate,
   evidenceDir,
   isFencedPreview,
+  isStagingRequest,
   JOURNEY_STEPS,
+  JOURNEY_TIMEOUT_MS,
   missingStagingEnv,
+  OTHER_STEPS_MS,
   shotFileName,
   stagingEnvVerdict,
+  STEP_BUDGET_MS,
   tasksSettled,
 } from "./staging-env";
 
 const KEY = "re_secret_value_never_printed";
-const FULL = { E2E_BASE_URL: "https://staging.north.example", E2E_MAIL_PROVIDER: "resend", E2E_RESEND_KEY: KEY, E2E_MAIL_DOMAIN: "staging.north.example" };
+const BYPASS = "bypass_secret_value_never_printed";
+const FULL = {
+  E2E_BASE_URL: "https://staging.north.example",
+  VERCEL_AUTOMATION_BYPASS_SECRET: BYPASS,
+  E2E_SUPABASE_URL: "https://stagingref.supabase.co",
+  E2E_MAIL_PROVIDER: "resend",
+  E2E_RESEND_KEY: KEY,
+  E2E_MAIL_DOMAIN: "staging.north.example",
+};
 
 describe("TST-3 missingStagingEnv: every variable a staging run needs", () => {
-  it("TST-3 lists all four on an empty env, in a fixed order", () => {
-    expect(missingStagingEnv({})).toEqual(["E2E_BASE_URL", "E2E_MAIL_PROVIDER=resend", "E2E_RESEND_KEY", "E2E_MAIL_DOMAIN"]);
+  it("TST-3 lists all six on an empty env, in a fixed order", () => {
+    expect(missingStagingEnv({})).toEqual(["E2E_BASE_URL", "VERCEL_AUTOMATION_BYPASS_SECRET", "E2E_SUPABASE_URL", "E2E_MAIL_PROVIDER=resend", "E2E_RESEND_KEY", "E2E_MAIL_DOMAIN"]);
   });
 
   it("TST-3 counts blank values and the mailpit provider as missing", () => {
     expect(missingStagingEnv({ ...FULL, E2E_RESEND_KEY: "  ", E2E_MAIL_PROVIDER: "mailpit" })).toEqual(["E2E_MAIL_PROVIDER=resend", "E2E_RESEND_KEY"]);
+  });
+
+  it("TST-3 needs the bypass secret for an https base URL only", () => {
+    expect(missingStagingEnv({ ...FULL, VERCEL_AUTOMATION_BYPASS_SECRET: "" })).toEqual(["VERCEL_AUTOMATION_BYPASS_SECRET"]);
+    expect(missingStagingEnv({ ...FULL, E2E_BASE_URL: "http://localhost:3100", VERCEL_AUTOMATION_BYPASS_SECRET: undefined })).toEqual([]);
+  });
+
+  it("TST-3 accepts NEXT_PUBLIC_SUPABASE_URL for the Supabase project", () => {
+    expect(missingStagingEnv({ ...FULL, E2E_SUPABASE_URL: undefined, NEXT_PUBLIC_SUPABASE_URL: "https://stagingref.supabase.co" })).toEqual([]);
   });
 
   it("TST-3 lists nothing when the env is complete", () => {
@@ -41,7 +63,9 @@ describe("TST-3 stagingEnvVerdict: skip without staging, fail on a half-configur
   it("TST-3 skips with the dry-run reason when E2E_BASE_URL is unset, naming the other missing variables", () => {
     const verdict = stagingEnvVerdict({});
     expect(verdict.kind).toBe("skip");
-    expect(verdict.kind === "skip" && verdict.message).toBe(`${DRY_RUN_REASON}; also missing: E2E_MAIL_PROVIDER=resend, E2E_RESEND_KEY, E2E_MAIL_DOMAIN`);
+    expect(verdict.kind === "skip" && verdict.message).toBe(
+      `${DRY_RUN_REASON}; also missing: VERCEL_AUTOMATION_BYPASS_SECRET, E2E_SUPABASE_URL, E2E_MAIL_PROVIDER=resend, E2E_RESEND_KEY, E2E_MAIL_DOMAIN`,
+    );
     expect(DRY_RUN_REASON).toBe("E2E_BASE_URL not set: the live journey runs against staging only (docs/runbooks/staging.md §15)");
   });
 
@@ -49,26 +73,68 @@ describe("TST-3 stagingEnvVerdict: skip without staging, fail on a half-configur
     const verdict = stagingEnvVerdict({ ...FULL, E2E_BASE_URL: "" });
     expect(verdict).toEqual({ kind: "skip", message: DRY_RUN_REASON });
     expect(JSON.stringify(verdict)).not.toContain(KEY);
+    expect(JSON.stringify(verdict)).not.toContain(BYPASS);
   });
 
   it("TST-3 fails when E2E_BASE_URL is set but another variable is missing, naming each", () => {
-    const verdict = stagingEnvVerdict({ ...FULL, E2E_RESEND_KEY: undefined, E2E_MAIL_DOMAIN: "" });
+    const verdict = stagingEnvVerdict({ ...FULL, E2E_RESEND_KEY: undefined, E2E_MAIL_DOMAIN: "", VERCEL_AUTOMATION_BYPASS_SECRET: " " });
     expect(verdict.kind).toBe("fail");
-    expect(verdict.kind === "fail" && verdict.message).toMatch(/E2E_BASE_URL is set.*missing E2E_RESEND_KEY, E2E_MAIL_DOMAIN/);
+    expect(verdict.kind === "fail" && verdict.message).toMatch(/E2E_BASE_URL is set.*missing VERCEL_AUTOMATION_BYPASS_SECRET, E2E_RESEND_KEY, E2E_MAIL_DOMAIN/);
   });
 
-  it("TST-3 fails on an E2E_BASE_URL that is not an http(s) URL, naming the variable and not the key", () => {
-    const verdict = stagingEnvVerdict({ ...FULL, E2E_BASE_URL: "staging.north.example" });
-    expect(verdict.kind).toBe("fail");
-    expect(verdict.kind === "fail" && verdict.message).toContain("E2E_BASE_URL");
-    expect(JSON.stringify(verdict)).not.toContain(KEY);
+  it("TST-3 fails on an E2E_BASE_URL or E2E_SUPABASE_URL that is not an http(s) URL, naming the variable and no value", () => {
+    for (const [name, env] of [
+      ["E2E_BASE_URL", { ...FULL, E2E_BASE_URL: "staging.north.example" }],
+      ["E2E_SUPABASE_URL", { ...FULL, E2E_SUPABASE_URL: "stagingref.supabase.co" }],
+    ] as const) {
+      const verdict = stagingEnvVerdict(env);
+      expect(verdict.kind).toBe("fail");
+      expect(verdict.kind === "fail" && verdict.message).toContain(name);
+      expect(JSON.stringify(verdict)).not.toContain(KEY);
+      expect(JSON.stringify(verdict)).not.toContain(BYPASS);
+    }
   });
 
-  it("TST-3 answers ok with the trimmed values, the domain lowercased and the base URL without a trailing slash", () => {
-    expect(stagingEnvVerdict({ ...FULL, E2E_BASE_URL: " https://staging.north.example/ ", E2E_MAIL_DOMAIN: " Staging.North.Example " })).toEqual({
+  it("TST-3 answers ok with the trimmed values (no secret among them), the domain lowercased and the URLs without a trailing slash", () => {
+    const verdict = stagingEnvVerdict({ ...FULL, E2E_BASE_URL: " https://staging.north.example/ ", E2E_MAIL_DOMAIN: " Staging.North.Example ", E2E_SUPABASE_URL: "https://stagingref.supabase.co/" });
+    expect(verdict).toEqual({
       kind: "ok",
-      env: { baseUrl: "https://staging.north.example", mailDomain: "staging.north.example" },
+      env: { baseUrl: "https://staging.north.example", mailDomain: "staging.north.example", supabaseUrl: "https://stagingref.supabase.co" },
     });
+    expect(JSON.stringify(verdict)).not.toContain(BYPASS);
+  });
+});
+
+describe("TST-5 isStagingRequest: the bypass header goes to the staging origin only", () => {
+  const BASE = "https://staging.north.example";
+
+  it("TST-5 is true for any path and query on the staging origin", () => {
+    expect(isStagingRequest("https://staging.north.example/login", BASE)).toBe(true);
+    expect(isStagingRequest("https://staging.north.example/c/x/artifacts/1?y=2", `${BASE}/`)).toBe(true);
+    expect(BYPASS_HEADER).toBe("x-vercel-protection-bypass");
+  });
+
+  it("TST-5 is false for Supabase, a sub- or look-alike domain, another scheme or port, and garbage", () => {
+    for (const url of [
+      "https://stagingref.supabase.co/auth/v1/verify?token=x",
+      "https://evil.staging.north.example/",
+      "https://staging.north.example.evil.com/",
+      "http://staging.north.example/",
+      "https://staging.north.example:8443/",
+      "https://o1.ingest.sentry.io/api/1/envelope/",
+      "not a url",
+    ]) {
+      expect(isStagingRequest(url, BASE), url).toBe(false);
+    }
+    expect(isStagingRequest("https://staging.north.example/", "not a url")).toBe(false);
+  });
+});
+
+describe("TST-3 the step budgets end before the test timeout, so a wait names its step", () => {
+  it("TST-3 tasks + plan + planned cards + the other steps stay below the 30 min test timeout", () => {
+    const sum = STEP_BUDGET_MS.tasks + STEP_BUDGET_MS.plan + STEP_BUDGET_MS.plannedCards + OTHER_STEPS_MS;
+    expect(JOURNEY_TIMEOUT_MS).toBe(30 * 60_000);
+    expect(sum).toBeLessThan(JOURNEY_TIMEOUT_MS);
   });
 });
 
@@ -146,5 +212,11 @@ describe("TST-3 assertWithin: an assertion that must hold within a time limit", 
         throw new Error("expected Resume agents");
       }, "the kill switch"),
     ).rejects.toThrow("the kill switch: expected Resume agents");
+  });
+
+  it("TST-3 leaves no unhandled rejection when a slow assertion fails after the limit", async () => {
+    const late = () => new Promise<never>((_, reject) => setTimeout(() => reject(new Error("late failure")), 30));
+    await expect(assertWithin(5, late, "the slow one")).rejects.toThrow("the slow one did not hold within 5 ms");
+    await new Promise((r) => setTimeout(r, 60));
   });
 });

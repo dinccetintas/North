@@ -2,15 +2,30 @@
  * TST-3, TST-4: the browser-side helpers of the live journey on staging
  * (`journey.live.spec.ts`). The pure rules live in `staging-env.ts` (unit
  * tested); this file adds what needs Playwright: the skip or failure when the
- * staging env is absent, waiting on the home's onboarding rows, reload
- * polling, per-step screenshots and the journey's notes file. Everything
- * reads the real UI; nothing writes to the database.
+ * staging env is absent, the bypass header scoped to the staging origin, the
+ * sign-in that never shows the magic link in a step title, the preview check
+ * in a request context of its own, waiting on the home's onboarding rows,
+ * reload polling, per-step screenshots and the journey's notes file.
+ * Everything reads the real UI; nothing writes to the database.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { test, type Page } from "@playwright/test";
+import { expect, request, test, type BrowserContext, type Page } from "@playwright/test";
 import { ONBOARDING_TASK_COUNT, onboardingRows } from "../flows";
-import { describeRows, evidenceDir as evidenceDirUnder, shotFileName, stagingEnvVerdict, tasksSettled, type JourneyStep, type StagingEnv, type TaskRow } from "./staging-env";
+import { latestMagicLink } from "../mail";
+import {
+  BYPASS_HEADER,
+  describeRows,
+  evidenceDir as evidenceDirUnder,
+  isStagingRequest,
+  SET_BYPASS_COOKIE_HEADER,
+  shotFileName,
+  stagingEnvVerdict,
+  tasksSettled,
+  type JourneyStep,
+  type StagingEnv,
+  type TaskRow,
+} from "./staging-env";
 
 export { assertWithin } from "./staging-env";
 
@@ -42,6 +57,68 @@ export function stagingEnv(env: Readonly<Record<string, string | undefined>> = p
   const verdict = stagingEnvVerdict(env);
   if (verdict.kind !== "ok") throw new Error(verdict.message);
   return verdict.env;
+}
+
+type Env = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Adds the Vercel bypass header to the requests on the staging origin only
+ * (`isStagingRequest`), with Vercel's bypass cookie asked for so the redirect
+ * from Supabase's verify link into staging passes too. Supabase, Sentry and
+ * any other origin never see the secret; it is never a context option, so no
+ * trace's context options hold it. A no-op without a staging env or secret.
+ */
+export async function scopeBypassToStaging(context: BrowserContext, env: Env = process.env): Promise<void> {
+  const verdict = stagingEnvVerdict(env);
+  const secret = (env.VERCEL_AUTOMATION_BYPASS_SECRET ?? "").trim();
+  if (verdict.kind !== "ok" || secret === "") return;
+  const baseUrl = verdict.env.baseUrl;
+  await context.route(
+    (url) => isStagingRequest(url.href, baseUrl),
+    (route) => route.continue({ headers: { ...route.request().headers(), [BYPASS_HEADER]: secret, [SET_BYPASS_COOKIE_HEADER]: "true" } }),
+  );
+}
+
+/** Magic-link sign-in as `flows.signIn`, but the link (a live token) is opened in a boxed step titled without it. */
+export async function signInLive(page: Page, email: string): Promise<void> {
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Continue with email" }).click();
+  await expect(page.getByRole("status")).toContainText("Link sent");
+  const link = await latestMagicLink(email);
+  await test.step("open the magic link", async () => {
+    await page.goto(link);
+  }, { box: true });
+  await expect(page).toHaveURL(/\/companies/);
+}
+
+/** What a URL answered: its status and the URL it was answered at. */
+export interface Answer {
+  readonly status: number;
+  readonly url: string;
+}
+
+/**
+ * GETs `url` (no redirect followed) from a request context of its own. The
+ * explicit empty `extraHTTPHeaders` matters: Playwright copies every `use`
+ * option the new context does not name into it, so without it a bypass header
+ * in `use` would travel to the agent-built preview (harness.live.spec.ts).
+ */
+export async function statusOutside(url: string): Promise<Answer> {
+  const context = await request.newContext({ extraHTTPHeaders: {} });
+  try {
+    const res = await context.get(url, { maxRedirects: 0 });
+    return { status: res.status(), url: res.url() };
+  } finally {
+    await context.dispose();
+  }
+}
+
+/** Opens `path` on staging in the page (so the bypass route applies) and returns the navigation's status and where the page ended up. */
+export async function openOnStaging(page: Page, path: string): Promise<Answer> {
+  const res = await page.goto(path);
+  return { status: res?.status() ?? 0, url: page.url() };
 }
 
 /** A full-page screenshot as `<dir>/<nn>-<step>-<project>.png`; returns the file. */

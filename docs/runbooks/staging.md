@@ -392,12 +392,15 @@ one evidence file under `docs/evidence/M7/` and prints no key.
    pnpm -s staging:check -- --web https://staging.<web> --worker https://north-worker-staging.fly.dev --supabase https://<staging ref>.supabase.co --anon-key <staging publishable key> --json | tee docs/evidence/M7/staging-check.json
    ```
 7. The connections (section 13): one screenshot per test account, `docs/evidence/M7/staging-connection-<provider>.png`.
-8. The live journey (Task 20; the nightly variant, `smoke` profile): `2 passed` (mobile, desktop), or a failure that names the step. Screenshots and `journey-<project>.json` (with the company `slug`) land in `docs/evidence/M7/acceptance/<date>/`; then the costs per company, with section 12's service-role env and `EVIDENCE_ALLOW_REMOTE_DB=1`. Without `E2E_BASE_URL` the spec only skips (`E2E_BASE_URL not set: …`), which proves nothing.
+8. The live journey (Task 20; the nightly variant, `smoke` profile): `2 passed` for the journeys (mobile, desktop) plus the harness self-check, or a failure that names the step, then `evidence guard: OK`. Screenshots and `journey-<project>.json` (with the company `slug`) land in `docs/evidence/M7/acceptance/<date>/`; then the costs per company, with section 12's service-role env and `EVIDENCE_ALLOW_REMOTE_DB=1`. Without `E2E_BASE_URL` the journeys only skip (`E2E_BASE_URL not set: …`), which proves nothing. The bypass secret is sent to `staging.<web>` only (a route, not a context option); the magic link is opened only when it points at `E2E_SUPABASE_URL` or `E2E_BASE_URL` (`E2E_MAIL_FROM_DOMAIN`, optional, also drops mail from any other sender domain). `pnpm e2e:staging` runs `scripts/evidence-guard.sh` after Playwright (keeping its exit code); run it once more after the `tee` so the finished log is scanned too: it fails, naming the file but never the value, when the report, `apps/web/test-results/`, the log or the evidence holds the value of `VERCEL_AUTOMATION_BYPASS_SECRET` or `E2E_RESEND_KEY`.
    ```bash
+   set -o pipefail
    read -rs E2E_RESEND_KEY && export E2E_RESEND_KEY                         # the full-access key (section 7)
    read -rs VERCEL_AUTOMATION_BYPASS_SECRET && export VERCEL_AUTOMATION_BYPASS_SECRET
-   export E2E_BASE_URL=https://staging.<web> E2E_MAIL_PROVIDER=resend E2E_MAIL_DOMAIN=staging.<domain> E2E_EVIDENCE_DATE=$(date -u +%F)
+   export E2E_BASE_URL=https://staging.<web> E2E_SUPABASE_URL=https://<staging ref>.supabase.co E2E_MAIL_PROVIDER=resend \
+     E2E_MAIL_DOMAIN=staging.<domain> E2E_MAIL_FROM_DOMAIN=staging.<domain> E2E_EVIDENCE_DATE=$(date -u +%F)
    pnpm e2e:staging 2>&1 | tee docs/evidence/M7/staging-journey.txt
+   bash scripts/evidence-guard.sh                                          # the finished log, the report, the results
    D=docs/evidence/M7/acceptance/$E2E_EVIDENCE_DATE
    for p in mobile desktop; do EVIDENCE_ALLOW_REMOTE_DB=1 EVIDENCE_WORKER_URL=https://north-worker-staging.fly.dev pnpm -s evidence:costs -- --slug "$(node -p "require('./$D/journey-$p.json').slug")" --out "$D/$p"; done
    ```
