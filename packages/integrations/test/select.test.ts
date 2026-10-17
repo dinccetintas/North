@@ -216,6 +216,16 @@ describe("B6-4 selectIntegrations: billing and the user's Stripe (BIL-1, OUT-2)"
     expect(lines).toEqual([]);
   });
 
+  it("TST-5 live under the test fence: a live Stripe key is refused and billing stays sandbox; a test key is the real adapter", () => {
+    const { lines, warn } = warnings();
+    const fenced = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, undefined, warn, { allowUrl: async () => true, requireStripeTestKey: true });
+    expect(fenced.billing).toBeInstanceOf(SandboxBilling);
+    expect(lines.join("\n")).toMatch(/test fence/);
+    expect(lines.join("\n")).not.toContain("sk_live_x");
+    const test = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "w" }, undefined, () => undefined, { allowUrl: async () => true, requireStripeTestKey: true });
+    expect(test.billing).toBeInstanceOf(StripeBilling);
+  });
+
   it("live: the user's Stripe read uses the injected fetch and the connection's account", async () => {
     const seen: string[] = [];
     const fetchImpl: FetchLike = async (url, init) => {

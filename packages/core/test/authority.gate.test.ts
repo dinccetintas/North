@@ -154,6 +154,12 @@ describe("TST-5 gate(): the test-account fence", () => {
     expect(project).toMatchObject({ kind: "block", tier: "K1" });
   });
 
+  it("TST-5 blocks an action whose target the caller could not determine, so nothing passes the fence by omission", () => {
+    const unknown = gate(adsStart(), ctx(fenced([{ kind: "unknown", action: "ads.start" }])));
+    expect(unknown).toMatchObject({ kind: "block", tier: "K2" });
+    expect(unknown.reasons.at(-1)).toBe("test_fence");
+  });
+
   it("TST-5 blocks even a K0 action aimed outside the fence", () => {
     expect(gate(spec({ kind: "research" }), ctx(fenced([adAccount("act_9")])))).toMatchObject({ kind: "block", tier: "K0" });
   });

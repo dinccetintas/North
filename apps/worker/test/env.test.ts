@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { fenceVerdict } from "@north/core";
 import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
 import { fencePolicyFor, langfuseConfigured, SANDBOX_UNSUBSCRIBE_SECRET, stripeSecretFor, stripeWebhookLabel, unsubscribeSecretFor, workerEnv } from "../src/env";
 
@@ -117,7 +118,20 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     ];
     for (const [key, value] of malformed) expect(() => parse({ NORTH_TEST_FENCE: "1", [key]: value }), `${key}=${value}`).toThrow(new RegExp(`^Worker env invalid: ${key}: `));
     const ok = parse({ NORTH_FENCE_META_AD_ACCOUNTS: "act_123, 456", NORTH_FENCE_GITHUB_OWNERS: "north-e2e, Octo-Cat", NORTH_FENCE_RECIPIENT_DOMAINS: "resend.app, mail.north.test,", NORTH_FENCE_VERCEL_PREFIX: "e2e-" });
-    expect(fencePolicyFor(ok)).toMatchObject({ metaAdAccounts: ["act_123", "456"], githubOwners: ["north-e2e", "Octo-Cat"], recipientDomains: ["resend.app", "mail.north.test"], vercelProjectPrefix: "e2e-" });
+    expect(fencePolicyFor(ok)).toMatchObject({ metaAdAccounts: ["act_123", "act_456"], githubOwners: ["north-e2e", "Octo-Cat"], recipientDomains: ["resend.app", "mail.north.test"], vercelProjectPrefix: "e2e-" });
+  });
+
+  it("TST-5 Meta ad account ids are normalised to act_<digits>, so 123 and act_123 name the same account", () => {
+    const bare = fencePolicyFor(parse({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: "123" }));
+    const prefixed = fencePolicyFor(parse({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: "act_123" }));
+    expect(bare.metaAdAccounts).toEqual(["act_123"]);
+    expect(prefixed.metaAdAccounts).toEqual(["act_123"]);
+    for (const policy of [bare, prefixed]) {
+      expect(fenceVerdict([{ kind: "meta_ad_account", id: "act_123" }], policy)).toEqual({ allowed: true });
+      expect(fenceVerdict([{ kind: "meta_ad_account", id: "act_1234" }], policy)).toMatchObject({ allowed: false });
+      expect(Object.isFrozen(policy)).toBe(true);
+    }
+    expect(fencePolicyFor(parse({ NORTH_FENCE_META_AD_ACCOUNTS: " 7, act_8 ,9" })).metaAdAccounts).toEqual(["act_7", "act_8", "act_9"]);
   });
 
   it("SEC-1 NODE_ENV=production refuses an ANTHROPIC_BASE_URL that is not loopback, so the real key cannot be sent elsewhere", () => {

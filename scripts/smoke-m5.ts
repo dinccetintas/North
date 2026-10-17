@@ -11,7 +11,7 @@
  *
  * Usage: pnpm smoke:m5   (stack + `pnpm dev`; worker in sandbox mode with the mock runtime; SENTRY_CLIENT_SECRET unset or `sandbox-sentry-secret`)
  */
-import { createCompany, createGoal, setKillSwitch, setOnboardingStep, updateProfile, upsertBudgets, upsertPushSubscription } from "@north/db";
+import { createCompany, createGoal, setKillSwitch, setOnboardingStep, setSenderIdentity, updateProfile, upsertBudgets, upsertPushSubscription } from "@north/db";
 import { day1, day2, day3, day4, day5, day6, day7 } from "./smoke-m5/days";
 import { day8, wholeRun } from "./smoke-m5/days-late";
 import { assert, avoidScanCron, counts, db, QUOTA, resetClock, TIMEZONE, type Ctx } from "./smoke-m5/harness";
@@ -27,6 +27,8 @@ async function createOwner(): Promise<Ctx> {
   // The brief's push goes to each of the owner's subscriptions (as decision cards do); the sandbox push adapter answers every endpoint.
   await upsertPushSubscription(db, { userId: ownerId, endpoint: `https://push.example.test/sandbox/${ownerId}`, p256dh: "sandbox-p256dh", auth: "sandbox-auth" });
   const company = await createCompany(db, { ownerId, name: `Seven Days Co ${Date.now().toString(36)}`, thesis: THESIS, targetCustomer: "solo consultants" });
+  // CMP-1 (M7): day 2's first contacts need the company's legal name and postal address; the gate blocks them otherwise.
+  await setSenderIdentity(db, company.id, { legalName: "Seven Days Co Ltd", postalAddress: "1 Example Street, Springfield 12345" });
   await createGoal(db, company.id, { metricKey: "signups", targetValue: 50, dueDate: "2026-12-31" });
   await upsertBudgets(db, company.id, [{ category: "ads", totalLimitUsd: 300, dailyLimitUsd: 100 }]);
   await setOnboardingStep(db, company.id, "done");

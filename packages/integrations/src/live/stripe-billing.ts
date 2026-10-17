@@ -30,11 +30,41 @@ export interface StripeBillingConfig {
   readonly webhookSecret: string;
 }
 
-/** Both keys or nothing: without the webhook secret no entitlement could ever move, so a half configuration stays in sandbox. */
-export function stripeBillingConfig(env: NodeJS.ProcessEnv = process.env): StripeBillingConfig | null {
+/** How `stripeBillingConfig` reads the keys: the test fence's rule and where a refusal is reported. */
+export interface StripeBillingConfigOptions {
+  /** TST-5: under the test fence only a Stripe test key (`sk_test_`, `rk_test_`) may be used; any other key leaves billing unconfigured. */
+  readonly requireTestKey?: boolean;
+  /** Where the refusal is reported (one line, never the key); `console.warn` by default. */
+  readonly warn?: (message: string) => void;
+}
+
+/** Stripe test-mode keys: a secret key or a restricted key. */
+const STRIPE_TEST_KEY = /^(sk|rk)_test_/;
+
+/** Reports a refusal without ever failing: a throwing sink is ignored. */
+function report(warn: (message: string) => void, message: string): void {
+  try {
+    warn(message);
+  } catch {
+    // The refusal stands whether or not it could be reported.
+  }
+}
+
+/**
+ * Both keys or nothing: without the webhook secret no entitlement could ever
+ * move, so a half configuration stays in sandbox. With `requireTestKey`
+ * (the test fence is on) a key that is not a Stripe test key is refused too:
+ * null and one warning that does not show the key. Never throws.
+ */
+export function stripeBillingConfig(env: NodeJS.ProcessEnv = process.env, opts: StripeBillingConfigOptions = {}): StripeBillingConfig | null {
   const secretKey = env.STRIPE_SECRET_KEY?.trim();
   const webhookSecret = env.STRIPE_WEBHOOK_SECRET?.trim();
-  return secretKey && webhookSecret ? Object.freeze({ secretKey, webhookSecret }) : null;
+  if (!secretKey || !webhookSecret) return null;
+  if (opts.requireTestKey && !STRIPE_TEST_KEY.test(secretKey)) {
+    report(opts.warn ?? ((message) => console.warn(message)), "[integrations] the test fence is on and STRIPE_SECRET_KEY is not a Stripe test key (sk_test_ or rk_test_): Stripe billing stays off");
+    return null;
+  }
+  return Object.freeze({ secretKey, webhookSecret });
 }
 
 const HttpsUrl = z.url().refine((value) => value.startsWith("https://"));

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { fencePolicyFromEnv, MODEL_PROFILES, type FencePolicy } from "@north/core";
 import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
 import { isLoopbackHost, isLoopbackUrl, selfBaseUrl } from "./host";
+import { metaAdAccountId } from "./services/fence-targets";
 
 /** An empty value (`KEY=` in a .env file, as `.env.example` ships `ANTHROPIC_API_KEY`) counts as unset. */
 const blankAsUnset = <T extends z.ZodType>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
@@ -200,15 +201,21 @@ export function unsubscribeSecretFor(env: UnsubscribeEnv): string | null {
 
 export type FenceEnv = Pick<WorkerEnv, "NORTH_TEST_FENCE" | "NORTH_FENCE_META_AD_ACCOUNTS" | "NORTH_FENCE_GITHUB_OWNERS" | "NORTH_FENCE_RECIPIENT_DOMAINS" | "NORTH_FENCE_VERCEL_PREFIX">;
 
-/** TST-5: the fence policy of the parsed env, through `fencePolicyFromEnv` (on only with NORTH_TEST_FENCE=1). */
+/**
+ * TST-5: the fence policy of the parsed env, through `fencePolicyFromEnv` (on
+ * only with NORTH_TEST_FENCE=1). Meta ad account ids are normalised to
+ * `act_<digits>` (`metaAdAccountId`), the form the gate builds from the
+ * connection's `act:` scope, so `123` and `act_123` are the same account.
+ */
 export function fencePolicyFor(env: FenceEnv): FencePolicy {
-  return fencePolicyFromEnv({
+  const policy = fencePolicyFromEnv({
     NORTH_TEST_FENCE: env.NORTH_TEST_FENCE,
     NORTH_FENCE_META_AD_ACCOUNTS: env.NORTH_FENCE_META_AD_ACCOUNTS,
     NORTH_FENCE_GITHUB_OWNERS: env.NORTH_FENCE_GITHUB_OWNERS,
     NORTH_FENCE_RECIPIENT_DOMAINS: env.NORTH_FENCE_RECIPIENT_DOMAINS,
     NORTH_FENCE_VERCEL_PREFIX: env.NORTH_FENCE_VERCEL_PREFIX,
   });
+  return Object.freeze({ ...policy, metaAdAccounts: policy.metaAdAccounts.map(metaAdAccountId) });
 }
 
 /** OBS-1: Langfuse needs all three keys; anything less is a no-op tracer. */

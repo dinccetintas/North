@@ -1,4 +1,4 @@
-import { ActionSpecSchema, batchPayload, type ActionSpec } from "@north/core";
+import { ActionSpecSchema, batchPayload, normaliseEmail, recipientsOf, type ActionSpec } from "@north/core";
 import { listLeads, pendingActionsForCard, type ActionRecord } from "@north/db";
 import type { WorkerDeps } from "../deps";
 
@@ -24,28 +24,45 @@ const storedSpec = (a: ActionRecord): ActionSpec | null => {
   return parsed.success ? parsed.data : null;
 };
 
+/** The send's own recipient: `payload.to` trimmed and lower-cased, the way `perform` matches it against the lead; "" when there is none. */
 const recipientOf = (spec: ActionSpec): string => (typeof spec.payload?.to === "string" ? spec.payload.to.trim().toLowerCase() : "");
 
-/** The refusal for a send that wants to attach to an open batch card, or null when it fits the card's scope. */
+/** The send's own addresses, read by core's `recipientsOf` without the batch list: its `to`, `cc` and `bcc`. */
+const ownAddresses = (spec: ActionSpec): readonly string[] => recipientsOf({ ...spec, payload: { ...spec.payload, recipients: undefined } });
+
+/**
+ * The refusal for a send that wants to attach to an open batch card, or null
+ * when it fits the card's scope: the card's list is the batch's own (as core
+ * normalises it), and the send's `to` and every other address it would reach
+ * (core's `recipientsOf`: its list, `cc`, `bcc`) must be on it.
+ */
 export async function batchReuseRefusal(deps: WorkerDeps, cardId: string, spec: ActionSpec): Promise<string | null> {
   const pending = await pendingActionsForCard(deps.db, cardId);
   const first = pending[0] ? storedSpec(pending[0]) : null;
-  const recipients = first ? batchPayload(first.payload)?.recipients : undefined;
-  if (!recipients) return `${BATCH_MISMATCH}: the card carries no recipient list`;
-  if (pending.length >= recipients.length) return `${BATCH_MISMATCH}: the card already covers its ${recipients.length} recipients`;
+  const listed = first ? batchPayload(first.payload)?.recipients : undefined;
+  if (!listed) return `${BATCH_MISMATCH}: the card carries no recipient list`;
+  if (pending.length >= listed.length) return `${BATCH_MISMATCH}: the card already covers its ${listed.length} recipients`;
+  const scope = listed.map(normaliseEmail);
   const to = recipientOf(spec);
-  if (!recipients.includes(to)) return `${BATCH_MISMATCH}: ${to || "(no recipient)"} is not on the card's list`;
-  return null;
+  if (!scope.includes(to)) return `${BATCH_MISMATCH}: ${to || "(no recipient)"} is not on the card's list`;
+  const stranger = recipientsOf(spec).find((address) => !scope.includes(address));
+  return stranger === undefined ? null : `${BATCH_MISMATCH}: ${stranger} is not on the card's list`;
 }
 
-/** The addresses a first contact opens a card for: its batch's recipient list, or its own `to`; a string when the shape is refused. */
-function recipientsOf(spec: ActionSpec): readonly string[] | string {
+/**
+ * The addresses a first contact opens a card for: every address core's
+ * `recipientsOf` reads (its batch list or its own `to`, then `cc` and `bcc`);
+ * its own `to` must be one of them, as a plain address. A string when the
+ * shape is refused.
+ */
+function cardScope(spec: ActionSpec): readonly string[] | string {
   const batch = batchPayload(spec.payload);
   const to = recipientOf(spec);
-  if (!batch) return to ? [to] : `${BATCH_MISMATCH}: a first contact needs its recipient`;
-  if (!batch.recipients) return `${BATCH_MISMATCH}: a batch needs its recipient list`;
-  if (!batch.recipients.includes(to)) return `${BATCH_MISMATCH}: ${to || "(no recipient)"} is not on its own recipient list`;
-  return batch.recipients;
+  if (!batch && !to) return `${BATCH_MISMATCH}: a first contact needs its recipient`;
+  if (batch && !batch.recipients) return `${BATCH_MISMATCH}: a batch needs its recipient list`;
+  const listed = recipientsOf(spec);
+  if (!listed.includes(to)) return `${BATCH_MISMATCH}: ${to || "(no recipient)"} is not on its own recipient list`;
+  return listed;
 }
 
 /**
@@ -54,13 +71,13 @@ function recipientsOf(spec: ActionSpec): readonly string[] | string {
  * company. Only those recipients are looked up (≤ a batch's fifty), never
  * the whole lead list. The gate reaches this only when the task has no open
  * card for the send's batch yet (`reuseCard` runs first). Scope `own` checks
- * only the send's own recipient: an auto-approved send, whose batch's earlier
- * sends have already contacted theirs.
+ * only the send's own addresses (`to`, `cc`, `bcc`): an auto-approved send,
+ * whose batch's earlier sends have already contacted theirs.
  */
 export async function firstContactRefusal(deps: WorkerDeps, companyId: string, spec: ActionSpec, scope: "card" | "own" = "card"): Promise<string | null> {
-  const listed = recipientsOf(spec);
+  const listed = cardScope(spec);
   if (typeof listed === "string") return listed;
-  const recipients = scope === "own" ? [recipientOf(spec)] : listed;
+  const recipients = scope === "own" ? ownAddresses(spec) : listed;
   const found = await listLeads(deps.db, companyId, { status: ["new"], emails: recipients, limit: recipients.length });
   const leads = new Set(found.map((l) => l.email));
   const stranger = recipients.find((r) => !leads.has(r));

@@ -74,6 +74,15 @@ export async function companyIdBySlug(slug: string): Promise<string> {
   return id;
 }
 
+/** CMP-1 (M7): fills in the company's sender identity (legal name and postal address), without which the gate blocks every first contact. */
+export async function setSenderIdentity(companyId: string, identity = { legalName: "Sales Co Ltd", postalAddress: "1 Example Street, Springfield 12345" }): Promise<void> {
+  const rows = await rest<{ id: string }[]>(`companies?id=eq.${encodeURIComponent(companyId)}&select=id`, {
+    method: "PATCH",
+    body: JSON.stringify({ legal_name: identity.legalName, postal_address: identity.postalAddress }),
+  });
+  if (rows.length !== 1) throw new Error(`No company ${companyId} to give a sender identity`);
+}
+
 export interface SeededTask {
   readonly id: string;
 }

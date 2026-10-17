@@ -10,6 +10,7 @@ import {
   sendInngestEvent,
   sentMessageIds,
   setBudget,
+  setSenderIdentity,
   simulateAdSpend,
   simulateReply,
 } from "./stack";
@@ -153,6 +154,8 @@ test("M4 sales: five leads → one card → five sends → replies in the ledger
   const stamp = Date.now().toString(36);
   const slug = await onboardedCompany(page, project, `${stamp}s`, `Sales Co ${stamp} ${project}`);
   const companyId = await companyIdBySlug(slug);
+  // CMP-1 (M7): first contacts go out only under the company's legal name and postal address.
+  await setSenderIdentity(companyId);
 
   await insertLeads(
     companyId,

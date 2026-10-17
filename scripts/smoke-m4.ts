@@ -34,6 +34,7 @@ import {
   pendingActionsForCard,
   setKillSwitch,
   setOnboardingStep,
+  setSenderIdentity,
   updateProfile,
   upsertBudgets,
   type Database,
@@ -135,6 +136,8 @@ async function step1(): Promise<Ctx> {
   await updateProfile(db, ownerId, { dailyDecisionQuota: 5 });
   const company = await createCompany(db, { ownerId, name: `Ledger Co ${Date.now().toString(36)}`, thesis: "Bookkeeping for solo consultants that closes the month in one click." });
   const companyId = company.id;
+  // CMP-1 (M7): no first contact leaves without the company's legal name and postal address; the gate blocks it otherwise.
+  await setSenderIdentity(db, companyId, { legalName: "Ledger Co Ltd", postalAddress: "1 Example Street, Springfield 12345" });
   await createGoal(db, companyId, { metricKey: "signups", targetValue: 50, dueDate: "2026-12-31" });
   await upsertBudgets(db, companyId, [{ category: "ads", totalLimitUsd: 100, dailyLimitUsd: 10 }]);
   await setOnboardingStep(db, companyId, "done");

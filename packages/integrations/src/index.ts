@@ -8,7 +8,7 @@ export { GmailOutreach, GMAIL_API, buildRawMessage, countReplies, normaliseAddre
 export { GoogleAds, GOOGLE_ADS_NOT_CONFIGURED } from "./live/google-ads";
 export { PostHogAnalytics, POSTHOG_NOT_CONFIGURED } from "./live/posthog";
 export { StripeReadPayments, STRIPE_READ_PAGE_SIZE, STRIPE_READ_MAX_OBJECTS, STRIPE_REVENUE_WINDOW_DAYS, monthlyCents, stripeAccountOf } from "./live/stripe-read";
-export { StripeBilling, stripeBillingConfig, STRIPE_API, stripeForm, type StripeBillingConfig, type FormValue } from "./live/stripe-billing";
+export { StripeBilling, stripeBillingConfig, STRIPE_API, stripeForm, type StripeBillingConfig, type StripeBillingConfigOptions, type FormValue } from "./live/stripe-billing";
 export { ResendMail, resendConfig, resendClient, type ResendClient, type ResendConfig } from "./live/resend";
 export { WebPush, webPushConfig, type PushSender, type WebPushConfig } from "./live/web-push";
 export { GitHubCodeHost, type FetchLike } from "./live/github";

@@ -30,6 +30,8 @@ export interface SelectOptions {
   readonly fetchImpl?: FetchLike;
   /** Deterministic time for the sandbox sources and the sandbox code host. */
   readonly clock?: () => Date;
+  /** TST-5: the test fence is on, so the platform's Stripe runs on a test key or not at all (`stripeBillingConfig`'s `requireTestKey`). */
+  readonly requireStripeTestKey?: boolean;
 }
 
 const fallback = (provider: string, warn: Warn): void =>
@@ -39,10 +41,11 @@ const fallback = (provider: string, warn: Warn): void =>
  * The platform's Stripe (BIL-1): `StripeBilling` with both keys, else the
  * sandbox adapter and the M3 fallback warning. Its checkout pages live on the
  * worker's sandbox routes, which a live worker does not mount, so a live
- * deployment without keys sells nothing rather than something fake.
+ * deployment without keys sells nothing rather than something fake. Under
+ * the test fence a key that is not a test key counts as no key (TST-5).
  */
 function liveBilling(env: NodeJS.ProcessEnv, sink: SandboxSink | undefined, warn: Warn, options: SelectOptions): BillingProvider {
-  const config = stripeBillingConfig(env);
+  const config = stripeBillingConfig(env, { requireTestKey: options.requireStripeTestKey === true, warn });
   if (config) return new StripeBilling(config, options.fetchImpl);
   fallback("billing", warn);
   return new SandboxBilling(sink, defaultSandboxRoot(env), options.clock, { siteBaseUrl: defaultSiteBaseUrl(env) });

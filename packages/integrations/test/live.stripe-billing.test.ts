@@ -66,6 +66,45 @@ describe("stripeBillingConfig (B6-3): both keys or nothing", () => {
   });
 });
 
+describe("TST-5 stripeBillingConfig under the test fence: test keys only", () => {
+  const LIVE = "sk_live_51SecretValue";
+
+  it("TST-5 a live key with requireTestKey is refused: null and one warning that never shows the key", () => {
+    const lines: string[] = [];
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn: (line) => lines.push(line) })).toBeNull();
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: LIVE, STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn: (line) => lines.push(line) })).toBeNull();
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "rk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn: (line) => lines.push(line) })).toBeNull();
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(line).toMatch(/test fence/);
+      expect(line).not.toContain("sk_live_x");
+      expect(line).not.toContain("SecretValue");
+      expect(line).not.toContain("rk_live_x");
+    }
+  });
+
+  it("TST-5 a test key (secret or restricted) with requireTestKey is the config as before", () => {
+    const lines: string[] = [];
+    const warn = (line: string): void => void lines.push(line);
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn })).toEqual({ secretKey: "sk_test_x", webhookSecret: "w" });
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: " rk_test_x ", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn })).toEqual({ secretKey: "rk_test_x", webhookSecret: "w" });
+    expect(stripeBillingConfig({}, { requireTestKey: true, warn })).toBeNull();
+    expect(lines).toEqual([]);
+  });
+
+  it("TST-5 without the option (or with it false) a live key is unchanged", () => {
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" })).toEqual({ secretKey: "sk_live_x", webhookSecret: "w" });
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: false })).toEqual({ secretKey: "sk_live_x", webhookSecret: "w" });
+  });
+
+  it("TST-5 never throws, even when the warning itself throws", () => {
+    const warn = (): void => {
+      throw new Error("log sink down");
+    };
+    expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn })).toBeNull();
+  });
+});
+
 describe("stripeForm: Stripe's bracket encoding", () => {
   it("flattens objects and arrays, writes booleans as words and skips null and undefined", () => {
     const decoded = Object.fromEntries(new URLSearchParams(stripeForm({ mode: "payment", line_items: [{ price: "price_1", quantity: 1 }], metadata: { a: "x y" }, allow: true, none: null, missing: undefined })).entries());

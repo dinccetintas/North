@@ -1,6 +1,7 @@
 // TST-5: the test-account fence. Staging runs real adapters, so every outside target must be a test account, or it is blocked.
 import { z } from "zod";
 import { normaliseEmail, singleAddress } from "../outreach/policy";
+import { ACTION_KINDS } from "./action";
 
 /**
  * Which outside accounts a fenced run may touch. While `enabled`, anything not
@@ -18,13 +19,18 @@ export const FencePolicySchema = z.object({
 });
 export type FencePolicy = z.infer<typeof FencePolicySchema>;
 
-/** One outside account or address an action is about to touch. */
+/**
+ * One outside account or address an action is about to touch. `unknown`
+ * stands for a target the caller could not determine for an action of that
+ * kind: it is never inside a fence, so an action cannot pass by omission.
+ */
 export const FenceTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("meta_ad_account"), id: z.string() }),
   z.object({ kind: z.literal("github_owner"), login: z.string() }),
   z.object({ kind: z.literal("vercel_project"), name: z.string() }),
   z.object({ kind: z.literal("recipient"), email: z.string() }),
   z.object({ kind: z.literal("stripe_key"), prefix: z.string() }),
+  z.object({ kind: z.literal("unknown"), action: z.enum(ACTION_KINDS) }),
 ]);
 export type FenceTarget = z.infer<typeof FenceTargetSchema>;
 
@@ -67,6 +73,8 @@ function isInside(target: FenceTarget, policy: FencePolicy): boolean {
       return domainAllowed(target.email, policy.recipientDomains);
     case "stripe_key":
       return target.prefix.startsWith(policy.stripeKeyPrefix);
+    case "unknown":
+      return false;
   }
 }
 
@@ -88,6 +96,8 @@ function targetValue(target: FenceTarget): string {
       return shown(target.email);
     case "stripe_key":
       return target.prefix.slice(0, STRIPE_PREFIX_SHOWN);
+    case "unknown":
+      return target.action;
   }
 }
 
@@ -96,13 +106,15 @@ function targetValue(target: FenceTarget): string {
  * everything. An enabled one allows the action only when every target is on
  * its allow-list (recipients by domain, one address each; Vercel projects by
  * prefix); otherwise the reason names the first target that is outside, by
- * kind and raw value (one line, cut to 80 characters).
+ * kind and raw value (one line, cut to 80 characters), or says
+ * `unknown target for <kind>` for a target the caller could not determine.
  */
 export function fenceVerdict(targets: readonly FenceTarget[], policy: FencePolicy): FenceVerdict {
   if (!policy.enabled) return ALLOWED;
   const outside = targets.find((target) => !isInside(target, policy));
   if (!outside) return ALLOWED;
-  return Object.freeze({ allowed: false, reason: `${outside.kind} ${targetValue(outside)} is outside the test fence` });
+  const reason = outside.kind === "unknown" ? `unknown target for ${targetValue(outside)}` : `${outside.kind} ${targetValue(outside)} is outside the test fence`;
+  return Object.freeze({ allowed: false, reason });
 }
 
 /** A comma-separated env value as a list: trimmed, empties dropped. */

@@ -1,5 +1,6 @@
 // TST-5: staging runs real adapters, but only against test accounts; anything else is fenced off.
 import { describe, expect, it } from "vitest";
+import type { ActionKind } from "../src/authority/action";
 import { FencePolicySchema, FenceTargetSchema, fencePolicyFromEnv, fenceVerdict, type FencePolicy, type FenceTarget } from "../src/authority/fence";
 
 const policy = (over: Partial<FencePolicy> = {}): FencePolicy => FencePolicySchema.parse({ enabled: true, ...over });
@@ -9,6 +10,7 @@ const owner = (login: string): FenceTarget => ({ kind: "github_owner", login });
 const project = (name: string): FenceTarget => ({ kind: "vercel_project", name });
 const recipient = (email: string): FenceTarget => ({ kind: "recipient", email });
 const stripe = (prefix: string): FenceTarget => ({ kind: "stripe_key", prefix });
+const unknown = (action: ActionKind): FenceTarget => ({ kind: "unknown", action });
 
 describe("TST-5 test-account fence", () => {
   it("TST-5 a disabled fence allows anything", () => {
@@ -158,13 +160,21 @@ describe("TST-5 fence schemas", () => {
     expect(FencePolicySchema.safeParse({}).success).toBe(false);
   });
 
-  it("TST-5 FenceTargetSchema accepts the five target kinds and nothing else", () => {
-    for (const target of [meta("act_1"), owner("acme"), project("e2e-x"), recipient("a@b.io"), stripe("sk_test_")]) {
+  it("TST-5 FenceTargetSchema accepts the five account kinds and an unknown target, and nothing else", () => {
+    for (const target of [meta("act_1"), owner("acme"), project("e2e-x"), recipient("a@b.io"), stripe("sk_test_"), unknown("ads.start")]) {
       expect(FenceTargetSchema.parse(target)).toEqual(target);
     }
     expect(FenceTargetSchema.safeParse({ kind: "ssh_host", host: "prod" }).success).toBe(false);
     expect(FenceTargetSchema.safeParse({ kind: "meta_ad_account" }).success).toBe(false);
     expect(FenceTargetSchema.safeParse({ kind: "recipient", id: "a@b.io" }).success).toBe(false);
+    expect(FenceTargetSchema.safeParse({ kind: "unknown", action: "not.a.kind" }).success).toBe(false);
+  });
+
+  it("TST-5 a target the caller could not determine is never inside an enabled fence, and the reason says so", () => {
+    const wide = policy({ metaAdAccounts: ["act_1"], githubOwners: ["acme"], recipientDomains: ["resend.app"] });
+    expect(fenceVerdict([unknown("ads.start")], wide)).toEqual({ allowed: false, reason: "unknown target for ads.start" });
+    expect(fenceVerdict([meta("act_1"), unknown("repo.push")], wide)).toEqual({ allowed: false, reason: "unknown target for repo.push" });
+    expect(fenceVerdict([unknown("ads.start")], FencePolicySchema.parse({ enabled: false }))).toEqual({ allowed: true });
   });
 });
 

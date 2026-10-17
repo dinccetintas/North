@@ -1,4 +1,4 @@
-import { ActionSpecSchema, batchPayload, gate, isActive, type ActionKind, type ActionSpec, type GateDecision, type Tier } from "@north/core";
+import { ActionSpecSchema, batchPayload, gate, isActive, REASON_PHRASES, type ActionKind, type ActionSpec, type GateDecision, type OutreachContext, type PolicyContext, type Tier } from "@north/core";
 import {
   QuotaExceededError,
   getCard,
@@ -23,6 +23,7 @@ import {
 import type { WorkerDeps } from "../deps";
 import { batchReuseRefusal, BATCH_MISMATCH, firstContactRefusal, heldRefusal } from "./batch-scope";
 import { BudgetCapReachedError } from "./budget-check";
+import { fenceCheckFor, OUTREACH_POLICY, outreachBlockReason, outreachContextFor, TEST_FENCE, type FenceCheck } from "./fence";
 import { applyFailed, applyOutcome, loadActionRow } from "./outcomes";
 import { performAction } from "./perform";
 import { ConnectionRequiredError } from "./provider-auth";
@@ -140,37 +141,66 @@ export function gateStandalone(deps: WorkerDeps, raw: ActionSpec, existing: read
 
 type RecordBase = Omit<Parameters<typeof recordAction>[1], "payload" | "status">;
 
-/** A refusal the gate records as `blocked` with its marker (`no_adapter`, `worker_only`, `batch_mismatch`); the raw reason stays in the payload. */
+/** A refusal the gate records as `blocked` with its marker (`no_adapter`, `worker_only`, `batch_mismatch`, `test_fence`, `outreach_policy`); the raw reason stays in the payload. */
 async function blockWith(db: DbClient, base: RecordBase, payload: Record<string, unknown>, marker: string, reason: string): Promise<GatedAction> {
   const actionId = await recordAction(db, { ...base, payload: { ...payload, [marker]: true, blocked_reason: reason.slice(0, 500) }, status: "blocked" });
   return { kind: "blocked", actionId, reason: marker };
 }
 
+/** What `gate()` decides on, and what the worker needs to record its answer: the fence check (TST-5) and the outreach facts (CMP-1) it was given. */
+interface GateInputs {
+  readonly policy: PolicyContext;
+  readonly ended: boolean;
+  readonly fence: FenceCheck | null;
+  readonly outreach: OutreachContext | undefined;
+}
+
+/** The company's budgets, rules, kill switch and entitlement, the fence targets (only while the fence is on) and, for the two email kinds, the outreach facts. */
+async function gateInputs(deps: WorkerDeps, companyId: string, action: ActionSpec): Promise<GateInputs> {
+  const { db } = deps;
+  const [budgets, autoRules, killSwitchActive, ended, fence, outreach] = await Promise.all([listBudgets(db, companyId), listActiveAutoRules(db, companyId), getKillSwitch(db, companyId), subscriptionEnded(db, companyId, action.kind), fenceCheckFor(deps, companyId, action), outreachContextFor(deps, companyId, action)]);
+  const cardDueAt = new Date(deps.clock().getTime() + DEFAULT_CARD_WINDOW_MS).toISOString();
+  const policy: PolicyContext = { killSwitchActive, budgets, autoRules, cardDueAt, ...(fence ? { fence: fence.context } : {}), ...(outreach ? { outreach } : {}) };
+  return { policy, ended, fence, outreach };
+}
+
+/**
+ * A block from `gate()`, recorded so the row says why: a fence block names
+ * the target outside the fence (TST-5), an outreach block the suppressed
+ * address or the missing sender identity (CMP-1); any other block (the kill
+ * switch) keeps the gate's reasons only.
+ */
+async function recordBlock(db: DbClient, row: { readonly base: RecordBase; readonly payload: Record<string, unknown> }, decision: GateDecision, inputs: GateInputs, action: ActionSpec): Promise<GatedAction> {
+  const reason = decision.reasons.at(-1);
+  if (reason === "test_fence") return blockWith(db, row.base, row.payload, TEST_FENCE, inputs.fence?.refusal ?? REASON_PHRASES.test_fence);
+  if ((reason === "suppressed" || reason === "no_sender_identity") && inputs.outreach) return blockWith(db, row.base, row.payload, OUTREACH_POLICY, outreachBlockReason(action, inputs.outreach, reason));
+  const actionId = await recordAction(db, { ...row.base, payload: row.payload, status: "blocked" });
+  return { kind: "blocked", actionId, reason: decision.reasons.join(", ") };
+}
+
 /**
  * The gate itself. K0 internal kinds are recorded executed; every other
  * `run`/`notify` is recorded `pending` and returned as `execute`; `block` is
- * recorded; `card` opens a decision card and records a pending action tied to
- * it (reusing an existing one on retry, or the batch's card). Quota breaches
- * defer the action: stored as blocked with `quota_deferred` and retried later.
+ * recorded (a fence or outreach block with its marker and reason); `card`
+ * opens a decision card and records a pending action tied to it (reusing an
+ * existing one on retry, or the batch's card). Quota breaches defer the
+ * action: stored as blocked with `quota_deferred` and retried later.
  */
 export async function gateFor(deps: WorkerDeps, ctx: GateContext, raw: ActionSpec): Promise<GatedAction> {
   const { db } = deps;
   const action = ActionSpecSchema.parse({ ...raw, companyId: ctx.companyId, agentRole: ctx.agentRole });
-  const [budgets, autoRules, killSwitchActive, ended] = await Promise.all([listBudgets(db, ctx.companyId), listActiveAutoRules(db, ctx.companyId), getKillSwitch(db, ctx.companyId), subscriptionEnded(db, ctx.companyId, action.kind)]);
+  const inputs = await gateInputs(deps, ctx.companyId, action);
   // The card's deadline and `opened_at` come from the worker's clock (ADR 0011); the database derives the quota day from `opened_at` in the owner's zone.
   const openedAt = deps.clock().toISOString();
-  const decision: GateDecision = gate(action, { killSwitchActive, budgets, autoRules, cardDueAt: new Date(deps.clock().getTime() + DEFAULT_CARD_WINDOW_MS).toISOString() });
+  const decision: GateDecision = gate(action, inputs.policy);
   const base = { companyId: ctx.companyId, taskId: ctx.taskId, agentRole: ctx.agentRole, kind: action.kind, tier: decision.tier, description: action.description, sandbox: deps.integrations.mode === "sandbox" };
   const payload = { ...(action.payload ?? {}), spec: action, gate: decision.kind, reasons: [...decision.reasons] };
 
-  if (decision.kind === "block") {
-    const actionId = await recordAction(db, { ...base, payload, status: "blocked" });
-    return { kind: "blocked", actionId, reason: decision.reasons.join(", ") };
-  }
+  if (decision.kind === "block") return recordBlock(db, { base, payload }, decision, inputs, action);
   // No adapter yet: never open a card for it and never fake a reference (AGT-2).
   if (!INTERNAL_KINDS.has(action.kind) && !ADAPTER_KINDS.has(action.kind)) return blockWith(db, base, payload, "no_adapter", "no adapter for this kind");
   if (WORKER_ONLY_KINDS.has(action.kind) && ctx.origin !== "worker") return blockWith(db, base, payload, "worker_only", `${action.kind} is the platform's own effect; agents cannot request it`);
-  if (ended) return blockWith(db, base, payload, SUBSCRIPTION_ENDED, "the owner's subscription has ended");
+  if (inputs.ended) return blockWith(db, base, payload, SUBSCRIPTION_ENDED, "the owner's subscription has ended");
   if (decision.kind === "run" || decision.kind === "notify") {
     if (INTERNAL_KINDS.has(action.kind)) {
       const actionId = await recordAction(db, { ...base, payload, status: "executed", externalRef: "internal" });

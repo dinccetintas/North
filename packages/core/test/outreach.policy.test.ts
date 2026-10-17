@@ -4,10 +4,12 @@ import { ActionSpecSchema, type ActionSpec } from "../src/authority/index";
 import {
   SenderIdentitySchema,
   UNREADABLE_RECIPIENT,
+  addressesOf,
   normaliseEmail,
   outreachRefusal,
   recipientsOf,
   singleAddress,
+  suppressedAddressOf,
   type SenderIdentity,
 } from "../src/outreach/policy";
 
@@ -215,6 +217,63 @@ describe("CMP-1 recipientsOf", () => {
     const snapshot = JSON.stringify(s);
     recipientsOf(s);
     expect(JSON.stringify(s)).toBe(snapshot);
+  });
+});
+
+// A copy is a recipient too: a fenced or suppressed address must not ride along in `cc` or `bcc`.
+describe("CMP-1 recipientsOf reads cc and bcc", () => {
+  it("CMP-1 adds `cc` and `bcc` after the list or `to`, as strings or lists, split and normalised", () => {
+    expect(recipientsOf(first({ to: "a@ok.io", cc: "Bo <B@ok.io>; c@ok.io", bcc: ["D@ok.io", "e@ok.io, f@ok.io"] }))).toEqual(["a@ok.io", "b@ok.io", "c@ok.io", "d@ok.io", "e@ok.io", "f@ok.io"]);
+    expect(recipientsOf(batch(["a@ok.io", "b@ok.io"]))).toEqual(["a@ok.io", "b@ok.io"]);
+    expect(recipientsOf(first({ batchId: "b1", to: "a@ok.io", recipients: ["a@ok.io"], cc: "x@ok.io" }))).toEqual(["a@ok.io", "x@ok.io"]);
+    expect(recipientsOf(reply({ to: "a@ok.io", bcc: "Y@ok.io" }))).toEqual(["a@ok.io", "y@ok.io"]);
+  });
+
+  it("CMP-1 a copy without a `to` still names its people", () => {
+    expect(recipientsOf(first({ cc: "x@ok.io" }))).toEqual(["x@ok.io"]);
+    expect(recipientsOf(first({ bcc: ["y@ok.io"] }))).toEqual(["y@ok.io"]);
+    expect(recipientsOf(first({ cc: "  ", bcc: [] }))).toEqual([]);
+  });
+
+  it("CMP-1 keeps a place for a copy it cannot read", () => {
+    expect(recipientsOf(first({ to: "a@ok.io", cc: 42 }))).toEqual(["a@ok.io", UNREADABLE_RECIPIENT]);
+    expect(recipientsOf(first({ to: "a@ok.io", bcc: ["b@ok.io", { x: 1 }] }))).toEqual(["a@ok.io", "b@ok.io", UNREADABLE_RECIPIENT]);
+    expect(recipientsOf(first({ to: "a@ok.io", cc: "x@ok.io victim@blocked.io" }))).toEqual(["a@ok.io", UNREADABLE_RECIPIENT]);
+  });
+
+  it("CMP-1 refuses a send whose `cc` or `bcc` is suppressed or unreadable, whatever its `to`", () => {
+    const ctx = { suppressed: ["blocked.io"], senderIdentity: IDENTITY };
+    expect(outreachRefusal(first({ to: "a@ok.io", cc: "b@blocked.io" }), ctx)).toBe("suppressed");
+    expect(outreachRefusal(first({ to: "a@ok.io", bcc: ["c@ok.io", "Bo <b@blocked.io>"] }), ctx)).toBe("suppressed");
+    expect(outreachRefusal(reply({ to: "a@ok.io", cc: 7 }), ctx)).toBe("suppressed");
+    expect(outreachRefusal(first({ to: "a@ok.io", cc: "c@ok.io", bcc: "d@ok.io" }), ctx)).toBeNull();
+  });
+});
+
+describe("CMP-1 addressesOf and suppressedAddressOf", () => {
+  it("CMP-1 addressesOf is every address a send could reach: its list, its own `to`, `cc` and `bcc`, each once", () => {
+    const s = first({ batchId: "b1", to: "Z@ok.io", recipients: ["a@ok.io", "b@ok.io"], cc: "a@ok.io", bcc: "c@ok.io" });
+    expect(addressesOf(s)).toEqual(["a@ok.io", "b@ok.io", "c@ok.io", "z@ok.io"]);
+    expect(addressesOf(first({ to: "A@ok.io, a@ok.io" }))).toEqual(["a@ok.io"]);
+    expect(addressesOf(first({}))).toEqual([]);
+    expect(addressesOf(first({ to: 42, cc: [null] }))).toEqual([UNREADABLE_RECIPIENT]);
+    expect(Object.isFrozen(addressesOf(s))).toBe(true);
+  });
+
+  it("CMP-1 suppressedAddressOf names the first address the rules refuse, or null", () => {
+    expect(suppressedAddressOf(first({ to: "a@ok.io", cc: "B@Blocked.io" }), ["blocked.io"])).toBe("b@blocked.io");
+    expect(suppressedAddressOf(first({ to: "Ada <ADA@ok.io>" }), [" ada@OK.io "])).toBe("ada@ok.io");
+    expect(suppressedAddressOf(first({ to: "a@ok.io", bcc: 7 }), [])).toBe(UNREADABLE_RECIPIENT);
+    expect(suppressedAddressOf(first({ to: "a@ok.io", cc: "c@ok.io" }), ["blocked.io"])).toBeNull();
+    expect(suppressedAddressOf(first({}), ["a@ok.io"])).toBeNull();
+  });
+
+  it("CMP-1 the refusal and the named address agree on every send", () => {
+    const sends = [first({ to: "a@ok.io" }), first({ to: "a@ok.io", cc: "x@blocked.io" }), reply({ to: "b@blocked.io" }), first({ to: "a@ok.io", bcc: [1] }), batch(["a@ok.io", "z@blocked.io"])];
+    for (const s of sends) {
+      const named = suppressedAddressOf(s, ["blocked.io"]);
+      expect(outreachRefusal(s, { suppressed: ["blocked.io"], senderIdentity: IDENTITY }) === "suppressed").toBe(named !== null);
+    }
   });
 });
 

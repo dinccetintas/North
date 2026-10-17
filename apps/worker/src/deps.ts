@@ -80,17 +80,17 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const roles = await loadRoles(env.AGENTS_DIR);
   const siteBaseUrl = process.env.SANDBOX_SITE_BASE_URL ?? `http://127.0.0.1:${env.WORKER_PORT}`;
   const { clock, simClock } = clockFor(env);
+  // TST-5: the fence is read before the gateway starts, so a bad fence fails boot without a gateway left running; under it the platform's Stripe runs on a test key or not at all.
+  const fence = fencePolicyFor(env);
   // D6-11: the competitor source fetches through the pinned fetch (resolve once, vet, connect to that address only).
   const integrations = withPinnedCompetitorFetch(
-    selectIntegrations({ ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE, SANDBOX_ROOT: env.SANDBOX_ROOT, SANDBOX_SITE_BASE_URL: siteBaseUrl }, undefined, undefined, { allowUrl: allowPublicUrl, clock }),
+    selectIntegrations({ ...process.env, INTEGRATIONS_MODE: env.INTEGRATIONS_MODE, SANDBOX_ROOT: env.SANDBOX_ROOT, SANDBOX_SITE_BASE_URL: siteBaseUrl }, undefined, undefined, { allowUrl: allowPublicUrl, clock, requireStripeTestKey: fence.enabled }),
     allowPublicUrl,
   );
   // Sandbox previews live on the worker itself (loopback); live previews must be public hosts (M3 security review M3).
   const verifier: VerifierConfig = env.INTEGRATIONS_MODE === "sandbox" ? { timeoutMs: 10_000, allowedOrigins: [new URL(siteBaseUrl).origin], allowPrivate: true } : { timeoutMs: 10_000, allowPrivate: false };
   const tracer = createTracer(env);
   const embedder = embedderFor(env, { warn: workerLog });
-  // TST-5: the fence is read before the gateway starts, so a bad fence fails boot without a gateway left running.
-  const fence = fencePolicyFor(env);
   // SEC-1: with the Agent SDK runtime the gateway starts here and is the only holder of the model key.
   const { runtime, gateway, llm } = await buildRuntimeDeps(env, db, tracer, workerLog, { roles, clock, embedder });
   return Object.freeze({ env: depsEnvOf(env), db, roles, runtime, integrations, verifier, clock, simClock, llm, tracer, profile: env.NORTH_MODEL_PROFILE, fence, gateway, embedder });

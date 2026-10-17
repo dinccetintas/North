@@ -177,6 +177,20 @@ describe("SEC-1 instructions are capped before the run", () => {
     expect(String(warn.mock.calls[0]?.[0])).not.toContain("hhhh");
   });
 
+  it("SEC-1 a header within the cap but with no room for the input drops the input, still ends in the marker, and does not claim the header was over", () => {
+    for (const size of [INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length - 1, INSTRUCTIONS_MAX_CHARS - 5, INSTRUCTIONS_MAX_CHARS]) {
+      const warn = vi.fn();
+      const head = `Task: ${"h".repeat(size - 6)}`;
+      expect(head).toHaveLength(size);
+      const out = capInstructions(head, `the task input ${"i".repeat(100)}`, warn);
+      expect(out.length, `${size}`).toBeLessThanOrEqual(INSTRUCTIONS_MAX_CHARS);
+      expect(out.endsWith(INSTRUCTIONS_TRUNCATION_MARKER), `${size}`).toBe(true);
+      expect(out.startsWith("Task: hhh")).toBe(true);
+      expect(out).not.toContain("the task input");
+      expect(warn).not.toHaveBeenCalled();
+    }
+  });
+
   it("SEC-1 a cut never splits a surrogate pair", () => {
     const head = "Task: emoji";
     const room = INSTRUCTIONS_MAX_CHARS - head.length - 1 - INSTRUCTIONS_TRUNCATION_MARKER.length;

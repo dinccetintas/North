@@ -7,10 +7,12 @@ import { createSandboxIntegrations, type SandboxEvent } from "@north/integration
 import { emptyM4State, fakeDbM4, type M4State } from "./fake-db-m4";
 import { emptyM5State, fakeDbM5, type M5State } from "./fake-db-m5";
 import { emptyM6State, fakeDbM6, fakeEntitlementsQuery, NO_TRACER, type M6State } from "./fake-db-m6";
+import { emptyM7State, fakeDbM7, type M7State } from "./fake-db-m7";
 
 export type { FakeBudget, FakeCampaign, FakeLead } from "./fake-db-m4";
 export type { FakeSignal, FakeBrief, FakePlan, FakeArtifact } from "./fake-db-m5";
 export type { FakeBillingEvent, FakeBillingSession } from "./fake-db-m6";
+export { FAKE_SENDER_IDENTITY } from "./fake-db-m7";
 
 /**
  * In-memory stand-in for the `@north/db` repositories the services use.
@@ -83,7 +85,7 @@ export interface FakeConnection {
   accountLabel: string;
 }
 
-export interface FakeState extends M4State, M5State, M6State {
+export interface FakeState extends M4State, M5State, M6State, M7State {
   tasks: Map<string, FakeTask>;
   actions: FakeAction[];
   cards: Map<string, FakeCard>;
@@ -100,7 +102,7 @@ export interface FakeState extends M4State, M5State, M6State {
 }
 
 export function emptyState(): FakeState {
-  return { ...emptyM4State(), ...emptyM5State(), ...emptyM6State(), tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
+  return { ...emptyM4State(), ...emptyM5State(), ...emptyM6State(), ...emptyM7State(), tasks: new Map(), actions: [], cards: new Map(), killSwitch: new Map(), autoRules: new Map(), quotaExhausted: false, metrics: [], ledger: [], notifications: [], pushSubscriptions: [], companies: new Map(), profiles: new Map(), memory: [] };
 }
 
 let counter = 0;
@@ -309,6 +311,7 @@ export function fakeDbModule(state: FakeState) {
     listGoals: vi.fn(async () => []),
     memoryDigest: vi.fn(async () => "Thesis: Bookkeeping for solo consultants."),
     listTasks: vi.fn(async (_db: unknown, companyId: string, opts: { status?: string[] }) => [...state.tasks.values()].filter((t) => t.companyId === companyId && (!opts.status || opts.status.includes(t.status)))),
+    ...fakeDbM7(state),
     ...fakeDbM6(state, { DbError, companies: () => state.companies, killSwitch: () => state.killSwitch, activeCompanies: () => state.activeCompanies, hasUser: (id) => state.profiles.has(id) || [...state.companies.values()].some((c) => c.ownerId === id), notifications: () => state.notifications }),
   };
 }
