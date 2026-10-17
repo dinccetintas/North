@@ -69,7 +69,7 @@ describe("createSandboxIntegrations (M4 wiring)", () => {
     await integrations.sandbox.outreach.simulateReply(sent.messageId);
     expect(await integrations.analytics(null).read("c1")).toEqual({ signups: 1, siteVisitors: 12, sandbox: true });
     expect(await integrations.payments(null).read("c1")).toBeNull();
-    expect(await integrations.outreach(null).replies({ companyId: "c1", messageIds: [sent.messageId] })).toEqual([{ messageId: sent.messageId, replies: 1, lastReplyAt: expect.any(String) }]);
+    expect(await integrations.outreach(null).replies({ companyId: "c1", messageIds: [sent.messageId] })).toEqual([{ messageId: sent.messageId, replies: 1, lastReplyAt: expect.any(String), bounced: false, optedOut: false }]);
     expect(events.map((e) => e.provider)).toEqual(["ads", "ads", "outreach", "outreach", "analytics", "payments"]);
   });
 });

@@ -182,6 +182,12 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     expect(unsubscribeSecretFor(parse({ WORKER_HOST: "0.0.0.0", UNSUBSCRIBE_SECRET: secret }))).toBe(secret);
   });
 
+  it("CMP-1 NORTH_TRUST_PROXY is exactly 0 (default: forwarded client-IP headers are ignored) or 1", () => {
+    expect(parse({}).NORTH_TRUST_PROXY).toBe("0");
+    expect(parse({ NORTH_TRUST_PROXY: "1" }).NORTH_TRUST_PROXY).toBe("1");
+    for (const value of ["yes", "true", "2"]) expect(() => parse({ NORTH_TRUST_PROXY: value })).toThrow(/NORTH_TRUST_PROXY/);
+  });
+
   it("TST-5 / LRN-7 the fence lists and NORTH_EMBED_QUERIES parse; NORTH_EMBED_QUERIES is 0 or 1", () => {
     const env = parse({ NORTH_FENCE_META_AD_ACCOUNTS: "act_1, act_2", NORTH_FENCE_GITHUB_OWNERS: "north-e2e", NORTH_FENCE_RECIPIENT_DOMAINS: "north.test", NORTH_FENCE_VERCEL_PREFIX: "stg-", NORTH_EMBED_QUERIES: "1" });
     expect(env).toMatchObject({ NORTH_FENCE_META_AD_ACCOUNTS: "act_1, act_2", NORTH_FENCE_GITHUB_OWNERS: "north-e2e", NORTH_FENCE_RECIPIENT_DOMAINS: "north.test", NORTH_FENCE_VERCEL_PREFIX: "stg-", NORTH_EMBED_QUERIES: "1" });

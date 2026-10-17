@@ -96,11 +96,18 @@ export const RepliesInputSchema = z.object({
 });
 export type RepliesInput = z.input<typeof RepliesInputSchema>;
 
-/** Replies to one sent message: a count and when the last one arrived (null when none). */
+/**
+ * Replies to one sent message: a count of human replies and when the last one
+ * arrived (null when none); CMP-1: `bounced` when a bounce notice came back
+ * for it (never counted as a reply), `optedOut` when a human reply asked to
+ * stop (`OPT_OUT_PATTERN`). The reply text itself is never part of this.
+ */
 export interface ReplyCount {
   readonly messageId: string;
   readonly replies: number;
   readonly lastReplyAt: string | null;
+  readonly bounced: boolean;
+  readonly optedOut: boolean;
 }
 
 export interface SendOutreachResult {
@@ -122,6 +129,16 @@ export interface InReplyTo {
   readonly threadId: string;
 }
 
+/**
+ * CMP-1: the two `List-Unsubscribe` targets (RFC 2369, one-click per RFC
+ * 8058). `mailto` is `<connected address>?subject=unsubscribe` without the
+ * scheme; `url` is the worker's `/u/<token>` link.
+ */
+export interface ListUnsubscribe {
+  readonly mailto: string;
+  readonly url: string;
+}
+
 /** Same shape as the platform mail input; declared here so outreach does not depend on the mail section. */
 export interface OutreachSendInput {
   readonly companyId: string;
@@ -131,6 +148,13 @@ export interface OutreachSendInput {
   readonly kind: "first_contact" | "reply";
   /** Required by the worker for `reply`: the thread the lead replied in. */
   readonly inReplyTo?: InReplyTo;
+  /** Copies: plain single addresses only, never header text (the same `cc`/`bcc` keys core's `recipientsOf` checks at the gate). */
+  readonly cc?: readonly string[];
+  readonly bcc?: readonly string[];
+  /** CMP-1: the compliance footer, appended after the signature marker (`FOOTER_MARKER`); the worker always passes it. */
+  readonly footer?: string;
+  /** CMP-1: the `List-Unsubscribe` targets; the worker always passes them. */
+  readonly unsubscribe?: ListUnsubscribe;
 }
 
 export interface AnalyticsSnapshot {

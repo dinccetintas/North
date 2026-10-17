@@ -38,6 +38,8 @@ primary_region = "ams"
   WORKSPACE_ROOT = "/data/workspaces"
   SANDBOX_ROOT = "/data/sandbox"
   AGENT_CONFIG_ROOT = "/data/agent-config"
+  # CMP-1: every request reaches the machine through Fly's proxy, which sets Fly-Client-IP; the /u/{token} rate limit counts that client.
+  NORTH_TRUST_PROXY = "1"
 
 [http_service]
   internal_port = 3101

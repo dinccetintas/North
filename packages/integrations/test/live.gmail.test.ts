@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { NotConfiguredError, ProviderError } from "../src/errors";
 import type { FetchLike } from "../src/live/github";
-import { GMAIL_API, GmailOutreach, REPLY_METADATA_HEADERS, buildRawMessage, countReplies, normaliseAddress, parseGmailRef } from "../src/live/gmail";
+import { FOOTER_MARKER } from "@north/core";
+import { GMAIL_API, GmailOutreach, OPT_OUT_PATTERN, REPLY_METADATA_HEADERS, buildRawMessage, countReplies, normaliseAddress, parseGmailRef } from "../src/live/gmail";
 
 interface Call {
   readonly method: string;
@@ -29,7 +30,10 @@ function scripted(routes: Record<string, (body: Record<string, unknown> | undefi
 
 const decodeRaw = (raw: string): string => Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 const auth = { token: "ya29-secret", account: "Founder <founder@acme.example>" };
-const input = { companyId: "c1", to: "mara@example.test", subject: "Northwind and the weekly routine", text: "Hi Mara,\n\nOne ask.\n\nThanks", kind: "first_contact" as const };
+const UNSUBSCRIBE = { mailto: "founder@acme.example?subject=unsubscribe", url: "https://worker.north.example/u/tok_123" };
+const FOOTER = "Acme Ltd, 1 Example Street, Springfield 12345\nReply \"no\" and I won't write again, or unsubscribe: https://worker.north.example/u/tok_123";
+const input = { companyId: "c1", to: "mara@example.test", subject: "Northwind and the weekly routine", text: "Hi Mara,\n\nOne ask.\n\nThanks", kind: "first_contact" as const, footer: FOOTER, unsubscribe: UNSUBSCRIBE };
+const COMPLIANCE_HEADERS = ["List-Unsubscribe: <mailto:founder@acme.example?subject=unsubscribe>, <https://worker.north.example/u/tok_123>", "List-Unsubscribe-Post: List-Unsubscribe=One-Click"];
 
 describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
   it("refuses without a connection and never echoes the token in errors", async () => {
@@ -51,8 +55,8 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
     expect(raw).not.toMatch(/[+/=]/);
     const mime = decodeRaw(raw);
     const [headers, body] = mime.split("\r\n\r\n");
-    expect(headers?.split("\r\n")).toEqual(["To: mara@example.test", "Subject: Northwind and the weekly routine", "MIME-Version: 1.0", 'Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64"]);
-    expect(Buffer.from(body ?? "", "base64").toString("utf8")).toBe(input.text);
+    expect(headers?.split("\r\n")).toEqual(["To: mara@example.test", "Subject: Northwind and the weekly routine", ...COMPLIANCE_HEADERS, "MIME-Version: 1.0", 'Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64"]);
+    expect(Buffer.from(body ?? "", "base64").toString("utf8")).toBe(`${input.text}${FOOTER_MARKER}${FOOTER}`);
     expect(mime).not.toContain("ya29");
   });
 
@@ -81,16 +85,18 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
     const gmail = new GmailOutreach(auth, fetchImpl);
     const counts = await gmail.replies({ companyId: "c1", messageIds: ["gmail:m1:t1", "gmail:m9:t2", "sandbox:msg:x", "gmail:m7:t_missing"] });
     expect(counts).toEqual([
-      { messageId: "gmail:m1:t1", replies: 2, lastReplyAt: new Date(1760534400000).toISOString() },
-      { messageId: "gmail:m9:t2", replies: 0, lastReplyAt: null },
-      { messageId: "sandbox:msg:x", replies: 0, lastReplyAt: null },
-      { messageId: "gmail:m7:t_missing", replies: 0, lastReplyAt: null },
+      { messageId: "gmail:m1:t1", replies: 2, lastReplyAt: new Date(1760534400000).toISOString(), bounced: false, optedOut: false },
+      { messageId: "gmail:m9:t2", replies: 0, lastReplyAt: null, bounced: false, optedOut: false },
+      { messageId: "sandbox:msg:x", replies: 0, lastReplyAt: null, bounced: false, optedOut: false },
+      { messageId: "gmail:m7:t_missing", replies: 0, lastReplyAt: null, bounced: false, optedOut: false },
     ]);
     const url = new URL(calls[0]!.url);
     expect(url.searchParams.get("format")).toBe("metadata");
     expect(url.searchParams.getAll("metadataHeaders")).toEqual([...REPLY_METADATA_HEADERS]);
-    expect(REPLY_METADATA_HEADERS).toEqual(["From", "Auto-Submitted", "Precedence"]);
-    expect(calls.map((c) => c.path)).toEqual(["/gmail/v1/users/me/threads/t1", "/gmail/v1/users/me/threads/t2", "/gmail/v1/users/me/threads/t_missing"]);
+    expect(REPLY_METADATA_HEADERS).toEqual(["From", "Auto-Submitted", "Precedence", "Content-Type"]);
+    expect(calls.filter((c) => c.path.includes("/threads/")).map((c) => c.path)).toEqual(["/gmail/v1/users/me/threads/t1", "/gmail/v1/users/me/threads/t2", "/gmail/v1/users/me/threads/t_missing"]);
+    // CMP-1: each human reply's snippet is read once (format=minimal); a 404 there is no snippet, not an error.
+    expect(calls.filter((c) => c.path.includes("/messages/")).map((c) => c.path)).toEqual(["/gmail/v1/users/me/messages/m2", "/gmail/v1/users/me/messages/m4"]);
   });
 
   it("without auth.account the connected address comes from the profile, fetched once", async () => {
@@ -99,7 +105,7 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
       "GET /gmail/v1/users/me/threads/t1": () => ({ status: 200, json: { id: "t1", messages: [{ id: "m1", internalDate: "1", payload: { headers: [{ name: "From", value: "founder@acme.example" }] } }, { id: "m2", internalDate: "2000", payload: { headers: [{ name: "From", value: "x@example.test" }] } }] } }),
     });
     const gmail = new GmailOutreach({ token: "t" }, fetchImpl);
-    expect(await gmail.replies({ companyId: "c1", messageIds: ["gmail:m1:t1"] })).toEqual([{ messageId: "gmail:m1:t1", replies: 1, lastReplyAt: "1970-01-01T00:00:02.000Z" }]);
+    expect(await gmail.replies({ companyId: "c1", messageIds: ["gmail:m1:t1"] })).toEqual([{ messageId: "gmail:m1:t1", replies: 1, lastReplyAt: "1970-01-01T00:00:02.000Z", bounced: false, optedOut: false }]);
     await gmail.replies({ companyId: "c1", messageIds: ["gmail:m1:t1"] });
     expect(calls.filter((c) => c.path.endsWith("/profile"))).toHaveLength(1);
   });
@@ -164,6 +170,113 @@ describe("GmailOutreach live adapter (B4-5, SLS-K2)", () => {
       { id: "m7", internalDate: "7000", ...from("mara@example.test", [{ name: "Auto-Submitted", value: "no" }, { name: "Precedence", value: "list" }]) },
       { id: "m8", internalDate: "8000", ...from("Mara <mara@example.test>") },
     ];
-    expect(countReplies(messages, "m1", "founder@acme.example")).toEqual({ replies: 2, lastReplyAt: new Date(8000).toISOString() });
+    expect(countReplies(messages, "m1", "founder@acme.example")).toEqual({ replies: 2, lastReplyAt: new Date(8000).toISOString(), bounced: true });
+  });
+});
+
+describe("GmailOutreach compliance on the wire (CMP-1)", () => {
+  const sendRoute = () => scripted({ "POST /gmail/v1/users/me/messages/send": () => ({ status: 200, json: { id: "m1", threadId: "t1" } }) });
+  const headersOf = (call: Call | undefined): string[] => decodeRaw(String(call?.body?.raw)).split("\r\n\r\n")[0]?.split("\r\n") ?? [];
+
+  it("CMP-1: the raw message carries List-Unsubscribe (mailto and https), List-Unsubscribe-Post, Cc/Bcc from the arrays only, and the footer after the signature marker", async () => {
+    const { calls, fetchImpl } = sendRoute();
+    await new GmailOutreach(auth, fetchImpl).send({ ...input, cc: ["Dev@Example.test", "ops@example.test"], bcc: ["audit@example.test"] });
+    const mime = decodeRaw(String(calls[0]?.body?.raw));
+    const [head, body] = mime.split("\r\n\r\n");
+    expect(head?.split("\r\n")).toEqual([
+      "To: mara@example.test",
+      "Cc: Dev@Example.test, ops@example.test",
+      "Bcc: audit@example.test",
+      "Subject: Northwind and the weekly routine",
+      ...COMPLIANCE_HEADERS,
+      "MIME-Version: 1.0",
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+    ]);
+    const text = Buffer.from(body ?? "", "base64").toString("utf8");
+    expect(text.endsWith(`\n\n-- \n${FOOTER}`)).toBe(true);
+    expect(text.indexOf(FOOTER_MARKER)).toBe(input.text.length);
+    // Without copies there is no Cc or Bcc line at all; buildRawMessage alone (no compliance input) adds neither header.
+    const { calls: plain, fetchImpl: plainFetch } = sendRoute();
+    await new GmailOutreach(auth, plainFetch).send(input);
+    expect(headersOf(plain[0]).some((h) => /^(Cc|Bcc):/i.test(h))).toBe(false);
+    expect(buildRawMessage({ to: "a@example.test", subject: "s", text: "t" })).not.toContain("List-Unsubscribe");
+  });
+
+  it("CMP-1: a CR or LF in an address or the subject, a copy that is not a plain address, or a bad unsubscribe target is refused before anything is sent", async () => {
+    const { calls, fetchImpl } = sendRoute();
+    const gmail = new GmailOutreach(auth, fetchImpl);
+    const refused: Record<string, unknown>[] = [
+      { subject: "Hello\r\nBcc: evil@example.test" },
+      { subject: "Hello\nthere" },
+      { to: "mara@example.test\r\nBcc: evil@example.test" },
+      { cc: ["dev@example.test\r\nBcc: evil@example.test"] },
+      { bcc: ["evil@example.test\n"] },
+      { cc: ["Dev <dev@example.test>"] },
+      { cc: ["a@example.test, b@example.test"] },
+      { cc: "dev@example.test" },
+      { unsubscribe: { ...UNSUBSCRIBE, url: "https://worker.north.example/u/x\r\nBcc: evil@example.test" } },
+      { unsubscribe: { ...UNSUBSCRIBE, url: "https://worker.north.example/u/a>, <https://evil.example" } },
+      { unsubscribe: { ...UNSUBSCRIBE, mailto: "founder@acme.example>, <mailto:evil@example.test" } },
+      { unsubscribe: { ...UNSUBSCRIBE, mailto: "founder@acme.example" } },
+    ];
+    for (const patch of refused) await expect(gmail.send({ ...input, ...patch } as typeof input), JSON.stringify(patch)).rejects.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  it("CMP-1: the live adapter never sends outreach without the footer and List-Unsubscribe, nor with a link that is not https", async () => {
+    const { calls, fetchImpl } = sendRoute();
+    const gmail = new GmailOutreach(auth, fetchImpl);
+    const bare = { companyId: input.companyId, to: input.to, subject: input.subject, text: input.text, kind: input.kind };
+    await expect(gmail.send(bare)).rejects.toBeInstanceOf(ProviderError);
+    await expect(gmail.send({ ...bare, unsubscribe: UNSUBSCRIBE })).rejects.toThrow(/footer and List-Unsubscribe/);
+    await expect(gmail.send({ ...bare, footer: FOOTER })).rejects.toThrow(/footer and List-Unsubscribe/);
+    await expect(gmail.send({ ...input, unsubscribe: { ...UNSUBSCRIBE, url: "http://worker.north.example/u/tok_123" } })).rejects.toThrow(/https/);
+    expect(calls).toEqual([]);
+  });
+
+  it("CMP-1: countReplies marks a bounce (mailer-daemon/postmaster sender, or Auto-Submitted auto-replied with a delivery report) after the send, never as a reply", () => {
+    const msg = (id: string, from: string, extra: { name: string; value: string }[] = []) => ({ id, internalDate: id.replace(/\D/g, "") || "1", payload: { headers: [{ name: "From", value: from }, ...extra] } });
+    const sent = msg("m1", "founder@acme.example");
+    expect(countReplies([sent, msg("m2", "Mail Delivery Subsystem <MAILER-DAEMON@x.example>")], "m1", "founder@acme.example")).toEqual({ replies: 0, lastReplyAt: null, bounced: true });
+    expect(countReplies([sent, msg("m2", "PostMaster@mx.example.test")], "m1", "founder@acme.example")).toMatchObject({ replies: 0, bounced: true });
+    const report = [{ name: "Auto-Submitted", value: "auto-replied" }, { name: "Content-Type", value: 'multipart/report; report-type=delivery-status; boundary="b"' }];
+    expect(countReplies([sent, msg("m2", "mail@relay.example.test", report)], "m1", "founder@acme.example")).toEqual({ replies: 0, lastReplyAt: null, bounced: true });
+    // An out-of-office (auto-replied, plain text) is automated but no bounce; a human reply is neither.
+    expect(countReplies([sent, msg("m2", "mara@example.test", [{ name: "Auto-Submitted", value: "auto-replied" }, { name: "Content-Type", value: "text/plain" }])], "m1", "founder@acme.example")).toEqual({ replies: 0, lastReplyAt: null, bounced: false });
+    expect(countReplies([sent, msg("m2", "Mara <mara@example.test>")], "m1", "founder@acme.example")).toEqual({ replies: 1, lastReplyAt: new Date(2).toISOString(), bounced: false });
+    // A bounce before the send belongs to another message.
+    expect(countReplies([msg("m0", "mailer-daemon@x.example"), sent], "m1", "founder@acme.example")).toMatchObject({ bounced: false });
+  });
+
+  it("CMP-1: replies() reads each human reply's snippet (format=minimal, at most 20 per thread), sets optedOut on the opt-out pattern and never keeps the snippet", async () => {
+    const human = (n: number) => ({ id: `r${n}`, internalDate: String(1000 + n), payload: { headers: [{ name: "From", value: "mara@example.test" }] } });
+    const sentMsg = { id: "m1", internalDate: "1", payload: { headers: [{ name: "From", value: "founder@acme.example" }] } };
+    const snippets: Record<string, string> = { r1: "Thanks, but please remove me from your list", r2: "Sounds good, let&#39;s talk Tuesday" };
+    const { calls, fetchImpl } = scripted({
+      "GET /gmail/v1/users/me/threads/t1": () => ({ status: 200, json: { id: "t1", messages: [sentMsg, human(1)] } }),
+      "GET /gmail/v1/users/me/threads/t2": () => ({ status: 200, json: { id: "t2", messages: [sentMsg, human(2)] } }),
+      "GET /gmail/v1/users/me/threads/t3": () => ({ status: 200, json: { id: "t3", messages: [sentMsg, ...Array.from({ length: 25 }, (_, i) => human(100 + i))] } }),
+      "GET /gmail/v1/users/me/threads/t4": () => ({ status: 200, json: { id: "t4", messages: [sentMsg, { id: "b1", internalDate: "5", payload: { headers: [{ name: "From", value: "MAILER-DAEMON@googlemail.com" }] } }, human(3)] } }),
+      ...Object.fromEntries(["r1", "r2", "r3", ...Array.from({ length: 25 }, (_, i) => `r${100 + i}`)].map((id) => [`GET /gmail/v1/users/me/messages/${id}`, () => ({ status: 200, json: { id, snippet: snippets[id] ?? "Interesting, tell me more" } })])),
+    });
+    const counts = await new GmailOutreach(auth, fetchImpl).replies({ companyId: "c1", messageIds: ["gmail:m1:t1", "gmail:m1:t2", "gmail:m1:t3", "gmail:m1:t4"] });
+    expect(counts.map((c) => [c.messageId, c.replies, c.bounced, c.optedOut])).toEqual([
+      ["gmail:m1:t1", 1, false, true],
+      ["gmail:m1:t2", 1, false, false],
+      ["gmail:m1:t3", 25, false, false],
+      ["gmail:m1:t4", 1, true, false],
+    ]);
+    const minimal = calls.filter((c) => c.path.includes("/messages/"));
+    expect(minimal.every((c) => new URL(c.url).searchParams.get("format") === "minimal")).toBe(true);
+    expect(minimal.filter((c) => /\/r1\d\d$/.test(c.path))).toHaveLength(20);
+    // A bounced thread needs no snippet: the address is suppressed either way.
+    expect(minimal.some((c) => c.path.endsWith("/r3"))).toBe(false);
+    expect(JSON.stringify(counts)).not.toMatch(/remove me|Tuesday|tell me more/);
+  });
+
+  it("CMP-1: OPT_OUT_PATTERN matches the ways people ask to stop, and not ordinary interest", () => {
+    for (const yes of ["Unsubscribe", "please opt me out — opt out", "opt-out", "optout", "Stop emailing me", "stop contacting us", "Remove me", "Not interested, thanks", "No thanks."]) expect(OPT_OUT_PATTERN.test(yes), yes).toBe(true);
+    for (const no of ["I'm interested", "stopping by next week", "removed the blocker", "thanks!"]) expect(OPT_OUT_PATTERN.test(no), no).toBe(false);
   });
 });

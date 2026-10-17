@@ -84,6 +84,21 @@ describe("build-export (D6-4)", () => {
     expect(existsSync(exportDir(w.deps, id))).toBe(false);
   });
 
+  it("EXP-1 / CMP-1: the export carries the suppression list, the sender identity and memory's department, provenance, status and validity", async () => {
+    const id = requestRow(w);
+    await buildExport(w.deps, directSteps, id, w.owner);
+    const zip = zipOf(w, w.owner, id);
+    const suppressions = JSON.parse(zip.get("data/lumen/suppressions.json")?.toString("utf8") ?? "null");
+    expect(suppressions).toEqual([expect.objectContaining({ email: `optout-${w.lumen.slice(0, 8)}@example.test`, domain: "example.test", reason: "opt_out", source_action_id: null })]);
+    expect(zip.get("data/orbit/suppressions.json")?.toString("utf8")).toContain(`optout-${w.orbit.slice(0, 8)}@example.test`);
+    const rival = String(rowsOf(w.store, "companies").find((c) => c.slug === "rival")?.id);
+    expect([...zip.values()].map((b) => b.toString("latin1")).join("\n")).not.toContain(`optout-${rival.slice(0, 8)}@example.test`);
+    const company = JSON.parse(zip.get("data/lumen/company.json")?.toString("utf8") ?? "{}");
+    expect(company).toMatchObject({ legal_name: "lumen Labs Ltd", postal_address: "1 lumen Street, Springfield 12345" });
+    const memory = JSON.parse(zip.get("data/lumen/memory.json")?.toString("utf8") ?? "[]");
+    expect(memory[0]).toMatchObject({ department: "sales", provenance: { source: "task" }, status: "active", valid_until: expect.any(String) });
+  });
+
   it("a stranger's export id is not found and the row is left alone", async () => {
     const id = requestRow(w);
     expect(await buildExport(w.deps, directSteps, id, w.stranger)).toEqual({ status: "not_found", exportId: id });

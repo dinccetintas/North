@@ -7,12 +7,12 @@ import { createSandboxIntegrations, type SandboxEvent } from "@north/integration
 import { emptyM4State, fakeDbM4, type M4State } from "./fake-db-m4";
 import { emptyM5State, fakeDbM5, type M5State } from "./fake-db-m5";
 import { emptyM6State, fakeDbM6, fakeEntitlementsQuery, NO_TRACER, type M6State } from "./fake-db-m6";
-import { emptyM7State, fakeDbM7, type M7State } from "./fake-db-m7";
+import { emptyM7State, FAKE_LIVE_UNSUBSCRIBE, fakeDbM7, type M7State } from "./fake-db-m7";
 
 export type { FakeBudget, FakeCampaign, FakeLead } from "./fake-db-m4";
 export type { FakeSignal, FakeBrief, FakePlan, FakeArtifact } from "./fake-db-m5";
 export type { FakeBillingEvent, FakeBillingSession } from "./fake-db-m6";
-export { FAKE_SENDER_IDENTITY } from "./fake-db-m7";
+export { FAKE_SENDER_IDENTITY, FAKE_LIVE_UNSUBSCRIBE } from "./fake-db-m7";
 
 /**
  * In-memory stand-in for the `@north/db` repositories the services use.
@@ -326,7 +326,8 @@ export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifySt
   const db = { from: (table: string) => (table === "companies" ? fakeCompanyQuery(state) : table === "entitlements" ? fakeEntitlementsQuery(state) : fakeQuery(state)) } as unknown as WorkerDeps["db"];
   const sandbox = createSandboxIntegrations((e) => void events.push(e), { root, siteBaseUrl: "http://127.0.0.1:3101", clock: () => clock.now() });
   return {
-    env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: mode } as WorkerDeps["env"],
+    // CMP-1: sandbox signs unsubscribe links with the loopback default; live mode needs its own secret and public URL.
+    env: { WORKSPACE_ROOT: "/tmp/north-test", INTEGRATIONS_MODE: mode, WORKER_HOST: "127.0.0.1", ...(mode === "live" ? FAKE_LIVE_UNSUBSCRIBE : { NORTH_WORKER_PUBLIC_URL: "http://127.0.0.1:3101" }) } as WorkerDeps["env"],
     db,
     roles: new Map(),
     runtime: { name: "mock", run: async () => ({ status: "failed", error: "not used", sessionId: null, usage: { model: "mock", inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 } }) },

@@ -50,6 +50,8 @@ const M7Keys = {
   NORTH_WORKER_PUBLIC_URL: blankAsUnset(z.url().optional()),
   /** CMP-1: the key unsubscribe tokens are signed with; see `unsubscribeSecretFor`. */
   UNSUBSCRIBE_SECRET: blankAsUnset(z.string().min(16).optional()),
+  /** CMP-1: `1` when the worker sits behind Fly's proxy: the `/u/{token}` rate limit then reads `Fly-Client-IP` (then the first `X-Forwarded-For` entry); `0` (default) uses the socket's address and ignores both headers. */
+  NORTH_TRUST_PROXY: z.enum(["0", "1"]).default("0"),
   /** LRN-7: `1` embeds memory queries through the `embed` Edge Function in sandbox mode too (live mode always does). */
   NORTH_EMBED_QUERIES: z.enum(["0", "1"]).default("0"),
   /** SEC-1: the model API the gateway forwards to (default https://api.anthropic.com); loopback only in production. */

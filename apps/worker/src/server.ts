@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { serve as inngestServe } from "inngest/hono";
 import { getBillingEvent } from "@north/db";
 import { buildDeps } from "./deps";
-import { sentryWebhookLabel, stripeWebhookLabel, workerEnv } from "./env";
+import { sentryWebhookLabel, stripeWebhookLabel, unsubscribeSecretFor, workerEnv } from "./env";
 import { selfBaseUrl, workerHealth } from "./health";
 import { isLoopbackHost } from "./host";
 import { inngest } from "./inngest/client";
@@ -13,6 +13,7 @@ import { appliedPoller, webhookDelivery } from "./sandbox-billing";
 import { sandboxRoutes, sandboxSites, sandboxWebhookGuards } from "./sandbox-routes";
 import { sentryWebhookApp } from "./webhooks/sentry";
 import { stripeWebhookApp } from "./webhooks/stripe";
+import { unsubscribeApp } from "./webhooks/unsubscribe";
 
 const env = workerEnv();
 const observed = initObservability(env);
@@ -29,6 +30,10 @@ app.route("/", sentryWebhookApp(deps, env, (event) => inngest.send(event)));
 // BIL-1: Stripe's webhook is the only path that changes an entitlement (ADR 0014); mounted only when a secret resolves
 // (the sandbox default on a loopback host, or STRIPE_WEBHOOK_SECRET), like the Sentry one.
 app.route("/", stripeWebhookApp(deps, env, (event) => inngest.send(event)));
+
+// CMP-1: the unsubscribe link of every outreach email (List-Unsubscribe and the footer) lands here, on every worker and before
+// the sandbox routes; without a resolvable secret every token answers 404. Rate-limited per client IP (NORTH_TRUST_PROXY).
+app.route("/", unsubscribeApp(deps, env));
 
 // Sandbox "hosting" and simulation: deployments the sandbox deploy adapter
 // wrote under <SANDBOX_ROOT>/sites are served here so the evidence verifier's
@@ -51,7 +56,7 @@ app.on(
 );
 
 serve({ fetch: app.fetch, port: env.WORKER_PORT, hostname: env.WORKER_HOST }, (info) => {
-  console.log(`[north-worker] listening on http://${info.address}:${info.port} (inngest at /api/inngest, runtime=${env.AGENT_RUNTIME}, mode=${env.INTEGRATIONS_MODE}, env=${env.NORTH_ENV}, profile=${env.NORTH_MODEL_PROFILE}, gateway=${deps.gateway?.mode ?? "off"}${deps.fence.enabled ? ", fence on" : ""}, sentry=${sentryWebhookLabel(env)}, stripe=${stripeWebhookLabel(env)}${observed ? ", reporting on" : ""}${deps.tracer.enabled ? ", tracing on" : ""}, clock=${deps.clock().toISOString()})`);
+  console.log(`[north-worker] listening on http://${info.address}:${info.port} (inngest at /api/inngest, runtime=${env.AGENT_RUNTIME}, mode=${env.INTEGRATIONS_MODE}, env=${env.NORTH_ENV}, profile=${env.NORTH_MODEL_PROFILE}, gateway=${deps.gateway?.mode ?? "off"}${deps.fence.enabled ? ", fence on" : ""}, unsubscribe=${unsubscribeSecretFor(env) ? "on" : "off (no secret)"}, sentry=${sentryWebhookLabel(env)}, stripe=${stripeWebhookLabel(env)}${observed ? ", reporting on" : ""}${deps.tracer.enabled ? ", tracing on" : ""}, clock=${deps.clock().toISOString()})`);
 });
 
 // OBS-1: queued Langfuse events are sent before the process exits; SEC-1: the model gateway stops and cuts what is in flight.

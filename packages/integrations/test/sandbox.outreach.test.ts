@@ -53,9 +53,9 @@ describe("SandboxOutreach (B4-3, SLS-K2)", () => {
     expect(lines).toHaveLength(2);
     const counts = await outreach.replies({ companyId: "c1", messageIds: [a.messageId, b.messageId, "sandbox:msg:missing"] });
     expect(counts).toEqual([
-      { messageId: a.messageId, replies: 2, lastReplyAt: "2026-10-15T12:00:00.000Z" },
-      { messageId: b.messageId, replies: 0, lastReplyAt: null },
-      { messageId: "sandbox:msg:missing", replies: 0, lastReplyAt: null },
+      { messageId: a.messageId, replies: 2, lastReplyAt: "2026-10-15T12:00:00.000Z", bounced: false, optedOut: false },
+      { messageId: b.messageId, replies: 0, lastReplyAt: null, bounced: false, optedOut: false },
+      { messageId: "sandbox:msg:missing", replies: 0, lastReplyAt: null, bounced: false, optedOut: false },
     ]);
     expect(events.map((e) => e.op)).toEqual(["send", "send", "simulateReply", "simulateReply"]);
     expect(events[2]).toMatchObject({ provider: "outreach", companyId: "c1", ref: a.messageId });
@@ -68,7 +68,7 @@ describe("SandboxOutreach (B4-3, SLS-K2)", () => {
     const outreach = new SandboxOutreach(undefined, dir);
     const a = await outreach.send(input);
     await outreach.simulateReply(a.messageId);
-    expect(await outreach.replies({ companyId: "c2", messageIds: [a.messageId] })).toEqual([{ messageId: a.messageId, replies: 0, lastReplyAt: null }]);
+    expect(await outreach.replies({ companyId: "c2", messageIds: [a.messageId] })).toEqual([{ messageId: a.messageId, replies: 0, lastReplyAt: null, bounced: false, optedOut: false }]);
     await expect(outreach.simulateReply("sandbox:msg:missing")).rejects.toThrow(/unknown message/i);
     await expect(outreach.simulateReply(a.messageId, "yesterday")).rejects.toThrow();
   });
@@ -91,5 +91,53 @@ describe("SandboxOutreach (B4-3, SLS-K2)", () => {
     expect(JSON.parse(await readFile(join(dir, "mail", `${first.messageId}.json`), "utf8")).inReplyTo).toBeUndefined();
     expect(events[1]?.payload).toMatchObject({ kind: "reply", inReplyTo: { threadId: first.messageId } });
     await expect(outreach.send({ ...input, kind: "reply", inReplyTo: { messageId: "", threadId: "x" } })).rejects.toThrow();
+  });
+});
+
+describe("SandboxOutreach compliance (CMP-1)", () => {
+  const unsubscribe = { mailto: "outreach@sandbox.north.invalid?subject=unsubscribe", url: "http://127.0.0.1:3101/u/tok_123" };
+  const footer = "Lumen Labs Ltd, 1 Example Street, Springfield 12345\nReply \"no\" and I won't write again, or unsubscribe: http://127.0.0.1:3101/u/tok_123";
+
+  it("CMP-1: the sent record stores the footer, the List-Unsubscribe targets and the copies, never the body", async () => {
+    const dir = await root();
+    const { events, sink } = recorder();
+    const outreach = new SandboxOutreach(sink, dir);
+    const sent = await outreach.send({ ...input, footer, unsubscribe, cc: ["dev@example.test"], bcc: ["audit@example.test"] });
+    const raw = await readFile(join(dir, "mail", `${sent.messageId}.json`), "utf8");
+    expect(JSON.parse(raw)).toMatchObject({ footer, unsubscribe, cc: ["dev@example.test"], bcc: ["audit@example.test"] });
+    expect(raw).not.toContain("secret body");
+    expect(events[0]?.payload).toMatchObject({ footer: true, listUnsubscribe: true, cc: ["dev@example.test"], bcc: ["audit@example.test"] });
+    expect(JSON.stringify(events[0])).not.toContain("tok_123");
+    const bare = await outreach.send(input);
+    const stored = JSON.parse(await readFile(join(dir, "mail", `${bare.messageId}.json`), "utf8"));
+    expect(stored.footer).toBeUndefined();
+    expect(stored.unsubscribe).toBeUndefined();
+  });
+
+  it("CMP-1: simulateReply(id, at, 'bounce') makes replies() say bounced (not a reply); 'opt_out' says optedOut; the default stays a reply", async () => {
+    const dir = await root();
+    const outreach = new SandboxOutreach(undefined, dir);
+    const bounced = await outreach.send(input);
+    const optedOut = await outreach.send({ ...input, to: "dev@example.test" });
+    const replied = await outreach.send({ ...input, to: "ops@example.test" });
+    expect(await outreach.simulateReply(bounced.messageId, undefined, "bounce")).toMatchObject({ kind: "bounce" });
+    await outreach.simulateReply(optedOut.messageId, "2026-10-15T10:00:00.000Z", "opt_out");
+    expect(await outreach.simulateReply(replied.messageId, "2026-10-15T11:00:00.000Z")).toEqual({ at: "2026-10-15T11:00:00.000Z", kind: "reply" });
+    const counts = await outreach.replies({ companyId: "c1", messageIds: [bounced.messageId, optedOut.messageId, replied.messageId] });
+    expect(counts).toEqual([
+      { messageId: bounced.messageId, replies: 0, lastReplyAt: null, bounced: true, optedOut: false },
+      { messageId: optedOut.messageId, replies: 1, lastReplyAt: "2026-10-15T10:00:00.000Z", bounced: false, optedOut: true },
+      { messageId: replied.messageId, replies: 1, lastReplyAt: "2026-10-15T11:00:00.000Z", bounced: false, optedOut: false },
+    ]);
+    await expect(outreach.simulateReply(replied.messageId, undefined, "complaint" as unknown as "reply")).rejects.toThrow();
+  });
+
+  it("CMP-1: a CR or LF in the subject or an address, copies that are not plain addresses, and a malformed unsubscribe target are refused", async () => {
+    const dir = await root();
+    const outreach = new SandboxOutreach(undefined, dir);
+    for (const patch of [{ subject: "Hi\r\nBcc: evil@example.test" }, { cc: ["a@example.test\r\nBcc: evil@example.test"] }, { cc: ["Ada <ada@example.test>"] }, { bcc: "audit@example.test" }, { unsubscribe: { ...unsubscribe, url: "javascript:alert(1)" } }, { unsubscribe: { ...unsubscribe, mailto: "x" } }, { footer: "" }]) {
+      await expect(outreach.send({ ...input, ...patch } as typeof input), JSON.stringify(patch)).rejects.toThrow();
+    }
+    await expect(readdir(join(dir, "mail"))).rejects.toThrow();
   });
 });

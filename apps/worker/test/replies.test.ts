@@ -85,6 +85,56 @@ describe("collectReplies (SLS-K2, OUT-2)", () => {
     expect(state.metrics.length).toBe(samplesBefore);
   });
 
+  it("CMP-1: a bounced lead is marked bounced and suppressed (bounce), an opted-out lead opted_out and suppressed (opt_out); neither is a reply in the window; a repeat writes nothing more", async () => {
+    const task = seedTask(state, { role: "sales", taskType: "outreach_batch", status: "done" });
+    const deps = fakeDeps(state, events, 200, "sandbox", root);
+    const { messageIds } = await sentBatch(deps, task.id);
+    const [batch] = await outreachBatches(deps.db, "company-1");
+    const leadOf = (messageId: string) => state.leads.get(batch!.leadIdByMessage[messageId]!)!;
+    const outreach = (deps.integrations as SandboxIntegrations).sandbox.outreach;
+    await outreach.simulateReply(messageIds[0]!, undefined, "bounce");
+    await outreach.simulateReply(messageIds[1]!, undefined, "opt_out");
+    await outreach.simulateReply(messageIds[2]!);
+
+    expect(await collectReplies(deps, "company-1")).toEqual({ batches: 1, entries: 1, totalReplies: 1 });
+    expect(state.ledger).toHaveLength(1);
+    expect(state.ledger[0]).toMatchObject({ before: 0, after: 1, provenance: { raw: { replies: 1, bounced: 1, optedOut: 1 } } });
+    expect(leadOf(messageIds[0]!).status).toBe("bounced");
+    expect(leadOf(messageIds[1]!).status).toBe("opted_out");
+    expect(leadOf(messageIds[2]!).status).toBe("replied");
+    // One row per address, naming the executed send it came from.
+    const headOf = (messageId: string) => state.actions.find((a) => a.status === "executed" && a.externalRef === messageId)?.id;
+    expect(state.suppressions).toHaveLength(2);
+    expect(state.suppressions).toEqual(
+      expect.arrayContaining([
+        { companyId: "company-1", email: leadOf(messageIds[0]!).email, reason: "bounce", sourceActionId: headOf(messageIds[0]!) },
+        { companyId: "company-1", email: leadOf(messageIds[1]!).email, reason: "opt_out", sourceActionId: headOf(messageIds[1]!) },
+      ]),
+    );
+
+    // A second bounce notice and a later collection: no throw, no second row, no new window.
+    await outreach.simulateReply(messageIds[0]!, undefined, "bounce");
+    expect(await collectReplies(deps, "company-1")).toEqual({ batches: 1, entries: 0, totalReplies: 1 });
+    expect(state.suppressions).toHaveLength(2);
+    expect(state.ledger).toHaveLength(1);
+  });
+
+  it("CMP-1: a lead that replied and later asks to stop is opted out, and the batch's count never moves backwards into a negative window", async () => {
+    const task = seedTask(state, { role: "sales", taskType: "outreach_batch", status: "done" });
+    const deps = fakeDeps(state, events, 200, "sandbox", root);
+    const { messageIds } = await sentBatch(deps, task.id);
+    const outreach = (deps.integrations as SandboxIntegrations).sandbox.outreach;
+    await outreach.simulateReply(messageIds[0]!);
+    await outreach.simulateReply(messageIds[1]!);
+    expect(await collectReplies(deps, "company-1")).toMatchObject({ entries: 1, totalReplies: 2 });
+    await outreach.simulateReply(messageIds[0]!, undefined, "opt_out");
+    expect(await collectReplies(deps, "company-1")).toMatchObject({ entries: 0, totalReplies: 1 });
+    expect(state.ledger).toHaveLength(1);
+    const [batch] = await outreachBatches(deps.db, "company-1");
+    expect(state.leads.get(batch!.leadIdByMessage[messageIds[0]!]!)?.status).toBe("opted_out");
+    expect(state.suppressions.map((r) => r.reason)).toEqual(["opt_out"]);
+  });
+
   it("a company without sends collects nothing", async () => {
     const deps = fakeDeps(state, events, 200, "sandbox", root);
     expect(await collectReplies(deps, "company-1")).toEqual({ batches: 0, entries: 0, totalReplies: 0 });

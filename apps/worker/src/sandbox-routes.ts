@@ -2,7 +2,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono, type MiddlewareHandler } from "hono";
 import { relative } from "node:path";
 import { AdDeliverySchema } from "@north/core";
-import { isSandboxAds, isSandboxBilling, isSandboxOutreach, SANDBOX_STRIPE_WEBHOOK_SECRET, type Integrations } from "@north/integrations";
+import { isSandboxAds, isSandboxBilling, isSandboxOutreach, SANDBOX_REPLY_KINDS, SANDBOX_STRIPE_WEBHOOK_SECRET, type Integrations } from "@north/integrations";
 import { z } from "zod";
 import { SANDBOX_SENTRY_SECRET, sentrySecretFor, stripeSecretFor, type WorkerEnv } from "./env";
 import { isLoopbackHost } from "./host";
@@ -13,7 +13,8 @@ export { isLoopbackHost };
 
 /** Sandbox and live refs are short identifiers; anything else is refused before it reaches the adapters' path checks. */
 const RefSchema = z.string().regex(/^[A-Za-z0-9:._-]{1,120}$/);
-const ReplySchema = z.object({ at: z.iso.datetime({ offset: true }).optional() }).default({});
+/** A simulated reply: when (default now) and what (CMP-1: a reply, a bounce notice or an opt-out; default a reply); nothing else. */
+const ReplySchema = z.strictObject({ at: z.iso.datetime({ offset: true }).optional(), kind: z.enum(SANDBOX_REPLY_KINDS).optional() }).default({});
 const ClockSchema = z.object({ now: z.iso.datetime({ offset: true }) });
 
 const parseJson = (text: string): unknown => {
@@ -154,9 +155,9 @@ export function sandboxRoutes(integrations: Integrations, host = "127.0.0.1", si
     const messageId = RefSchema.safeParse(c.req.param("messageId"));
     const raw = await c.req.text();
     const body = ReplySchema.safeParse(raw.trim().length === 0 ? {} : parseJson(raw));
-    if (!messageId.success || !body.success) return c.json({ error: "expected an optional { at } for a sandbox message id" }, 400);
+    if (!messageId.success || !body.success) return c.json({ error: `expected an optional { at, kind } (kind one of ${SANDBOX_REPLY_KINDS.join(", ")}) for a sandbox message id` }, 400);
     try {
-      return c.json({ ok: true, reply: await outreach.simulateReply(messageId.data, body.data.at) });
+      return c.json({ ok: true, reply: await outreach.simulateReply(messageId.data, body.data.at, body.data.kind) });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }

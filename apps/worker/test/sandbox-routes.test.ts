@@ -49,10 +49,27 @@ describe("sandbox routes", () => {
     const { messageId } = await integrations.outreach(null).send({ companyId: "company-1", to: "a@example.test", subject: "Hi", text: "t", kind: "first_contact" });
     expect((await post(app, `/sandbox/mail/${encodeURIComponent(messageId)}/reply`)).status).toBe(200);
     const dated = await post(app, `/sandbox/mail/${encodeURIComponent(messageId)}/reply`, JSON.stringify({ at: "2026-10-15T10:00:00.000Z" }));
-    expect(await dated.json()).toEqual({ ok: true, reply: { at: "2026-10-15T10:00:00.000Z" } });
-    expect(await integrations.outreach(null).replies({ companyId: "company-1", messageIds: [messageId] })).toEqual([{ messageId, replies: 2, lastReplyAt: expect.any(String) }]);
+    expect(await dated.json()).toEqual({ ok: true, reply: { at: "2026-10-15T10:00:00.000Z", kind: "reply" } });
+    expect(await integrations.outreach(null).replies({ companyId: "company-1", messageIds: [messageId] })).toEqual([{ messageId, replies: 2, lastReplyAt: expect.any(String), bounced: false, optedOut: false }]);
     expect((await post(app, `/sandbox/mail/${encodeURIComponent(messageId)}/reply`, JSON.stringify({ at: "yesterday" }))).status).toBe(400);
     expect((await post(app, "/sandbox/mail/sandbox:msg:nope/reply")).status).toBe(404);
+  });
+
+  it("CMP-1: the reply route takes an optional kind (reply, bounce, opt_out); any other kind is 400 and records nothing", async () => {
+    const app = sandboxRoutes(integrations);
+    const outreach = integrations.outreach(null);
+    const bounced = await outreach.send({ companyId: "company-1", to: "a@example.test", subject: "Hi", text: "t", kind: "first_contact" });
+    const optedOut = await outreach.send({ companyId: "company-1", to: "b@example.test", subject: "Hi", text: "t", kind: "first_contact" });
+    const bounce = await post(app, `/sandbox/mail/${encodeURIComponent(bounced.messageId)}/reply`, JSON.stringify({ kind: "bounce" }));
+    expect(bounce.status).toBe(200);
+    expect(await bounce.json()).toEqual({ ok: true, reply: { at: expect.any(String), kind: "bounce" } });
+    expect((await post(app, `/sandbox/mail/${encodeURIComponent(optedOut.messageId)}/reply`, JSON.stringify({ at: "2026-10-15T10:00:00.000Z", kind: "opt_out" }))).status).toBe(200);
+    expect((await post(app, `/sandbox/mail/${encodeURIComponent(optedOut.messageId)}/reply`, JSON.stringify({ kind: "complaint" }))).status).toBe(400);
+    expect((await post(app, `/sandbox/mail/${encodeURIComponent(optedOut.messageId)}/reply`, JSON.stringify({ kind: "reply", extra: 1 }))).status).toBe(400);
+    expect(await outreach.replies({ companyId: "company-1", messageIds: [bounced.messageId, optedOut.messageId] })).toEqual([
+      { messageId: bounced.messageId, replies: 0, lastReplyAt: null, bounced: true, optedOut: false },
+      { messageId: optedOut.messageId, replies: 1, lastReplyAt: "2026-10-15T10:00:00.000Z", bounced: false, optedOut: true },
+    ]);
   });
 
   it("M4 review L4: the routes exist only on a loopback host; a worker bound to 0.0.0.0 serves none of them", async () => {
@@ -117,7 +134,7 @@ describe("M6 review L4: loopback Host and same-origin on every /sandbox/* reques
     expect((await post(app, path, undefined, { origin: "https://evil.example" })).status).toBe(403);
     expect((await post(app, path, undefined, { host: "evil.example:3101" })).status).toBe(403);
     expect((await app.request(`http://localhost${path}`, { method: "POST" })).status).toBe(403);
-    expect(await integrations.outreach(null).replies({ companyId: "company-1", messageIds: [messageId] })).toEqual([{ messageId, replies: 0, lastReplyAt: null }]);
+    expect(await integrations.outreach(null).replies({ companyId: "company-1", messageIds: [messageId] })).toEqual([{ messageId, replies: 0, lastReplyAt: null, bounced: false, optedOut: false }]);
     expect((await post(app, path, undefined, { "sec-fetch-site": "same-origin", origin: SELF })).status).toBe(200);
     expect((await post(sandboxRoutes(integrations, "127.0.0.1", null, null, 4000), path)).status).toBe(403);
   });

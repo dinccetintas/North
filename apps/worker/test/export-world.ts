@@ -53,7 +53,7 @@ function seedUser(store: FakeStore, id: string, email: string, entitlement: { st
 
 function seedCompany(store: FakeStore, ownerId: string, slug: string, status = "active", ageDays = 30): string {
   const id = randomUUID();
-  rowsOf(store, "companies").push({ id, owner_id: ownerId, name: `${slug[0]?.toUpperCase()}${slug.slice(1)}`, slug, status, kill_switch_active: status !== "active", paused_reason: status === "archived" ? "retention" : null, onboarding_step: "done", public_page_enabled: false, sentry_project_slug: null, archived_at: null, created_at: iso(-ageDays * DAY), updated_at: iso(-DAY) });
+  rowsOf(store, "companies").push({ id, owner_id: ownerId, name: `${slug[0]?.toUpperCase()}${slug.slice(1)}`, slug, status, kill_switch_active: status !== "active", paused_reason: status === "archived" ? "retention" : null, onboarding_step: "done", public_page_enabled: false, sentry_project_slug: null, archived_at: null, legal_name: `${slug} Labs Ltd`, postal_address: `1 ${slug} Street, Springfield 12345`, created_at: iso(-ageDays * DAY), updated_at: iso(-DAY) });
   return id;
 }
 
@@ -72,7 +72,9 @@ function seedRepo(store: FakeStore, companyId: string, ref: string): void {
 function seedData(store: FakeStore, companyId: string): void {
   rowsOf(store, "ledger_entries").push({ id: randomUUID(), company_id: companyId, task_id: null, metric_key: "signups", before_value: 3, after_value: 7, cost_usd: 12.5, channel: "meta_ads", attribution_note: "=HYPERLINK(1)", provenance: null, campaign_id: null, action_id: null, created_at: iso(-2 * DAY) });
   rowsOf(store, "decision_cards").push({ id: randomUUID(), company_id: companyId, task_id: null, action_id: null, action_kind: "deploy.production", tier: "K2", question: "Go live?", rationale: "verified preview", options: [{ id: "approve", label: "Approve" }], recommended_option_id: "approve", default_option_id: "decline", expected_impact: null, cost_usd: 0, opened_at: iso(-DAY), due_at: iso(DAY), day: "2026-11-19", seq: 1, answered_option_id: null, answered_at: null, answered_by: null, merge_key: null, created_at: iso(-DAY) });
-  rowsOf(store, "memory_items").push({ id: randomUUID(), company_id: companyId, kind: "learning", title: "Pricing", content: "Consultants pay yearly.", created_by_role: "research", embedding: "[0.1,0.2]", search: "'pricing'", created_at: iso(-DAY) });
+  rowsOf(store, "memory_items").push({ id: randomUUID(), company_id: companyId, kind: "learning", title: "Pricing", content: "Consultants pay yearly.", created_by_role: "research", department: "sales", provenance: { source: "task" }, status: "active", valid_until: iso(30 * DAY), embedding: "[0.1,0.2]", search: "'pricing'", created_at: iso(-DAY) });
+  // CMP-1: the company's suppression list is the owner's data too (EXP-1).
+  rowsOf(store, "suppressions").push({ id: randomUUID(), company_id: companyId, email: `optout-${companyId.slice(0, 8)}@example.test`, domain: "example.test", reason: "opt_out", source_action_id: null, created_at: iso(-DAY) });
 }
 
 export function world(): World {

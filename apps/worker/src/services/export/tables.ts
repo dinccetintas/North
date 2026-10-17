@@ -54,7 +54,7 @@ export const COMPANY_TABLES: readonly ExportTable[] = Object.freeze([
   },
   { name: "metrics", table: "metrics", columns: ["id", "metric_key", "value", "source", "scope", "provenance", "provenance_key", "window_end", "measured_at"], order: ["measured_at", "id"] },
   { name: "ledger", table: "ledger_entries", columns: ["id", "task_id", "metric_key", "before_value", "after_value", "cost_usd", "channel", "attribution_note", "provenance", "campaign_id", "action_id", "created_at"], order: byCreated, long: ["attribution_note"] },
-  { name: "memory", table: "memory_items", columns: ["id", "kind", "title", "content", "created_by_role", "created_at"], order: byCreated, long: ["content"] },
+  { name: "memory", table: "memory_items", columns: ["id", "kind", "title", "content", "department", "provenance", "status", "valid_until", "created_by_role", "created_at"], order: byCreated, long: ["content"] },
   { name: "artifacts", table: "artifacts", columns: ["id", "kind", "title", "version", "created_by_role", "created_at"], order: byCreated, long: ["title"] },
   { name: "briefs", table: "briefs", columns: ["id", "brief_date", "content", "word_count", "created_at"], order: byCreated },
   {
@@ -97,12 +97,14 @@ export const COMPANY_TABLES: readonly ExportTable[] = Object.freeze([
     long: ["name", "landing_url", "last_error"],
   },
   { name: "leads", table: "leads", columns: ["id", "name", "email", "company_name", "why", "source", "status", "batch_id", "message_id", "created_at", "updated_at"], order: byCreated },
+  // CMP-1: who the company must never write to again, and why (append-only, 0019).
+  { name: "suppressions", table: "suppressions", columns: ["id", "email", "domain", "reason", "source_action_id", "created_at"], order: byCreated },
   { name: "notifications", table: "notifications", columns: ["id", "kind", "channel", "status", "card_id", "payload", "created_at"], order: byCreated },
   { name: "public_page", table: "public_pages", columns: ["headline", "blurb", "show_goal", "metric_keys", "show_site_link", "listed", "created_at", "updated_at"], order: ["created_at"] },
 ]);
 
 /** The company row itself (`company.json`). */
-export const COMPANY_COLUMNS: readonly string[] = Object.freeze(["id", "name", "slug", "status", "kill_switch_active", "paused_reason", "onboarding_step", "public_page_enabled", "sentry_project_slug", "archived_at", "created_at", "updated_at"]);
+export const COMPANY_COLUMNS: readonly string[] = Object.freeze(["id", "name", "slug", "status", "kill_switch_active", "paused_reason", "onboarding_step", "public_page_enabled", "sentry_project_slug", "legal_name", "postal_address", "archived_at", "created_at", "updated_at"]);
 
 /** `data/profile.json`: the owner's own rows, keyed by `user_id` (the profile by `id`). Connections without their secrets. */
 export const PROFILE_TABLES: readonly (ExportTable & { readonly key: "id" | "user_id" })[] = Object.freeze([

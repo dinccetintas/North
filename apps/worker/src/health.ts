@@ -1,5 +1,5 @@
 import type { FencePolicy } from "@north/core";
-import { sentrySecretFor, stripeSecretFor, type WorkerEnv } from "./env";
+import { sentrySecretFor, stripeSecretFor, unsubscribeSecretFor, type WorkerEnv } from "./env";
 import type { GatewayStats } from "./gateway/server";
 import type { SimClock } from "./services/clock";
 import type { WorkerGateway } from "./services/runtime-deps";
@@ -26,6 +26,8 @@ export interface WorkerHealth {
   readonly runtime: WorkerEnv["AGENT_RUNTIME"];
   /** Which webhook routes are mounted (a secret resolved); never the secrets. */
   readonly webhooks: { readonly sentry: boolean; readonly stripe: boolean };
+  /** CMP-1: whether `/u/{token}` can verify unsubscribe tokens (a secret resolves); never the secret or its source. A live worker must read true. */
+  readonly unsubscribe: boolean;
   /** False while a sandbox harness has moved the clock (`POST /sandbox/clock`); production must read true. */
   readonly clockIsWall: boolean;
   readonly tracing: boolean;
@@ -53,7 +55,7 @@ export interface HealthSources {
   readonly gateway: HealthGateway | null;
 }
 
-export type HealthEnv = Pick<WorkerEnv, "INTEGRATIONS_MODE" | "AGENT_RUNTIME" | "WORKER_HOST" | "SENTRY_CLIENT_SECRET" | "STRIPE_WEBHOOK_SECRET" | "NORTH_MODEL_PROFILE" | "NORTH_ENV">;
+export type HealthEnv = Pick<WorkerEnv, "INTEGRATIONS_MODE" | "AGENT_RUNTIME" | "WORKER_HOST" | "SENTRY_CLIENT_SECRET" | "STRIPE_WEBHOOK_SECRET" | "UNSUBSCRIBE_SECRET" | "NORTH_MODEL_PROFILE" | "NORTH_ENV">;
 
 /** The four budget numbers, copied field by field so nothing else of the gateway's stats can reach the health line. */
 function budgetOf(gateway: HealthGateway | null): HealthBudget | null {
@@ -64,9 +66,9 @@ function budgetOf(gateway: HealthGateway | null): HealthBudget | null {
 
 /**
  * `GET /health` (OPS-1, STG-1): what `scripts/production-check.ts` reads:
- * mode, runtime, mounted webhooks, whether the clock is the wall clock, the
- * model profile, the fence, the gateway mode, the deployment env and the
- * day's model budget. Nothing secret (no key, no path, no URL), nothing about users.
+ * mode, runtime, mounted webhooks, whether unsubscribe links can be verified,
+ * whether the clock is the wall clock, the model profile, the fence, the
+ * gateway mode, the deployment env and the day's model budget. Nothing secret (no key, no path, no URL), nothing about users.
  */
 export function workerHealth(env: HealthEnv, sources: HealthSources): WorkerHealth {
   const { simClock } = sources;
@@ -78,6 +80,7 @@ export function workerHealth(env: HealthEnv, sources: HealthSources): WorkerHeal
     mode: env.INTEGRATIONS_MODE,
     runtime: env.AGENT_RUNTIME,
     webhooks: Object.freeze({ sentry: sentrySecretFor(env) !== null, stripe: stripeSecretFor(env) !== null }),
+    unsubscribe: unsubscribeSecretFor(env) !== null,
     clockIsWall: simClock === null || Math.abs(simClock.offsetMs) < WALL_TOLERANCE_MS,
     tracing: sources.tracing,
     profile: env.NORTH_MODEL_PROFILE,

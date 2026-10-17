@@ -72,7 +72,7 @@ export function createSandboxIntegrations(sink?: SandboxSink, options: SandboxOp
 
 export { SandboxAds, hourlyDelivery, SANDBOX_COST_PER_CLICK_USD, SANDBOX_CLICK_THROUGH, SANDBOX_CONVERSION_RATE, type SandboxCampaign, type SandboxCampaignStatus } from "./ads";
 export { AdsStore, SandboxCampaignSchema, DeliveryLineSchema, sumDeliveries, type DeliveryLine } from "./ads-store";
-export { SandboxOutreach, SandboxMessageSchema, OutreachSendInputSchema, type SandboxMessage, type SandboxReply } from "./outreach";
+export { SandboxOutreach, SandboxMessageSchema, OutreachSendInputSchema, SANDBOX_OUTREACH_MAILBOX, SANDBOX_REPLY_KINDS, type SandboxMessage, type SandboxReply, type SandboxReplyKind } from "./outreach";
 export { SandboxAnalytics } from "./analytics";
 export { SandboxPayments } from "./payments";
 export {

@@ -7,6 +7,7 @@ import type { WorkerDeps } from "../deps";
 import { activationRefusal, BudgetCapReachedError } from "./budget-check";
 import { resolveCampaigns } from "./campaign-lookup";
 import { ownerDay } from "./dates";
+import { complianceBasisFor, copiesOf, mailboxOf, wireCompliance } from "./outreach-compliance";
 import { TASK_REF_PREFIX } from "./outcomes";
 import { providerAuthFor } from "./provider-auth";
 
@@ -132,13 +133,19 @@ function threadOf(lead: LeadRecord): InReplyTo {
  * contact goes to a `new` lead of the company (H3) that it has just claimed
  * (0018: one email per person, whatever approved it); a reply goes to a
  * `replied` lead, inside the thread it replied in (H2). Anything else is refused.
+ * CMP-1: both carry the compliance footer and a signed `List-Unsubscribe`;
+ * without a sender identity or an unsubscribe secret nothing is claimed or
+ * sent. Copies come from `payload.cc`/`payload.bcc` only, as plain addresses.
  */
 async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload, ctx: PerformContext): Promise<PerformResult> {
   const first = action.kind === "email.send.first_contact";
   const claimant = first ? (ctx.actionId ?? randomUUID()) : null;
   const lead = await leadFor(deps, action, payload, first ? "new" : "replied", claimant);
   const inReplyTo = first ? {} : { inReplyTo: threadOf(lead) };
+  const copies = copiesOf(action);
+  const basis = await complianceBasisFor(deps, action);
   const auth = await providerAuthFor(deps, action.companyId, action.kind);
+  const compliance = wireCompliance(basis, action.companyId, lead.email, mailboxOf(auth, deps.integrations.mode, action.kind));
   if (claimant) await claimLead(deps, action, lead, claimant);
   const sent = await deps.integrations.outreach(auth).send({
     companyId: action.companyId,
@@ -147,6 +154,8 @@ async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload, 
     text: str(payload, "text"),
     kind: first ? "first_contact" : "reply",
     ...inReplyTo,
+    ...copies,
+    ...compliance,
   });
   return { externalRef: sent.messageId, sandbox: sent.sandbox };
 }

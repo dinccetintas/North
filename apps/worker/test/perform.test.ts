@@ -1,9 +1,11 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SandboxEvent } from "@north/integrations";
-import { emptyState, fakeDbModule, fakeDeps, type FakeState } from "./fake-db";
+import { verifyUnsubscribeToken } from "@north/core";
+import { SANDBOX_OUTREACH_MAILBOX, type OutreachSendInput, type SandboxEvent } from "@north/integrations";
+import { SANDBOX_UNSUBSCRIBE_SECRET } from "../src/env";
+import { emptyState, FAKE_SENDER_IDENTITY, fakeDbModule, fakeDeps, type FakeState } from "./fake-db";
 
 /**
  * D4-1 `performAction`: which connection each kind runs on, the landing URL a
@@ -18,6 +20,7 @@ vi.mock("@north/db", () => dbModule);
 
 const { performAction } = await import("../src/services/perform");
 const { BudgetCapReachedError } = await import("../src/services/budget-check");
+const { SenderIdentityRequiredError, UnsubscribeSecretRequiredError } = await import("../src/services/outreach-compliance");
 
 let events: SandboxEvent[];
 let root: string;
@@ -93,5 +96,77 @@ describe("performAction (D4-1)", () => {
     expect(events.map((e) => `${e.provider}:${e.op}`)).toEqual(["outreach:send"]);
     expect(events[0]?.payload).toMatchObject({ kind: "reply" });
     await expect(performAction(deps, { kind: "social.publish", companyId: "company-1", agentRole: "growth", description: "Post" })).rejects.toThrow(/No adapter/);
+  });
+});
+
+describe("performAction: compliance on the wire (CMP-1)", () => {
+  const PUBLIC_URL = "https://worker.north.example";
+  /** Sandbox deps whose public URL is a real-looking host, and a spy on what reaches the outreach adapter. */
+  function wired(mode: "sandbox" | "live" = "sandbox", env: Record<string, unknown> = {}) {
+    const base = fakeDeps(state, events, 200, mode, root);
+    const sent: OutreachSendInput[] = [];
+    const outreach = base.integrations.outreach(null);
+    const spy = { ...outreach, send: (input: OutreachSendInput) => (sent.push(input), outreach.send(input)), replies: outreach.replies.bind(outreach), status: outreach.status.bind(outreach) };
+    const deps = { ...base, env: { ...base.env, NORTH_WORKER_PUBLIC_URL: PUBLIC_URL, ...env } as typeof base.env, integrations: { ...base.integrations, outreach: () => spy } };
+    return { deps, sent };
+  }
+  async function newLead(email = "ada@example.test") {
+    await dbModule.importLeads(null, "company-1", [{ name: "Ada", email }], "upload");
+    return [...state.leads.values()].find((l) => l.email === email)!;
+  }
+  const firstContact = (leadId: string, extra: Record<string, unknown> = {}) => ({ kind: "email.send.first_contact" as const, companyId: "company-1", agentRole: "sales", description: "Hi Ada", payload: { to: "ada@example.test", subject: "Hi Ada", text: "Body", leadId, ...extra } });
+
+  it("CMP-1: the sandbox send input carries the footer with the legal name and postal address, and List-Unsubscribe under NORTH_WORKER_PUBLIC_URL with a token for { companyId, email }", async () => {
+    const { deps, sent } = wired();
+    const lead = await newLead();
+    const result = await performAction(deps, firstContact(lead.id));
+    const input = sent[0]!;
+    expect(input.footer).toContain(FAKE_SENDER_IDENTITY.legalName);
+    expect(input.footer).toContain(FAKE_SENDER_IDENTITY.postalAddress);
+    expect(input.unsubscribe?.mailto).toBe(`${SANDBOX_OUTREACH_MAILBOX}?subject=unsubscribe`);
+    const url = input.unsubscribe?.url ?? "";
+    expect(url.startsWith(`${PUBLIC_URL}/u/`)).toBe(true);
+    expect(input.footer?.endsWith(url)).toBe(true);
+    expect(verifyUnsubscribeToken(url.slice(`${PUBLIC_URL}/u/`.length), SANDBOX_UNSUBSCRIBE_SECRET)).toEqual({ companyId: "company-1", email: "ada@example.test" });
+    // The sandbox record keeps both, so a test (or the e2e) can read them back.
+    const record = JSON.parse(await readFile(join(root, "mail", `${result.externalRef}.json`), "utf8"));
+    expect(record).toMatchObject({ footer: input.footer, unsubscribe: input.unsubscribe });
+  });
+
+  it("CMP-1: a reply carries the footer and List-Unsubscribe too", async () => {
+    const { deps, sent } = wired();
+    const lead = await newLead();
+    Object.assign(lead, { status: "replied", messageId: "sandbox:msg:first" });
+    await performAction(deps, { kind: "email.send.reply", companyId: "company-1", agentRole: "sales", description: "Re", payload: { to: "ada@example.test", subject: "Re", text: "t", leadId: lead.id } });
+    expect(sent[0]).toMatchObject({ kind: "reply", footer: expect.stringContaining(FAKE_SENDER_IDENTITY.postalAddress), unsubscribe: { url: expect.stringMatching(/^https:\/\/worker\.north\.example\/u\//) } });
+  });
+
+  it("CMP-1: live mode without an unsubscribe secret, or a company without a sender identity, throws before any send and leaves the lead unclaimed", async () => {
+    const lead = await newLead();
+    const { deps: noSecret, sent } = wired("live", { UNSUBSCRIBE_SECRET: undefined, WORKER_HOST: "0.0.0.0" });
+    await expect(performAction(noSecret, firstContact(lead.id))).rejects.toBeInstanceOf(UnsubscribeSecretRequiredError);
+    await expect(performAction(noSecret, firstContact(lead.id))).rejects.not.toThrow(/fake-live-unsubscribe-secret/);
+    state.senderIdentities.set("company-1", null);
+    const { deps: noIdentity } = wired();
+    await expect(performAction(noIdentity, firstContact(lead.id))).rejects.toBeInstanceOf(SenderIdentityRequiredError);
+    expect(sent).toEqual([]);
+    expect(events).toEqual([]);
+    expect(state.leads.get(lead.id)).toMatchObject({ status: "new", contactActionId: null });
+  });
+
+  it("CMP-1: cc and bcc reach the adapter only as arrays of plain addresses read from those keys; other payload keys never do", async () => {
+    const { deps, sent } = wired();
+    const lead = await newLead();
+    await performAction(deps, firstContact(lead.id, { cc: "Dev <Dev@Example.test>, ops@example.test", bcc: ["audit@example.test"], headers: "Bcc: evil@example.test", replyTo: "evil@example.test" }));
+    expect(sent[0]?.cc).toEqual(["dev@example.test", "ops@example.test"]);
+    expect(sent[0]?.bcc).toEqual(["audit@example.test"]);
+    expect(Object.keys(sent[0]!).sort()).toEqual(["bcc", "cc", "companyId", "footer", "kind", "subject", "text", "to", "unsubscribe"]);
+    expect(JSON.stringify(sent[0])).not.toContain("evil@example.test");
+    const other = await newLead("bob@example.test");
+    for (const cc of ["dev@example.test\r\nBcc: evil@example.test", { address: "dev@example.test" }, ["dev@example.test", 7]]) {
+      await expect(performAction(deps, { ...firstContact(other.id, { cc }), payload: { ...firstContact(other.id, { cc }).payload, to: "bob@example.test" } })).rejects.toThrow(/cc/);
+    }
+    expect(sent).toHaveLength(1);
+    expect(state.leads.get(other.id)).toMatchObject({ status: "new" });
   });
 });

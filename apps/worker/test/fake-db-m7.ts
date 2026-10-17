@@ -12,6 +12,9 @@ export interface FakeSuppression {
   companyId: string;
   /** An address or a bare domain, lower-cased, as migration 0019 stores it. */
   email: string;
+  /** Set by `addSuppression` (the gate tests seed rows without it). */
+  reason?: string;
+  sourceActionId?: string | null;
 }
 
 export interface M7State {
@@ -25,6 +28,9 @@ export interface M7State {
 }
 
 export const emptyM7State = (): M7State => ({ suppressions: [], senderIdentities: new Map() });
+
+/** The unsubscribe secret and public URL `fakeDeps` gives a live-mode worker (CMP-1: live mode signs no link without them). */
+export const FAKE_LIVE_UNSUBSCRIBE = Object.freeze({ UNSUBSCRIBE_SECRET: "fake-live-unsubscribe-secret", NORTH_WORKER_PUBLIC_URL: "https://worker.north.test" });
 
 export const FAKE_SENDER_IDENTITY: SenderIdentity = Object.freeze({ legalName: "Lumen Labs Ltd", postalAddress: "1 Example Street, Springfield 12345" });
 
@@ -40,6 +46,11 @@ export function fakeDbM7(state: M7State) {
       const named = new Set(state.suppressions.filter((s) => s.companyId === companyId).map((s) => s.email));
       const inputs = [...new Set(emails.map((e) => e.trim().toLowerCase()))];
       return inputs.filter((a) => !isPlainAddress(a) || named.has(a) || named.has(domainOf(a)));
+    }),
+    /** `addSuppression`: appends a row (append-only, repeats allowed, as in 0019) and returns its id. */
+    addSuppression: vi.fn(async (_db: unknown, input: { companyId: string; email: string; reason: string; sourceActionId?: string | null }): Promise<string> => {
+      state.suppressions.push({ companyId: input.companyId, email: input.email.trim().toLowerCase(), reason: input.reason, sourceActionId: input.sourceActionId ?? null });
+      return `suppression-${state.suppressions.length}`;
     }),
     getSenderIdentity: vi.fn(async (_db: unknown, companyId: string): Promise<SenderIdentity | null> => (state.senderIdentities.has(companyId) ? (state.senderIdentities.get(companyId) ?? null) : FAKE_SENDER_IDENTITY)),
   };

@@ -50,6 +50,19 @@ describe("STG-1 workerHealth: profile, fence, gateway, env and budget", () => {
     expect(health).toMatchObject({ profile: "production", fence: false, gateway: "off", env: "production", budget: null, tracing: true });
   });
 
+  it("CMP-1 says whether the unsubscribe route can verify tokens (a secret resolves), never the secret or where it came from", () => {
+    const sources = { clock: () => clock.now(), simClock: null, tracing: false, fence: fencePolicyFromEnv({}), gateway: null };
+    expect(workerHealth(env, sources).unsubscribe).toBe(true);
+    expect(workerHealth({ ...env, WORKER_HOST: "0.0.0.0" }, sources).unsubscribe).toBe(false);
+    const liveEnv = { ...env, INTEGRATIONS_MODE: "live" as const, WORKER_HOST: "0.0.0.0" };
+    expect(workerHealth(liveEnv, sources).unsubscribe).toBe(false);
+    const secret = "a-real-unsubscribe-secret-0123";
+    const configured = workerHealth({ ...liveEnv, UNSUBSCRIBE_SECRET: secret }, sources);
+    expect(configured.unsubscribe).toBe(true);
+    expect(JSON.stringify(configured)).not.toContain(secret);
+    expect(JSON.stringify(workerHealth(env, sources))).not.toContain("sandbox-unsubscribe-secret");
+  });
+
   it("SEC-1 never carries a key or a path", () => {
     const json = JSON.stringify(workerHealth(env, { clock: () => clock.now(), simClock: clock, tracing: false, fence: fencePolicyFor(env), gateway: gateway(true) }));
     expect(json).not.toContain("sk-ant");
