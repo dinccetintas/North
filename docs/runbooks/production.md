@@ -212,12 +212,20 @@ for the Stripe endpoint and `NORTH_USAGE_READ_KEY` for every user's usage
 ratio of the month (usage rows are owner-only, so it needs a key that may
 read them). There is no flag for either, so neither lands in shell history
 or `ps`; `read -s` keeps them off the screen too, and a check without its key
-is skipped. `--json` prints the result for the evidence folder. `--env staging`
-(or `pnpm staging:check`, or `NORTH_CHECK_ENV=staging`) swaps only the worker
-health rules: production needs profile `production`, fence off, env
-`production` and no recording or replaying gateway; staging needs fence on,
-env `staging` and no replaying gateway. Exit 1 on any failure. It prints the mode it found: production stays `sandbox` / `mock`
+is skipped. `--json` prints the result for the evidence folder. Exit 1 on any
+failure. It prints the mode it found: production stays `sandbox` / `mock`
 until section 11. Run it after every deploy and first in any incident.
+
+`--env staging` (or `pnpm staging:check`, or `NORTH_CHECK_ENV=staging`) swaps
+only the worker health rules (`scripts/production-check-rules.ts`); every
+other check runs unchanged. Production needs profile `production`, fence off,
+env `production`, a gateway that is off or live (never recording or
+replaying) and, with a gateway, a day's budget that is not exhausted. Staging
+needs fence on, env `staging`, a gateway that is off, live or recording
+(never replaying), one of the three model profiles and, on the SDK runtime,
+the gateway's budget on the health line. In both, a live worker must verify
+unsubscribe links, and the web's health line must report `llm: "mock"`: the
+web never holds the model key and never calls the model (ADR 0019).
 
 ## 11. The flip to live (and back)
 

@@ -7,10 +7,13 @@ an authority tier, written to an immutable ledger, and stoppable with one button
 
 Start here:
 
-- `docs/SPEC.md`: the founder's product and build specification (requirement IDs).
+- `docs/SPEC.md`: the founder's product and build specification (requirement IDs, the
+  Faz 2 table included).
 - `docs/superpowers/specs/2026-10-14-north-architecture-design.md`: architecture.
+- `docs/superpowers/specs/2026-10-16-north-studio-phase-design.md`: the studio phase
+  (Faz 2, M7 onwards): departments, testing tiers, staging, new requirement IDs.
 - `docs/research/polsia-teardown.md`: what the reference product does and where it fails.
-- `docs/plans/M0.md` … `M6.md`: milestone plans with acceptance tests.
+- `docs/plans/M0.md` … `M7.md`: milestone plans with acceptance tests.
 - `CONTEXT.md`: glossary. `docs/adr/`: decisions. `agents/`: product roles.
 
 Development (after M0 lands):
@@ -39,6 +42,29 @@ creates a GitHub OAuth app and a Vercel integration, puts the public ids in the
 web env and the secrets plus `CONNECTIONS_ENCRYPTION_KEY` in the worker env
 (`.env.example`), and connects both accounts from Settings → Connections. The
 token is exchanged and encrypted inside the worker; the web app never sees it.
+
+Staging (M7, STG-1, ADR 0017): production's topology with its own accounts: the
+Vercel `staging` environment, the Fly app `north-worker-staging`
+(`apps/worker/fly.staging.toml`), the Supabase project `north-staging`, the Inngest
+environment `staging` and a Resend subdomain that sends and receives. It runs real
+Claude and live adapters behind the test-account fence, so agents reach only the
+founder's test accounts. The founder provisions the accounts and enters every live
+key; `docs/runbooks/staging.md` is the step-by-step, and the nightly and acceptance
+workflows (`docs/evidence/README.md`) run against it. The repository must stay
+private: a failed run's artifacts can hold the Vercel bypass cookie and the e2e
+users' session tokens.
+
+```bash
+pnpm staging:check   # read-only check of the staging deployment (production:check with --env staging)
+pnpm smoke:llm       # real-Claude smoke on the local stack: smoke profile, $0.50 cap (TST-2)
+pnpm e2e:staging     # the live founder journey against staging, then the evidence guard (TST-3)
+```
+
+Real model exchanges can be recorded by the model gateway as cassettes and replayed
+without a key (`cassettes/README.md`, ADR 0019): `pnpm e2e:replay` runs the
+Playwright flows against a worker whose gateway replays, and `pnpm cassette:check`
+scans every committed cassette for secrets, a stale key and the pinned Agent SDK
+version.
 
 Trust boundary for events: whoever can send events to Inngest can dispatch
 tasks and complete connections for any user id. Locally the Dev Server listens

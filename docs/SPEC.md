@@ -197,6 +197,62 @@ Bu üründe güven bir özellik değil, ürünün kendisidir: kullanıcı ajanı
 | Gizlilik | Kullanıcı verisi model eğitimi için kullanılmaz. Şirketler arası hafıza izolasyonu testle doğrulanır. |
 | Performans | Ana ekran 1.5 saniyede yüklenir; karar cevabı 2 saniyede kuyruğa yansır. |
 
+## Faz 2 gereksinimleri
+
+Faz 2 (stüdyo fazı, M7 ve sonrası) gereksinimleri `docs/superpowers/specs/2026-10-16-north-studio-phase-design.md` bölüm 12'den gelir; Faz 1 ID'leri gibi bu ID'ler de commit mesajlarında ve test adlarında kullanılır. Kilometre taşı sütunu tasarım dokümanındaki değerin aynısıdır.
+
+| ID | Gereksinim | Kilometre taşı |
+| --- | --- | --- |
+| SEC-1 | Ajanların kabuk komutları sandbox içinde çalışır; hiçbir ajan süreci model anahtarını tutmaz | M7 |
+| SEC-2 | Şirketler arasında hiçbir ajan yapılandırması, hafıza veya oturum paylaşılmaz | M7 |
+| CMP-1 | Her ilk temas e-postası alt bilgiyi, posta adresini ve List-Unsubscribe başlığını taşır; gönderim engellerine (suppression) `gate()` uyar | M7 |
+| CMP-2 | E-posta yalnızca kural seti kodlanmış ve test edilmiş bölgelere gider; yalnızca izinle gönderime açık yargı bölgelerinde kayıtlı izin gerekir | M12 |
+| TST-1 | Model profilleri ve test bütçe koruması; production kontrolü production dışındaki profilleri reddeder | M7 |
+| TST-2 | Her PR'da, kendi tavanı içinde, gerçek Claude ile smoke testi | M7 |
+| TST-3 | Staging'de her gece gerçek kullanıcı yolculuğu | M7 |
+| TST-4 | Kurucu onayı ve commit edilmiş kanıtla kilometre taşı canlı kabul testi | M7 |
+| TST-5 | `gate()` içinde test hesabı çiti | M7 |
+| STG-1 | Kurucunun giriş yaptığı bir staging ortamı | M7 |
+| SKL-1 | Repoya alınmış (vendored) skill'ler; kilit dosyası, lisans ve hash kontrolleri `pnpm validate` içinde | M8 |
+| SKL-2 | Her persona yalnızca kendi skill'lerini bağlar; yüklenen ve çağrılan skill'ler görünürdür | M8 |
+| TEAM-1 | Onboarding'de, denetlenmiş katalogdan ekip önerisi | M8 |
+| TEAM-2 | Departman başına inceleme ayarı (review dial) | M8 |
+| LOOP-1 | Taslak, ayrı bir eleştirmen, revizyon; kesin kapıları (hard gate) kod belirler; en fazla 2 revizyon | M8 |
+| LOOP-2 | Fork ile 2-3 varyant, kurucu seçmeden önce sıralanır | M8 |
+| REV-1 | Karar kotasından ayrı, kendi bütçesi ve 24 saatlik varsayılanı olan inceleme kuyruğu | M8 |
+| REV-2 | Metne sabitlenmiş yorumlar, diff'i ve geri alması olan tek bir revizyon üretir | M8 |
+| LIVE-1 | Sadece eklenen çalışma olaylarından (run events) beslenen canlı iş görünümü | M8 |
+| CHAT-2 | Herhangi bir personayla birebir sohbet; "Bağlama ekle" hafızaya kaynağıyla (provenance) birlikte yazar | M8 |
+| VAL-1 | Doğrulama öncelikli onboarding görevleri | M8 |
+| VAL-2 | Bir sonraki K2 kartında kapı bağlamı (gate context) | M10 |
+| VAL-3 | Görüşme kanıtı yalnızca gerçek kaynaklardan gelir | M10 |
+| DSN-1 | Doğrulanmış dosyalar olarak marka kiti | M9 |
+| DSN-2 | Ekran görüntüleriyle 2-3 site yönü | M9 |
+| DSN-3 | Poster yedeği ve performans kapılarıyla 3D ve hareket | M9 |
+| WEB-1 | Kullanıcının reposunda, Vercel'inde ve Supabase'inde landing page ve bekleme listesi; worker'ın çalıştırdığı kapılarla doğrulanır | M9 |
+| MCP-1 | Sağlayıcı MCP sunucuları ajanlara yalnızca okuma araçları açar; yazma işlemleri worker'da `gate()` sonrasında çalışır | M11 |
+| MKT-1 | Meta kampanyaları önce duraklatılmış (paused) açan kreatif hattı | M11 |
+| MKT-2 | Üretilen her varlıkta yapay zekâ beyan işaretleri | M11 |
+| MKT-3 | Kanal katmanları: taslaklar ve özel yüklemeler K1, yeni herkese açık gönderiler K2 | M11 |
+| MKT-4 | vidIQ ile YouTube araştırması | M11 |
+| MKT-5 | Pull request olarak SEO brifleri ve sayfaları | M11 |
+| SLS-1 | Kullanıcının anahtarlarıyla, North araçlarının arkasında lisanslı lead sağlayıcıları | M12 |
+| SLS-2 | Doğrulama ve teslim edilebilirlik koruması | M12 |
+| SLS-3 | Parti başına onaylanan e-posta dizileri; takip e-postaları K1'dir ve otomatik iptal edilir | M12 |
+| SLS-4 | Pipeline olayları ve Cal.com randevuları | M12 |
+| LRN-1 | Her ders en az bir doğrulanmış kanıt referansı ve kodla hesaplanmış bir güven değeri taşır; kanıt yoksa ders yok | M8 |
+| LRN-2 | Dersler RLS altında bir şirkete veya bir departmana kapsamlanır; playbook akışı dışında hiçbir şey şirketler arasında geçmez | M8 |
+| LRN-3 | Eleştirmen persona (taze bağlam, salt okunur araçlar) her hafta bir departman retrosu yapar ve ders önerir; davranış değiştiren türler inceleme kuyruğundan geçer | M8 Design; M10-M12 the others |
+| LRN-4 | Her çalışma aldığı dersleri kaydeder; sonuçlar ders başına geri atfedilir | M8 |
+| LRN-5 | Derslerin süresi dolar, yerlerine yenisi geçer veya otomatik olarak emekliye ayrılırlar; emekli dersler kaynağıyla okunabilir kalır; geri alma vardır | M8 |
+| LRN-6 | Hafıza bir çalışmaya sınırlı bir blok içinde veri olarak girer; çıkarıcılar transkriptleri, araç sonuçlarını ve alıntılanan içeriği güvenilmez sayar | M7 |
+| LRN-7 | Gömmeleri Supabase içinde üretilen hibrit tam metin ve vektör araması; departmana ve görev türüne göre tipli erişim | M7 pipeline, M8 contract |
+| LRN-8 | Hafıza ekranı dersleri, kaynaklarını, uygulamalarını ve sonuçlarını gösterir; geri alma ve yerine yenisini koyarak düzenleme vardır | M8 basic, M9 full |
+| LRN-9 | Derslerden türetilen persona brif satırları ve rubrik ağırlığı değişiklikleri önerilir, sürümlenir ve kurucu tarafından onaylanır | M9 |
+| LRN-10 | Her gece derslerle ve derssiz değerlendirmeler farkı, isabet oranını ve zarar oranını raporlar; bir gerileme dersi emekliye ayırır | M8 |
+| LRN-11 | Şirketler arası playbook'lar isteğe bağlıdır, en az üç şirketten toplanır, temizlenir, etkinleşmeden önce North tarafından incelenir ve ajanlar için salt okunurdur | M10 design, M11 entries |
+| LRN-12 | Satış kaynaklı kanıtı (lead sağlayıcıları, erişim, yanıtlar, pipeline) olan hiçbir ders şirketler arasında yükseltilmez | M12 |
+
 ## Build planı
 
 Yedi kilometre taşı, sırayla. Bir sonraki taşa ancak öncekinin kabul kriteri geçince geçilir. M2 (karar katmanı), dış dünyaya dokunan herhangi bir ajandan (M3, M4) önce bitmelidir.
