@@ -1,4 +1,4 @@
-import { CHECKOUT_OPEN_MINUTES, packById, STRIPE_SUBSCRIPTION_STATUSES } from "@north/core";
+import { CHECKOUT_OPEN_MINUTES, isStripeTestKey, packById, STRIPE_SUBSCRIPTION_STATUSES } from "@north/core";
 import { z } from "zod";
 import {
   CheckoutSessionInputSchema,
@@ -38,9 +38,6 @@ export interface StripeBillingConfigOptions {
   readonly warn?: (message: string) => void;
 }
 
-/** Stripe test-mode keys: a secret key or a restricted key. */
-const STRIPE_TEST_KEY = /^(sk|rk)_test_/;
-
 /** Reports a refusal without ever failing: a throwing sink is ignored. */
 function report(warn: (message: string) => void, message: string): void {
   try {
@@ -60,8 +57,8 @@ export function stripeBillingConfig(env: NodeJS.ProcessEnv = process.env, opts: 
   const secretKey = env.STRIPE_SECRET_KEY?.trim();
   const webhookSecret = env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secretKey || !webhookSecret) return null;
-  if (opts.requireTestKey && !STRIPE_TEST_KEY.test(secretKey)) {
-    report(opts.warn ?? ((message) => console.warn(message)), "[integrations] the test fence is on and STRIPE_SECRET_KEY is not a Stripe test key (sk_test_ or rk_test_): Stripe billing stays off");
+  if (opts.requireTestKey && !isStripeTestKey(secretKey)) {
+    report(opts.warn ?? ((message) => console.warn(message)), "[integrations] billing: live key refused by the test fence (STRIPE_SECRET_KEY is not a Stripe test key, sk_test_ or rk_test_); using the billing sandbox adapter");
     return null;
   }
   return Object.freeze({ secretKey, webhookSecret });

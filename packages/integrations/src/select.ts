@@ -47,7 +47,8 @@ const fallback = (provider: string, warn: Warn): void =>
 function liveBilling(env: NodeJS.ProcessEnv, sink: SandboxSink | undefined, warn: Warn, options: SelectOptions): BillingProvider {
   const config = stripeBillingConfig(env, { requireTestKey: options.requireStripeTestKey === true, warn });
   if (config) return new StripeBilling(config, options.fetchImpl);
-  fallback("billing", warn);
+  // Keys that are complete were refused by the test fence, which has said so itself; only missing keys get the fallback line.
+  if (stripeBillingConfig(env) === null) fallback("billing", warn);
   return new SandboxBilling(sink, defaultSandboxRoot(env), options.clock, { siteBaseUrl: defaultSiteBaseUrl(env) });
 }
 

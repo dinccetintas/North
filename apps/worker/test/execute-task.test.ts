@@ -177,17 +177,30 @@ describe("SEC-1 instructions are capped before the run", () => {
     expect(String(warn.mock.calls[0]?.[0])).not.toContain("hhhh");
   });
 
-  it("SEC-1 a header within the cap but with no room for the input drops the input, still ends in the marker, and does not claim the header was over", () => {
-    for (const size of [INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length - 1, INSTRUCTIONS_MAX_CHARS - 5, INSTRUCTIONS_MAX_CHARS]) {
+  it("SEC-1 a header that leaves room for the marker but not the input keeps the whole header, Task line included, then the marker", () => {
+    const tail = "\n\nTask: Write the plan";
+    // Up to 26 characters short of the cap: the input gets no room (a newline plus the marker would not fit beside any of it).
+    for (const size of [INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length - 1, INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length]) {
       const warn = vi.fn();
-      const head = `Task: ${"h".repeat(size - 6)}`;
+      const head = `Company: ${"h".repeat(size - 9 - tail.length)}${tail}`;
       expect(head).toHaveLength(size);
       const out = capInstructions(head, `the task input ${"i".repeat(100)}`, warn);
-      expect(out.length, `${size}`).toBeLessThanOrEqual(INSTRUCTIONS_MAX_CHARS);
-      expect(out.endsWith(INSTRUCTIONS_TRUNCATION_MARKER), `${size}`).toBe(true);
-      expect(out.startsWith("Task: hhh")).toBe(true);
-      expect(out).not.toContain("the task input");
+      expect(out, `${size}`).toBe(`${head}${INSTRUCTIONS_TRUNCATION_MARKER}`);
+      expect(out.length).toBeLessThanOrEqual(INSTRUCTIONS_MAX_CHARS);
       expect(warn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("SEC-1 a header with no room left for the marker is cut (the one case the Task line can go), ends in the marker and warns once", () => {
+    for (const size of [INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length + 1, INSTRUCTIONS_MAX_CHARS]) {
+      const warn = vi.fn();
+      const head = `Company: ${"h".repeat(size - 9)}`;
+      const out = capInstructions(head, `the task input ${"i".repeat(100)}`, warn);
+      expect(out, `${size}`).toHaveLength(INSTRUCTIONS_MAX_CHARS);
+      expect(out.endsWith(INSTRUCTIONS_TRUNCATION_MARKER)).toBe(true);
+      expect(out).not.toContain("the task input");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/header/);
     }
   });
 

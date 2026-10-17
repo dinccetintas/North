@@ -1,3 +1,4 @@
+// CMP-1: the in-memory suppressions and sender identity the gate's outreach context reads (M7 additions to the `@north/db` stand-in).
 import { vi } from "vitest";
 import type { SenderIdentity } from "@north/core";
 

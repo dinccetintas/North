@@ -57,25 +57,29 @@ const warnOnStderr = (message: string): void => console.warn(`[execute-task] ${m
 /**
  * A run's instructions, `head` (retry note, company-context header and the
  * `Task: <title>` line) then the task's `input`, at most
- * `INSTRUCTIONS_MAX_CHARS` long. The input is cut first (ending in the marker)
- * so the header and the Task line always survive; a header that fits but
- * leaves no room for the input drops the input and still ends in the marker;
- * only a header that alone is over the cap is cut itself, the input dropped,
- * and `warn` told once (with sizes, never the text). Cuts never split a
+ * `INSTRUCTIONS_MAX_CHARS` long. The input is cut first (ending in the
+ * marker). A header of up to `INSTRUCTIONS_MAX_CHARS -
+ * INSTRUCTIONS_TRUNCATION_MARKER.length` characters is never cut, so its Task
+ * line always survives; when it leaves no room for the input, the input is
+ * dropped and the marker follows the header. Only a longer header is cut
+ * itself (the one case its Task line can be lost), the input dropped, and
+ * `warn` told once (with sizes, never the text). Cuts never split a
  * surrogate pair.
  */
 export function capInstructions(head: string, input: string, warn: (message: string) => void = warnOnStderr): string {
   const whole = `${head}\n${input}`.trim();
   if (whole.length <= INSTRUCTIONS_MAX_CHARS) return whole;
   const lead = head.trim();
-  if (lead.length > INSTRUCTIONS_MAX_CHARS) {
-    warn(`the instructions header alone is ${lead.length} characters, over the ${INSTRUCTIONS_MAX_CHARS} cap: it was cut and the task input left out`);
-    return clipText(lead, INSTRUCTIONS_MAX_CHARS, INSTRUCTIONS_TRUNCATION_MARKER);
+  // The marker's room is reserved first: a header that fits beside it is never cut, so its Task line survives.
+  const headRoom = INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length;
+  if (lead.length > headRoom) {
+    warn(`the instructions header alone is ${lead.length} characters, over the ${headRoom} the ${INSTRUCTIONS_MAX_CHARS} cap leaves beside the truncation marker: it was cut and the task input left out`);
+    return `${clipText(lead, headRoom)}${INSTRUCTIONS_TRUNCATION_MARKER}`;
   }
   const room = INSTRUCTIONS_MAX_CHARS - lead.length - 1;
   if (room > INSTRUCTIONS_TRUNCATION_MARKER.length) return `${lead}\n${clipText(input.trim(), room, INSTRUCTIONS_TRUNCATION_MARKER)}`;
-  // The header fits but leaves no room for any input: the input is left out and the marker says so (it may take the header's last characters).
-  return `${clipText(lead, INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length)}${INSTRUCTIONS_TRUNCATION_MARKER}`;
+  // The header fits beside the marker but leaves no room for any input: the input is left out and the marker says so.
+  return `${lead}${INSTRUCTIONS_TRUNCATION_MARKER}`;
 }
 
 /** Task types whose run ends in the build pipeline (push, preview, go-live card). */

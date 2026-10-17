@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 import { z } from "zod";
-import { fencePolicyFromEnv, MODEL_PROFILES, type FencePolicy } from "@north/core";
+import { fencePolicyFromEnv, metaAdAccountId, MODEL_PROFILES, type FencePolicy } from "@north/core";
 import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
 import { isLoopbackHost, isLoopbackUrl, selfBaseUrl } from "./host";
-import { metaAdAccountId } from "./services/fence-targets";
 
 /** An empty value (`KEY=` in a .env file, as `.env.example` ships `ANTHROPIC_API_KEY`) counts as unset. */
 const blankAsUnset = <T extends z.ZodType>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);

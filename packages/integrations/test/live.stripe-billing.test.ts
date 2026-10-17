@@ -76,7 +76,7 @@ describe("TST-5 stripeBillingConfig under the test fence: test keys only", () =>
     expect(stripeBillingConfig({ STRIPE_SECRET_KEY: "rk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, { requireTestKey: true, warn: (line) => lines.push(line) })).toBeNull();
     expect(lines).toHaveLength(3);
     for (const line of lines) {
-      expect(line).toMatch(/test fence/);
+      expect(line).toMatch(/billing: live key refused by the test fence/);
       expect(line).not.toContain("sk_live_x");
       expect(line).not.toContain("SecretValue");
       expect(line).not.toContain("rk_live_x");

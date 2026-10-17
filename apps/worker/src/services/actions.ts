@@ -27,6 +27,7 @@ import { fenceCheckFor, OUTREACH_POLICY, outreachBlockReason, outreachContextFor
 import { applyFailed, applyOutcome, loadActionRow } from "./outcomes";
 import { performAction } from "./perform";
 import { ConnectionRequiredError } from "./provider-auth";
+import { STOPS_SPEND } from "./stop-spend";
 import type { StepRunner } from "./steps";
 
 export { performAction, type PerformResult } from "./perform";
@@ -56,8 +57,6 @@ export const ADAPTER_KINDS: ReadonlySet<ActionKind> = new Set(["ads.start", "ads
 /** Kinds only the worker itself may request (M4 review H1, ADR 0012): a resume carries the worker's reason or a card; a cap raise is the collector's card; a signal card is the scan's. An agent asking for them is blocked. */
 export const WORKER_ONLY_KINDS: ReadonlySet<ActionKind> = new Set(["ads.resume", "budget.cap.raise", "signal.pursue"]);
 
-/** Kinds that stop spend: never refused for an ended subscription (M6 review L3). */
-const STOPS_SPEND: ReadonlySet<ActionKind> = new Set(["ads.pause"]);
 export const SUBSCRIPTION_ENDED = "subscription_ended";
 
 /**

@@ -1,7 +1,9 @@
+// TST-5 / CMP-1: the fence and the outreach rules at the gate, end to end through `gateAction` on the worker fakes.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { gate, type ActionSpec } from "@north/core";
+import type { CampaignRecord } from "@north/db";
 import type { SandboxEvent } from "@north/integrations";
-import { adsStart, emptyState, fakeDbModule, fakeDeps, seedCompany, seedTask, type FakeState } from "./fake-db";
+import { adsStart, directSteps, emptyState, fakeDbModule, fakeDeps, seedCompany, seedTask, type FakeConnection, type FakeState } from "./fake-db";
 
 /**
  * TST-5 / CMP-1 at the gate (worker fakes): `gateFor` tells `gate()` the
@@ -16,13 +18,14 @@ const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
 const { gateAction } = await import("../src/services/actions");
+const { pauseForCap } = await import("../src/services/campaigns");
 const { fenceTargetsOf } = await import("../src/services/fence-targets");
 const { fencePolicyFor } = await import("../src/env");
 
-type FenceLists = { readonly meta?: string; readonly domains?: string };
+type FenceLists = { readonly meta?: string; readonly owners?: string; readonly domains?: string };
 /** The fence as the worker builds it from its env (`fencePolicyFor`), on. */
 const fenceOn = (lists: FenceLists = {}) =>
-  fencePolicyFor({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: lists.meta, NORTH_FENCE_GITHUB_OWNERS: undefined, NORTH_FENCE_RECIPIENT_DOMAINS: lists.domains ?? "resend.app", NORTH_FENCE_VERCEL_PREFIX: undefined });
+  fencePolicyFor({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: lists.meta, NORTH_FENCE_GITHUB_OWNERS: lists.owners, NORTH_FENCE_RECIPIENT_DOMAINS: lists.domains ?? "resend.app", NORTH_FENCE_VERCEL_PREFIX: undefined });
 
 let events: SandboxEvent[];
 const deps = (opts: { fence?: FenceLists | false; mode?: "sandbox" | "live" } = {}) => {
@@ -206,5 +209,61 @@ describe("CMP-1 at the gate", () => {
     await lead("x@gmail.com");
     state.suppressions.push({ companyId: "company-1", email: "x@gmail.com" });
     expect(await gateAction(deps({ fence: {} }), task.id, first("x@gmail.com"))).toMatchObject({ kind: "blocked", reason: "test_fence" });
+  });
+});
+
+describe("TST-5 fix round 1: repository names, stop-spend kinds, failing reads", () => {
+  const connect = (row: FakeConnection) => dbModule.getConnection.mockImplementation(async () => row);
+  const github = (login: string) => connect({ id: "c-gh", status: "connected", scopes: ["repo"], accountLabel: login });
+  const push = (fullName: string): ActionSpec => ({ kind: "repo.push", companyId: "x", agentRole: "x", description: `Push to ${fullName}`, payload: { fullName, branch: "main", message: "m", files: [{ path: "index.html", content: "x" }] } });
+  const pr = (fullName: string): ActionSpec => ({ kind: "repo.pull_request", companyId: "x", agentRole: "x", description: `PR in ${fullName}`, payload: { fullName, head: "fix/x", base: "main", title: "Fix", body: "" } });
+
+  it("TST-5 live: a dot-segment or percent-encoded fullName is blocked as an unknown target, for a push and a pull request", async () => {
+    seedCompany(state);
+    github("allowed");
+    const task = seedTask(state, { role: "engineering", taskType: "build_site" });
+    for (const fullName of ["allowed/../victim/repo", "allowed/%2e%2e/victim/repo"]) {
+      expect(await gateAction(deps({ fence: { owners: "allowed" }, mode: "live" }), task.id, push(fullName)), fullName).toMatchObject({ kind: "blocked", reason: "test_fence" });
+      expect(last().payload.blocked_reason).toBe("unknown target for repo.push");
+      expect(await gateAction(deps({ fence: { owners: "allowed" }, mode: "live" }), task.id, pr(fullName)), fullName).toMatchObject({ kind: "blocked", reason: "test_fence" });
+      expect(last().payload.blocked_reason).toBe("unknown target for repo.pull_request");
+    }
+  });
+
+  it("TST-5 live: a real Owner/repo.name-1 inside the fence goes on; a login outside the fence is blocked naming it", async () => {
+    seedCompany(state);
+    const task = seedTask(state, { role: "engineering", taskType: "build_site" });
+    github("north-e2e");
+    expect(await gateAction(deps({ fence: { owners: "north-e2e, Owner" }, mode: "live" }), task.id, push("Owner/repo.name-1"))).toMatchObject({ kind: "execute", tier: "K1" });
+    github("octo-real");
+    expect(await gateAction(deps({ fence: { owners: "north-e2e, Owner" }, mode: "live" }), task.id, push("Owner/repo.name-1"))).toMatchObject({ kind: "blocked", reason: "test_fence" });
+    expect(last().payload.blocked_reason).toBe("github_owner octo-real is outside the test fence");
+  });
+
+  it("TST-5 a cap pause goes through with the fence on even when the Meta account is outside it", async () => {
+    seedCompany(state);
+    connect({ id: "c-meta", status: "connected", scopes: ["act:999"], accountLabel: "Real Ads" });
+    const fenced = deps({ fence: { meta: "123" }, mode: "live" });
+    const started = await fenced.integrations.ads(null).startCampaign({ companyId: "company-1", name: "Launch", dailyBudgetUsd: 10 });
+    const campaign = (await dbModule.registerCampaign(null, { companyId: "company-1", taskId: null, actionId: "action-launch", provider: "meta_ads", providerCampaignId: started.campaignId, name: "Launch", metricKey: "signups", dailyBudgetUsd: 10, totalBudgetUsd: 50, status: "active" })) as unknown as CampaignRecord;
+    const run = await pauseForCap(fenced, directSteps, campaign, "daily", new Date().toISOString().slice(0, 10));
+    expect(run.gated).toMatchObject({ kind: "execute", tier: "K1" });
+    expect(run.completed).toMatchObject({ status: "notified" });
+    expect(state.actions.some((a) => a.payload.test_fence)).toBe(false);
+    const task = seedTask(state);
+    expect(await gateAction(fenced, task.id, adsStart())).toMatchObject({ kind: "blocked", reason: "test_fence" });
+  });
+
+  it("TST-5 / CMP-1 a read that fails (suppressions, connection) fails the gate closed: it rejects, no row, no card", async () => {
+    seedCompany(state);
+    const task = seedTask(state, { role: "sales", taskType: "outreach_batch" });
+    await lead("mara@example.test");
+    dbModule.listSuppressed.mockRejectedValueOnce(new Error("suppressions unreadable"));
+    await expect(gateAction(deps(), task.id, first("mara@example.test"))).rejects.toThrow(/suppressions unreadable/);
+    dbModule.getConnection.mockRejectedValueOnce(new Error("connections unreadable"));
+    const ads = seedTask(state);
+    await expect(gateAction(deps({ fence: { meta: "123" }, mode: "live" }), ads.id, adsStart())).rejects.toThrow(/connections unreadable/);
+    expect(state.actions).toEqual([]);
+    expect(state.cards.size).toBe(0);
   });
 });

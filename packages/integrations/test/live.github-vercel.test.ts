@@ -180,3 +180,15 @@ describe("selectIntegrations in live mode", () => {
     expect(integrations.images).toBeTruthy();
   });
 });
+
+describe("TST-5 GitHubCodeHost refuses a fullName that could move the API path", () => {
+  it("TST-5 a dot-segment or percent-encoded fullName never reaches GitHub, for a push or a pull request", async () => {
+    const { calls, fetchImpl } = scripted({});
+    const code = new GitHubCodeHost({ token: "gho_x" }, fetchImpl);
+    for (const fullName of ["allowed/../victim/repo", "allowed/%2e%2e/victim/repo"]) {
+      await expect(code.pushTree({ companyId: "c1", fullName, message: "m", files }), fullName).rejects.toThrow();
+      await expect(code.openPullRequest({ companyId: "c1", fullName, head: "fix/x", title: "t" }), fullName).rejects.toThrow();
+    }
+    expect(calls).toEqual([]);
+  });
+});

@@ -1,7 +1,7 @@
 // TST-5: staging runs real adapters, but only against test accounts; anything else is fenced off.
 import { describe, expect, it } from "vitest";
 import type { ActionKind } from "../src/authority/action";
-import { FencePolicySchema, FenceTargetSchema, fencePolicyFromEnv, fenceVerdict, type FencePolicy, type FenceTarget } from "../src/authority/fence";
+import { FencePolicySchema, FenceTargetSchema, fencePolicyFromEnv, fenceVerdict, isRepoFullName, isStripeTestKey, metaAdAccountId, type FencePolicy, type FenceTarget } from "../src/authority/fence";
 
 const policy = (over: Partial<FencePolicy> = {}): FencePolicy => FencePolicySchema.parse({ enabled: true, ...over });
 
@@ -224,5 +224,28 @@ describe("TST-5 fencePolicyFromEnv", () => {
     const parsed = fencePolicyFromEnv(env);
     expect(Object.isFrozen(parsed)).toBe(true);
     expect(env).toEqual({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: "act_1" });
+  });
+});
+
+describe("TST-5 the identifiers the fence and the adapters share", () => {
+  it("TST-5 metaAdAccountId makes 123 and act_123 the same id", () => {
+    expect(metaAdAccountId("123")).toBe("act_123");
+    expect(metaAdAccountId("act_123")).toBe("act_123");
+    expect(metaAdAccountId(" act_9 ")).toBe("act_9");
+  });
+
+  it("TST-5 isStripeTestKey: a secret or restricted test key, nothing else", () => {
+    for (const key of ["sk_test_x", "rk_test_51Abc"]) expect(isStripeTestKey(key), key).toBe(true);
+    for (const key of ["sk_live_x", "rk_live_x", "pk_test_x", "", " sk_test_x", "SK_TEST_x", "sk_test"]) expect(isStripeTestKey(key), key).toBe(false);
+  });
+
+  it("TST-5 isRepoFullName accepts owner/repo as GitHub names them", () => {
+    for (const name of ["Owner/repo.name-1", "sandbox/lumen-site", "a/b", "north-e2e/x_y", `${"o".repeat(39)}/${"r".repeat(100)}`]) expect(isRepoFullName(name), name).toBe(true);
+  });
+
+  it("TST-5 isRepoFullName refuses dot segments, encodings and anything that could move the API path", () => {
+    for (const name of ["allowed/../victim/repo", "allowed/%2e%2e/victim/repo", "allowed/..", "allowed/.", "../victim", "owner/repo/extra", "owner", "/repo", "owner/", "own.er/repo", "own_er/repo", "owner/re po", "owner/repo%2f", "owner/repo?x=1", "owner/repo#x", `${"o".repeat(40)}/repo`, `owner/${"r".repeat(101)}`, "owner\\repo", ""]) {
+      expect(isRepoFullName(name), name).toBe(false);
+    }
   });
 });

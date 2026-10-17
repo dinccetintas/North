@@ -1,3 +1,4 @@
+import { isRepoFullName } from "@north/core";
 import { z } from "zod";
 import type { BillingProvider } from "./billing-types";
 import type { AdsProvider, AnalyticsProvider, OutreachMailProvider, PaymentsProvider } from "./growth-types";
@@ -106,9 +107,12 @@ const branchName = z
 /** The branch North pushes to when none is named; a fix pushes to `fix/<shortId>` and opens a pull request against it. */
 export const DEFAULT_BRANCH = "main";
 
+/** TST-5: `owner/repo` only (core's `isRepoFullName`): the name is interpolated into `/repos/<fullName>/…`, so a dot segment or an encoding could move the call to another repository. */
+const repoFullName = z.string().min(3).max(200).refine(isRepoFullName, { message: "fullName must be owner/repo: no dot segments, no encodings, no third segment" });
+
 export const PushTreeInputSchema = z.object({
   companyId: z.string().min(1),
-  fullName: z.string().min(3).max(200),
+  fullName: repoFullName,
   /** Created from `main` when missing (`createBranchIfMissing` semantics); `main` itself is created on an empty repository. */
   branch: branchName.default(DEFAULT_BRANCH),
   message: z.string().trim().min(1).max(500),
@@ -125,7 +129,7 @@ export interface PushTreeResult {
 /** PRO-2: the pull request a fix opens in the user's repository (`repo.pull_request`, K1); the user merges it themselves (EXP-1). */
 export const OpenPullRequestInputSchema = z.object({
   companyId: z.string().min(1),
-  fullName: z.string().min(3).max(200),
+  fullName: repoFullName,
   head: branchName,
   base: branchName.default(DEFAULT_BRANCH),
   title: z.string().trim().min(1).max(200),

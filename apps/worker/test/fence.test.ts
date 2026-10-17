@@ -1,3 +1,4 @@
+// TST-5 / CMP-1: what the gate is told before it decides: fence targets from the spec and the connection, and the outreach facts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionSpecSchema, FencePolicySchema, gate, type ActionSpec, type FencePolicy } from "@north/core";
 import { emptyState, fakeDbModule, fakeDeps, FAKE_SENDER_IDENTITY, seedCompany, type FakeState } from "./fake-db";
@@ -14,7 +15,7 @@ const state: FakeState = emptyState();
 const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
-const { fenceTargetsOf, metaAdAccountId } = await import("../src/services/fence-targets");
+const { fenceTargetsOf } = await import("../src/services/fence-targets");
 const { fenceCheckFor, fenceTargetsFor, outreachBlockReason, outreachContextFor } = await import("../src/services/fence");
 
 const spec = (over: Partial<ActionSpec>): ActionSpec => ActionSpecSchema.parse({ kind: "research", companyId: "company-1", agentRole: "growth", description: "Act", ...over });
@@ -50,17 +51,17 @@ describe("TST-5 fenceTargetsOf: the outside targets of an action (pure)", () => 
 
   it("TST-5 Meta: the connection's act:<id> scope becomes act_<id>, whichever form it was stored in; every act: scope counts", () => {
     expect(fenceTargetsOf(ads(), live(["act:123", "page:456"]))).toEqual([{ kind: "meta_ad_account", id: "act_123" }]);
-    expect(fenceTargetsOf(ads("ads.pause"), live(["act:act_77"]))).toEqual([{ kind: "meta_ad_account", id: "act_77" }]);
+    expect(fenceTargetsOf(ads("ads.resume"), live(["act:act_77"]))).toEqual([{ kind: "meta_ad_account", id: "act_77" }]);
     expect(fenceTargetsOf(ads("ads.resume"), live(["act:1", "act:2"]))).toEqual([
       { kind: "meta_ad_account", id: "act_1" },
       { kind: "meta_ad_account", id: "act_2" },
     ]);
   });
 
-  it("TST-5 metaAdAccountId makes 123 and act_123 the same id", () => {
-    expect(metaAdAccountId("123")).toBe("act_123");
-    expect(metaAdAccountId("act_123")).toBe("act_123");
-    expect(metaAdAccountId(" act_9 ")).toBe("act_9");
+  it("TST-5 a kind whose only effect is to stop spend has no fence target, so a cap pause is never fenced", () => {
+    expect(fenceTargetsOf(ads("ads.pause"), live(["act:999"]))).toEqual([]);
+    expect(fenceTargetsOf(ads("ads.pause"), LIVE_NONE)).toEqual([]);
+    expect(fenceTargetsOf(ads("ads.pause"), SANDBOX)).toEqual([]);
   });
 
   it("TST-5 GitHub: the connection's accountLabel is the owner; a push or pull request also names the owner of its fullName", () => {
@@ -70,6 +71,18 @@ describe("TST-5 fenceTargetsOf: the outside targets of an action (pure)", () => 
       { kind: "github_owner", login: "someone-else" },
     ]);
     expect(fenceTargetsOf(spec({ kind: "repo.pull_request", payload: {} }), live(["repo"], "north-e2e"))).toEqual([{ kind: "unknown", action: "repo.pull_request" }]);
+    expect(fenceTargetsOf(spec({ kind: "repo.push", payload: { fullName: "Owner/repo.name-1" } }), live(["repo"], "north-e2e"))).toEqual([
+      { kind: "github_owner", login: "north-e2e" },
+      { kind: "github_owner", login: "Owner" },
+    ]);
+  });
+
+  it("TST-5 a fullName that could move the API path names no owner: the target is unknown", () => {
+    for (const fullName of ["allowed/../victim/repo", "allowed/%2e%2e/victim/repo", "allowed/..", "allowed/repo/extra", " allowed/repo", 42]) {
+      for (const kind of ["repo.push", "repo.pull_request"] as const) {
+        expect(fenceTargetsOf(spec({ kind, payload: { fullName } }), live(["repo"], "allowed")), `${kind} ${String(fullName)}`).toEqual([{ kind: "unknown", action: kind }]);
+      }
+    }
   });
 
   it("TST-5 live mode without a usable connection: the target is unknown, never an empty list", () => {

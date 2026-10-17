@@ -15,6 +15,7 @@ export const FencePolicySchema = z.object({
   githubOwners: z.array(z.string()).default([]),
   vercelProjectPrefix: z.string().default("e2e-"),
   recipientDomains: z.array(z.string()).default([]),
+  /** What a `stripe_key` target must start with to be inside the fence; it matches that target only. Whether a key is a Stripe test key at all is {@link isStripeTestKey}. */
   stripeKeyPrefix: z.literal("sk_test_").default("sk_test_"),
 });
 export type FencePolicy = z.infer<typeof FencePolicySchema>;
@@ -115,6 +116,39 @@ export function fenceVerdict(targets: readonly FenceTarget[], policy: FencePolic
   if (!outside) return ALLOWED;
   const reason = outside.kind === "unknown" ? `unknown target for ${targetValue(outside)}` : `${outside.kind} ${targetValue(outside)} is outside the test fence`;
   return Object.freeze({ allowed: false, reason });
+}
+
+/** Stripe test-mode keys: a secret key (`sk_test_`) or a restricted key (`rk_test_`). */
+const STRIPE_TEST_KEY = /^(sk|rk)_test_/;
+
+/** True when the key is a Stripe test-mode key (`sk_test_…` or `rk_test_…`); the one definition the fence and the billing config share. */
+export function isStripeTestKey(key: string): boolean {
+  return STRIPE_TEST_KEY.test(key);
+}
+
+/**
+ * A Meta ad account id in the one form the fence compares: `act_<id>`.
+ * `123` and `act_123` are the same account (a leading `act_` is stripped,
+ * then put back), so the env list and the connection's `act:` scope agree.
+ */
+export function metaAdAccountId(value: string): string {
+  return `act_${value.trim().replace(/^act_/, "")}`;
+}
+
+/** `owner/repo` as GitHub names them: a login (letters, digits, `-`, up to 39) and a repository name (letters, digits, `.`, `_`, `-`, up to 100). */
+const REPO_FULL_NAME = /^[A-Za-z0-9-]{1,39}\/([A-Za-z0-9._-]{1,100})$/;
+
+/**
+ * True when the value is exactly `owner/repo` with nothing that could move an
+ * API path: no third segment, no `%` encoding, and a repository part that is
+ * not `.` or `..`. The fence reads the owner only from such a name, and the
+ * code-host adapters refuse any other (a `fullName` is interpolated into
+ * `/repos/<fullName>/…`, where `allowed/../victim/repo` would land in
+ * `victim/repo`).
+ */
+export function isRepoFullName(value: string): boolean {
+  const repo = REPO_FULL_NAME.exec(value)?.[1];
+  return repo !== undefined && repo !== "." && repo !== "..";
 }
 
 /** A comma-separated env value as a list: trimmed, empties dropped. */

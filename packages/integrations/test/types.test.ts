@@ -159,6 +159,16 @@ describe("B5-1 pull requests and branches (PRO-2, EXP-1)", () => {
     expect(PushTreeInputSchema.safeParse({ companyId: "c1", fullName: "sandbox/site", branch: "fix web", message: "m", files }).success).toBe(false);
   });
 
+  it("TST-5 a fullName that could move the API path is refused by both schemas; a real owner/repo passes", () => {
+    const files = [{ path: "index.html", content: "x" }];
+    for (const fullName of ["allowed/../victim/repo", "allowed/%2e%2e/victim/repo", "allowed/..", "owner/repo/extra", "own.er/repo"]) {
+      expect(PushTreeInputSchema.safeParse({ companyId: "c1", fullName, message: "m", files }).success, fullName).toBe(false);
+      expect(OpenPullRequestInputSchema.safeParse({ companyId: "c1", fullName, head: "fix/x", title: "t" }).success, fullName).toBe(false);
+    }
+    expect(PushTreeInputSchema.parse({ companyId: "c1", fullName: "Owner/repo.name-1", message: "m", files }).fullName).toBe("Owner/repo.name-1");
+    expect(OpenPullRequestInputSchema.parse({ companyId: "c1", fullName: "Owner/repo.name-1", head: "fix/x", title: "t" }).fullName).toBe("Owner/repo.name-1");
+  });
+
   it("CodeHostProvider has openPullRequest next to ensureRepo and pushTree", async () => {
     const code: CodeHostProvider = {
       ensureRepo: async () => ({ repoId: "r", fullName: "sandbox/site", url: "sandbox://repos/sandbox/site", created: true, sandbox: true }),

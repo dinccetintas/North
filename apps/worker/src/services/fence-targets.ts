@@ -1,5 +1,6 @@
 // TST-5: the outside accounts and addresses an action would touch, read from its spec and the connection its adapter would run under. Pure.
-import { ACTION_PROFILES, addressesOf, providerForAction, type ActionKind, type ActionSpec, type FenceTarget } from "@north/core";
+import { ACTION_PROFILES, addressesOf, isRepoFullName, metaAdAccountId, providerForAction, type ActionKind, type ActionSpec, type FenceTarget } from "@north/core";
+import { STOPS_SPEND } from "./stop-spend";
 
 /** What the fence reads from the owner's connection: its scopes (Meta's `act:<id>`) and its account label (the GitHub login). Never the token. */
 export interface ConnectionFacts {
@@ -24,15 +25,6 @@ const targets = (list: readonly FenceTarget[]): readonly FenceTarget[] => Object
 /** The action's target could not be determined: the fence must refuse it, never pass it by omission. */
 const unknown = (action: ActionKind): readonly FenceTarget[] => targets([{ kind: "unknown", action }]);
 
-/**
- * A Meta ad account id in the one form the fence compares: `act_<id>`.
- * `123` and `act_123` are the same account (a leading `act_` is stripped,
- * then put back), so the env list and the connection scope always agree.
- */
-export function metaAdAccountId(value: string): string {
-  return `act_${value.trim().replace(/^act_/, "")}`;
-}
-
 /** `ads.*`: every `act:<id>` scope of the Meta connection (the adapter acts on the first; the fence wants all). Sandbox: no target. */
 function metaTargets(kind: ActionKind, source: TargetSource): readonly FenceTarget[] {
   if (source.mode === "sandbox") return NONE;
@@ -43,16 +35,21 @@ function metaTargets(kind: ActionKind, source: TargetSource): readonly FenceTarg
   return ids.length > 0 ? targets(ids.map((id): FenceTarget => ({ kind: "meta_ad_account", id: metaAdAccountId(id) }))) : unknown(kind);
 }
 
-/** The owner part of a payload's `fullName` (`owner/repo`), or "" when it has none. */
+/**
+ * The owner of a payload's `fullName`, or "" unless it is exactly `owner/repo`
+ * (core's `isRepoFullName`): the adapter puts the name into
+ * `/repos/<fullName>/…`, so `allowed/../victim/repo` would reach `victim`.
+ */
 function ownerOf(payload: ActionSpec["payload"]): string {
   const fullName = payload?.fullName;
-  return typeof fullName === "string" ? (fullName.split("/")[0] ?? "").trim() : "";
+  return typeof fullName === "string" && isRepoFullName(fullName) ? (fullName.split("/")[0] ?? "") : "";
 }
 
 /**
  * `repo.*`: the GitHub connection's login (the account the adapter creates
  * repositories under); a push or pull request also names the owner of the
- * repository it writes to (`payload.fullName`). Sandbox: no target.
+ * repository it writes to (`payload.fullName`, which must be a plain
+ * `owner/repo`, else the target is unknown). Sandbox: no target.
  */
 function githubTargets(spec: ActionSpec, source: TargetSource): readonly FenceTarget[] {
   if (source.mode === "sandbox") return NONE;
@@ -77,7 +74,8 @@ function recipientTargets(spec: ActionSpec): readonly FenceTarget[] {
 
 /**
  * The outside targets the fence checks for an action (TST-5). Kinds without
- * an outside effect (K0 internal work, a signal card) and a cap raise have
+ * an outside effect (K0 internal work, a signal card), a cap raise and the
+ * kinds that only stop spend (`ads.pause`: a cap pause is never fenced) have
  * none. Payload-derived targets (Vercel project, recipients) are read in both
  * modes; provider-derived ones (Meta ad account, GitHub owner) only in live
  * mode, where an adapter reaches out: in sandbox nothing does, so they are no
@@ -86,7 +84,7 @@ function recipientTargets(spec: ActionSpec): readonly FenceTarget[] {
  * no fence lets through; in sandbox mode only payload-derived reads produce it.
  */
 export function fenceTargetsOf(spec: ActionSpec, source: TargetSource): readonly FenceTarget[] {
-  if (!ACTION_PROFILES[spec.kind].externalEffect || OWN_ROWS_ONLY.has(spec.kind)) return NONE;
+  if (!ACTION_PROFILES[spec.kind].externalEffect || OWN_ROWS_ONLY.has(spec.kind) || STOPS_SPEND.has(spec.kind)) return NONE;
   switch (providerForAction(spec.kind)) {
     case "meta_ads":
       return metaTargets(spec.kind, source);

@@ -220,7 +220,8 @@ describe("B6-4 selectIntegrations: billing and the user's Stripe (BIL-1, OUT-2)"
     const { lines, warn } = warnings();
     const fenced = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "w" }, undefined, warn, { allowUrl: async () => true, requireStripeTestKey: true });
     expect(fenced.billing).toBeInstanceOf(SandboxBilling);
-    expect(lines.join("\n")).toMatch(/test fence/);
+    expect(lines.filter((line) => /billing/.test(line))).toEqual([expect.stringContaining("billing: live key refused by the test fence")]);
+    expect(lines.join("\n")).not.toMatch(/billing keys are missing/);
     expect(lines.join("\n")).not.toContain("sk_live_x");
     const test = selectIntegrations({ INTEGRATIONS_MODE: "live", ...RESEND, ...VAPID, STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "w" }, undefined, () => undefined, { allowUrl: async () => true, requireStripeTestKey: true });
     expect(test.billing).toBeInstanceOf(StripeBilling);
