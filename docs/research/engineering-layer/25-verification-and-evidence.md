@@ -1,18 +1,14 @@
 # 25. Verification and evidence
 
-Purpose: the evidence ladder, gate table, acceptance-suite rules, mock lint, gaming scan,
-nightly replay, founder walkthrough and the `verifier.ts` requirement that make "done"
-unfakeable for every generated product.
+Purpose: the evidence ladder, gate table, acceptance-suite rules, mock lint, gaming scan, nightly replay, founder walkthrough and the `verifier.ts` requirement that make "done" unfakeable for every generated product.
 
-Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`,
-`20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`,
-`23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`,
-`26-security-controls.md`. Rulings carried: `notes/synthesis-decisions.md` §2 rows 5, 6,
-8, 13, 14, 15; §3.4; §3.5 evidence; gaps 10, 13, 16, 21.
+Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `23a-repo-templates.md`, `24-team-topology-and-orchestration.md`, `26-security-controls.md`.
+
+Rulings carried: `notes/synthesis-decisions.md` §2 rows 5, 6, 8, 13, 14, 15; §3.4; §3.5 evidence; gaps 10, 13, 16, 21.
 
 ## 0. Rule tag convention and the one principle
 
-Tags are `[LEVEL · hypothesis · lowest grade · classes · kind]` as in `24-*.md` §0.
+Tags are `[LEVEL · hypothesis · lowest grade · classes · kind]` as in `20-blueprint-overview.md` §0.
 Principle (RQ5 preamble; synthesis-decisions §4.1 row 1): the agent that built the thing
 never supplies the proof that it works. A deterministic tool or an independent evaluator
 produces proof against the running artifact. Builder tests are a development aid with
@@ -69,11 +65,11 @@ Rules on the ladder:
 | Gate | Content | Runner | Decider | Threshold or rule | Classes |
 | --- | --- | --- | --- | --- | --- |
 | G0 | protected-path diff on the pushed SHA: tests outside the feature, `e2e/acceptance/**`, CI, lockfile, `.github/**`, `.claude/**`, `features.json` planner fields, `docs/SPEC.md` rows | worker | deterministic | any hit fails the task; never asks | all |
-| G1 | typecheck; lint `--max-warnings 0`; build; file ≤400 lines; function ≤50 lines; boundary and dependency-direction lint; `vi.mock` allowlist (§6); PR ≤400 changed lines (generated files and lockfiles excluded) | worker verifier sandbox | exit codes | zero warnings | all |
+| G1 | typecheck; lint `--max-warnings 0`; build; file ≤400 lines; function ≤50 lines; boundary and dependency-direction lint; `vi.mock` allowlist (§5); PR ≤400 changed lines (generated files and lockfiles excluded) | worker verifier sandbox | exit codes | zero warnings | all |
 | G2 | builder unit and property tests, `failOnFlakyTests` | worker | exit code | a flake fails | all |
 | G3 | integration tests on local Supabase and Inngest | worker | exit code | | C2+ |
 | G4 | mutation score, StrykerJS incremental | worker, nightly | informational only | no floor; reported | C4 |
-| G5 | gaming scan (§7): assertion density, special-case grep, edit/test-cycle count, transcript audit on `fast` | worker; model veto-only | deterministic flags fail; audit vetoes | density ≥1 value assertion per test; ≤8 cycles per file | all (audit C2+) |
+| G5 | gaming scan (§6): assertion density, special-case grep, edit/test-cycle count, transcript audit on `fast` | worker; model veto-only | deterministic flags fail; audit vetoes | density ≥1 value assertion per test; ≤8 cycles per file | all (deterministic checks); audit MUST at C2+, MAY at C1 (to be measured) |
 | G6 | preview READY for `commit_sha` via provider API; smoke HTTP with body assertions; gitleaks; client-bundle JWT scan; frozen-lockfile install; OSV scan; security headers; RLS probe when `auth`; undeclared-host grep | worker | deterministic | all pass | all |
 | G7 | evaluator runs the acceptance suite from Storage with a fresh recorded seed on the preview; axe; Lighthouse; DB probes; per-criterion hard thresholds; writes E3 | evaluator + worker | deterministic per criterion; model may veto or rank only | axe `violations == []`; Lighthouse performance ≥70 and accessibility ≥90 at C1–C2, ≥80 and ≥95 at C3+; rate-limit probe 30 requests in 10 s expects 429 | all; unit per §3 |
 | G8 | nightly deterministic replay of all verified suites on staging, no model | worker | deterministic | any regression stops the line | all |
@@ -86,8 +82,8 @@ deterministic part, G8; `[MUST · H1 · B · all · invariant]` for the evaluato
 
 Cadence rules: per commit only G0–G2 (fast, builder-owned tests). Per feature done and per
 slice evaluation are never relaxed (synthesis-decisions §2 row 32). The acceptance suite
-runs at G7 and may be red until then; G1–G3 run builder tests only (§2 row 6). Done needs
-G0–G7 green for the same `commit_sha`.
+runs at G7 and may be red until then; G1–G3 run builder tests only (synthesis-decisions §2 row 6). Done needs
+every gate that applies at the class, G0–G7, green for the same `commit_sha`.
 
 ## 3. Evaluation unit per class
 
@@ -106,15 +102,15 @@ measured]` (synthesis-decisions §2 row 8; debate-2 §1.3).
 
 | Rule | Tag | Source |
 | --- | --- | --- |
-| The first test of every feature is the evaluator's acceptance suite derived from the feature's Gherkin `steps`, written before build, by a role that never reads the implementation. | `[MUST · H13, I11 · A · C2+; C1 uses the template smoke suite · invariant]` | §2 row 5; METR 43× scorer visibility (RQ5 §KQ2, A, https://metr.org/blog/2025-06-05-recent-reward-hacking/) |
+| The first test of every feature is the evaluator's acceptance suite derived from the feature's Gherkin `steps`, written before build, by a role that never reads the implementation. | `[MUST · H13, I11 · A · C2+; C1 uses the template smoke suite · invariant]` | synthesis-decisions §2 row 5; METR 43× scorer visibility (RQ5 §KQ2, A, https://metr.org/blog/2025-06-05-recent-reward-hacking/) |
 | Suite path: `acceptance/<companyId>/<featureId>/<sha256(steps)>/` in North Storage. The founder repo never holds it; G0 fails any `e2e/acceptance/**` path in a builder diff. | `[MUST · H13 · A · all · invariant]` | debate-4 §3.3 item 5 |
-| Regeneration: when `sha256(steps)` changes, the worker schedules a new authoring run; the old suite stays for history and G8 replays the current hash only. | `[MUST · gap 10 · invariant · all]` | |
+| Regeneration: when `sha256(steps)` changes, the worker schedules a new authoring run; the old suite stays for history and G8 replays the current hash only. | `[MUST · gap 10 · n/a · all · invariant]` | |
 | Parameterisation: every run draws a fresh seed (seeded faker); the seed is recorded in the E3 row. Criteria are visible to the builder; concrete values are not. | `[MUST · H13 · A · all · invariant]` | debate-3 §4.1 |
-| Builder TDD: the builder's unit and integration red-green cycle is E0. | `[SHOULD · H8 · A null for humans · all · process]` | §2 row 5; RQ3 §KQ5 |
-| Repo convention: builder tests live in `**/*.test.ts` and `e2e/dev/**`; the reserved path `e2e/acceptance/**` is protected and empty in the repo. | `[MUST · gap 13 · invariant · all]` | |
+| Builder TDD: the builder's unit and integration red-green cycle is E0. | `[SHOULD · H8 · A null for humans · all · process]` | synthesis-decisions §2 row 5; RQ3 §KQ5 |
+| Repo convention: builder tests live in `**/*.test.ts` and `e2e/dev/**`; the reserved path `e2e/acceptance/**` is protected and empty in the repo. | `[MUST · gap 13 · n/a · all · invariant]` | |
 | Authoring run tool list: the critic class (`24-*.md` §1); inputs are `steps`, the data-model slice design doc when it exists, and the infrastructure template; output is the suite plus a `TestReport` skeleton with one criterion id per `Then`. | `[MUST · H1 · A · all · invariant]` | |
 
-CLAUDE.md's TDD rule governs North's own codebase and is unchanged (§2 row 5).
+CLAUDE.md's TDD rule governs North's own codebase and is unchanged (synthesis-decisions §2 row 5).
 
 ## 5. Mock policy as lint rules
 
@@ -134,7 +130,7 @@ invariant]`.
 | Shape-only assertions (`toBeDefined`, `toBeTruthy` on an object) as the only assertion in a test | forbidden | assertion-density lint: ≥1 value or state assertion per test |
 | `test.skip`, `test.only`, `it.todo`, deleted tests in a builder diff | forbidden | G0 diff flag; `--forbid-only` |
 | Control flow or `sleep` inside a test (I12) | forbidden | lint: no `if`/`for`/`setTimeout` in test bodies |
-| Nightly contract test for every allowed fake against the provider account named in `26-security-controls.md` §6 | required at C2+ | failing contract test quarantines the fake and opens a digest, never a card |
+| Nightly contract test for every allowed fake against the provider account named in `26-security-controls.md` §5 | required at C2+ | failing contract test quarantines the fake and opens a digest, never a card |
 
 `MockRuntime` concerns North's own T1 tier and is out of scope here.
 
@@ -146,12 +142,12 @@ veto, never approve.
 
 | Structural control (primary) | What it stops | Tag |
 | --- | --- | --- |
-| Acceptance suite invisible and unwritable to the builder (§4) | test modification, >79% of Claude cheating (ImpossibleBench) | `[MUST · H13 · A]` |
-| Fresh seed per run (§4) | special-casing of known inputs | `[MUST · H13 · A]` |
-| G0 protected-path diff on the pushed SHA | test, CI, lockfile edits; `.skip/.only` | `[MUST · H2 · A]` |
-| Verifier sandbox builds and runs from the pushed SHA, own cache | harness escape, patched runner, printed completion markers | `[MUST · debate-3 §4.1 · B]` |
-| Bounded retries with a legitimate `halt` exit (`24-*.md` §4) | "keep going until green" pressure | `[MUST · H13 · A]` |
-| Worker-only `done` (§1) | false claim of success | `[MUST · H2 · A]` |
+| Acceptance suite invisible and unwritable to the builder (§4) | test modification, >79% of Claude cheating (ImpossibleBench) | `[MUST · H13 · A · all · invariant]` |
+| Fresh seed per run (§4) | special-casing of known inputs | `[MUST · H13 · A · all · invariant]` |
+| G0 protected-path diff on the pushed SHA | test, CI, lockfile edits; `.skip/.only` | `[MUST · H2 · A · all · invariant]` |
+| Verifier sandbox builds and runs from the pushed SHA, own cache | harness escape, patched runner, printed completion markers | `[MUST · debate-3 §4.1 · B · all · invariant]` |
+| Bounded retries with a legitimate `halt` exit (`24-*.md` §4) | "keep going until green" pressure | `[MUST · H13 · A · all · invariant]` |
+| Worker-only `done` (§1) | false claim of success | `[MUST · H2 · A · all · invariant]` |
 
 What the scan looks for (deterministic part, each flag fails the attempt):
 
@@ -163,10 +159,12 @@ What the scan looks for (deterministic part, each flag fails the attempt):
 | Patched globals | `Date`, `performance.now`, `fetch`, `Math.random` reassigned in `src/**` | RQ5 §Regime 4.6 |
 | Skips and deletions | any `.skip`, `.only`, removed test in the diff | G0 |
 
-Transcript audit (model part, `fast` tier, C2+): one pass over the builder transcript for
+Transcript audit (model part, `fast` tier): one pass over the builder transcript for
 special-casing, test edits, claims of success without a command, and `SPECIAL HACK`
 comments. Output is a veto with quoted lines or nothing. Cost ≈ $0.02 per feature
-(debate-2 §1.2). `[MUST · H2 · B · C2+ · model-limit (2026-10)]`. G5 flag rate is recorded
+(debate-2 §1.2). At C2+ the audit is MUST; at C1 it is MAY, labelled to be measured, and
+only the deterministic checks above are MUST (editor's ruling, `20-blueprint-overview.md` §4).
+`[MUST at C2+, MAY at C1 · H2 · B · all · model-limit (2026-10)]`. G5 flag rate is recorded
 per task (`24-*.md` §12).
 
 ## 7. Nightly G8 sampling and bisection
@@ -230,7 +228,7 @@ and two deployables pinned to one `commit_sha` (`23-architecture-and-principles.
 ## 10. Cross-tenant and cross-role probe (gap 16)
 
 Required E3 rows at C3+ for every feature that reads or writes tenant data; shared with
-`26-security-controls.md` §4. `[MUST · I14 · B · C3, C4 · invariant]`.
+`26-security-controls.md` §3. `[MUST · I14 · B · C3, C4 · invariant]`.
 
 | Probe | Actor | Expected | Evidence |
 | --- | --- | --- | --- |

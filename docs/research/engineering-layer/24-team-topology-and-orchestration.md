@@ -1,20 +1,17 @@
 # 24. Team topology and orchestration
 
-Purpose: the roles, permissions, session rules, retry and escalation machines, widening
-procedure, continuity model, fleet table and attention policy that the build session
-implements for North's engineering layer.
+Purpose: the roles, permissions, session rules, retry and escalation machines, widening procedure, continuity model, fleet table and attention policy that the build session implements for North's engineering layer.
 
-Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`,
-`20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`,
-`23-architecture-and-principles.md`, `25-verification-and-evidence.md`,
-`26-security-controls.md`. Rulings carried: `notes/synthesis-decisions.md` §2 rows 1, 2,
-3, 7, 8, 20, 25, 26, 27; §3.5; gaps 1, 6, 9, 17, 18, 22.
+Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `23a-repo-templates.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
+
+Rulings carried: `notes/synthesis-decisions.md` §2 rows 1, 2, 3, 7, 8, 20, 25, 26, 27; §3.5; §3.7; gaps 1, 6, 9, 17, 18, 22.
 
 ## 0. Rule tag convention
 
-Every rule carries `[LEVEL · hypothesis · lowest grade · classes · kind]`. `LEVEL` is MUST,
-SHOULD or MAY. `kind` is `invariant` (holds regardless of model) or `model-limit (dated)`
-(re-tested in `packages/evals` at each model release, synthesis-decisions §4.1). Every
+Every rule carries `[LEVEL · hypothesis · lowest grade · classes · kind]` (`20-blueprint-overview.md` §0). `LEVEL` is MUST,
+SHOULD or MAY. `kind` is `invariant` (holds regardless of model), `model-limit (dated)`
+(re-tested in `packages/evals` at each model release, synthesis-decisions §4.1), `release-1 rule`,
+`design choice (to be measured)` or `process`. Every
 dollar figure and count in this file is an estimate until `agent_runs` replaces it after
 the 20 golden tasks (synthesis-decisions §5).
 
@@ -51,7 +48,7 @@ Rules:
 - No persona holds both `fs.write` and `errors.read` unless `buildTaskPrompt` wraps error
   text as data, verified by a Vitest test. `[MUST · H11 · B · all · invariant]`.
 - `repo.push`, `deploy.preview` and `deploy.production` are worker actions after `gate()`,
-  never persona tools. `[MUST · CLAUDE.md rule 1 · invariant · all]`.
+  never persona tools. `[MUST · CLAUDE.md rule 1 · n/a · all · invariant]`.
 - Model tiers by alias (IDs only in `packages/core/src/models.ts`): builder `standard`;
   evaluator `standard`, high effort; transcript audit `fast`; planner `standard` at C2,
   `strong` at C3+ and for any M-PAY slice. `[MUST · H12 · B · all · design choice]`.
@@ -70,9 +67,9 @@ builder never browses `docs/` to find context. `[MUST · H6, H9' · B · all · 
 | 1 | `CLAUDE.md` of the founder repo (template) | ≤200 lines, ≤8 KB | repo root |
 | 2 | `## Now` head of `docs/plans/progress.md` | ≤40 lines, ≤3 KB | repo |
 | 3 | The feature row plus its `depends_on` rows | ≤2 KB | `features.json` projection |
-| 4 | `TaskBrief` for this task | ≤120 lines | North DB |
+| 4 | `TaskBrief` for this task | ≤4 KB | North DB |
 | 5 | Latest `FixBrief` for this feature, if any | ≤2 KB | North DB (derived projection) |
-| 6 | `git log -20 --oneline` | ≤2 KB | task workspace |
+| 6 | `git log -20 --oneline` | ≤1 KB | task workspace |
 | Total | | ≤20 KB before the first source file is opened | |
 
 Order inside the prompt: spec and acceptance criteria (`steps`) at the start, the task at
@@ -86,7 +83,7 @@ worker derives `FixBrief` from failing evidence and `TestReport` findings
 | Rule | Tag | Source |
 | --- | --- | --- |
 | One fresh session per feature. SDK auto-compaction is allowed within a session. Multi-feature sessions with compaction are re-tested per model release with H6'. | `[MUST · H6 · A premise, B remedy · all · model-limit (2026-10)]` | synthesis-decisions §2 row 1; Laban 2505.06120 |
-| After any failed gate: never resume or compact. Start a new session from artifacts plus `FixBrief`. | `[MUST · H6 · A · all · invariant]` | §2 row 2; debate-4 §3.3 item 7 |
+| After any failed gate: never resume or compact. Start a new session from artifacts plus `FixBrief`. | `[MUST · H6 · A · all · invariant]` | synthesis-decisions §2 row 2; debate-4 §3.3 item 7 |
 | Transcript resume only when `agent_runs.ended_reason ∈ {crash, timeout}`. `completed`, `budget`, `kill_switch`, `decision_wait` start fresh from artifacts. | `[MUST · H6 · B · all · invariant]` | debate-4 §3.3 item 7 |
 | Parallel read-only fan-out ≤3 Explore subagents, Write and Edit denied, each returning a summary. | `[MUST · H7 · B · all · release-1 rule]` | RQ4 §Deliverable 2 node 1 |
 | The evaluator is never a fork of the builder; `CLAUDE_CODE_FORK_SUBAGENT=0`. | `[MUST · H1 · A · all · invariant]` | debate-3 MUST 5 |
@@ -114,10 +111,10 @@ Rules on the machine:
 - A failed gate is any of: G0 hit, G1-G3 non-zero exit, G5 deterministic flag or audit
   veto, G6 failure, any G7 criterion failed (`25-verification-and-evidence.md` §2).
 - `429` or `529` from the gateway, `crash` and `timeout` never count as an attempt. The
-  worker requeues with backoff (§8). `[MUST · gap 17 · invariant · all]`.
+  worker requeues with backoff (§9). `[MUST · gap 17 · n/a · all · invariant]`.
 - Independent breaker: spend ≥1.5× `appetite_usd` for the feature or the build opens a
   `breaker` review item regardless of attempt count. Default `stop` applies at 24 h.
-  `[MUST · H13 · A · all · invariant]` (§2 row 27).
+  `[MUST · H13 · A · all · invariant]` (synthesis-decisions §2 row 27).
 - Edit/test cycles on one file >8 (counted from `audit_tool_calls`) is a G5 flag that ends
   the attempt; the builder does not continue the loop (Cursor: "hacking increased when
   told to keep working", RQ5 §KQ2, A).
@@ -155,13 +152,13 @@ all no  -> level 1 planner ruling; never a card
 Cards are phrased as a product consequence with a recommended default ("you asked for
 payments; that adds X days and a Stripe account"). A fork cluster is bundled into one card
 with a recommended set (debate-4 §7.7). Appetite overrun is a `breaker` review item, never
-a card (§2 row 27). The builder never asks the founder mid-build; `AskUserQuestion` is
-removed from builder and critic tool lists (§2 row 33).
+a card (synthesis-decisions §2 row 27). The builder never asks the founder mid-build; `AskUserQuestion` is
+removed from builder and critic tool lists (synthesis-decisions §2 row 33).
 
 `halt` (andon): any LLM role emits `halt` through the North tool
 `mcp__north__halt { reason, feature_id }`. The worker parks the build, sets
 `agent_runs.ended_reason = decision_wait` for the run and opens a `breaker` item. The
-planner rules before restart. `[MUST · RQ7 §KQ1 andon · B · all · invariant]` (§2 row 31).
+planner rules before restart. `[MUST · RQ7 §KQ1 andon · B · all · invariant]` (synthesis-decisions §2 row 31).
 
 ## 6. Sequential vs parallel decision tree
 
@@ -255,12 +252,12 @@ Recovery procedure for a fresh session (worker, deterministic):
 | Global ceiling | workspace tokens-per-minute cap at the gateway; fairness: round-robin by company, oldest queued first | same | same | same |
 | Rate limits | 429/529: exponential backoff 2 s to 60 s, max 6 tries, never counts as an attempt; 402 at the cap ends the run with `ended_reason: budget` | same | same | same |
 | Prompt caching | fleet-shared prefix (system prompt, role skills, `CLAUDE.md` template) first; tenant content last; `effort` constant per run | same | same | same |
-| Model profile (builder / evaluator / planner / audit) | standard / standard / template / fast | standard / standard / standard (`strong` on M-PAY) / fast | standard / standard / strong / fast | standard / standard / strong / fast; consultant `strong` at level 2 |
+| Model profile (builder / evaluator / planner / audit) | standard / standard / template / fast (audit MAY at C1, to be measured; deterministic G5 checks MUST) | standard / standard / standard (`strong` on M-PAY) / fast | standard / standard / strong / fast | standard / standard / strong / fast; consultant `strong` at level 2 |
 | Appetite breaker | build $6; change run $1 | build $60 | build $250 | build $400 |
 | Nightly G8 | deterministic replay, no model; companies with a commit or dependency bump in 7 days; weekly full sweep; budget per company | same | same | same, plus G4 nightly |
 | Lesson scope | company lessons loaded for that company only; platform lessons as counts and patterns only, three-company minimum | same | same | same |
 
-`[MUST · fleet · design choice, to be measured · all]` (debate-4 §4; synthesis-decisions §5).
+`[MUST · gap 17 · B · all · design choice, to be measured]` (debate-4 §4; synthesis-decisions §5).
 Tags for the budget column: `appetite_usd` per feature and per build, estimate shown before
 build, breaker at 1.5× `[MUST · H13 · A · all · invariant]`.
 
@@ -268,10 +265,10 @@ build, breaker at 1.5× `[MUST · H13 · A · all · invariant]`.
 
 | Rule | Tag |
 | --- | --- |
-| After any false done (evaluator pass, founder fail; or nightly regression on a verified feature) the worker opens one `Lesson` row and the planner makes one checklist or gate edit. No postmortem document. | `[MUST · H11 · B · all · invariant]` (§2 row 26) |
-| `Lesson.scope ∈ {company, platform}`. Company lessons load only for that company. Platform lessons hold counts and patterns, never tenant facts (domain, provider ids, founder decisions), and need three distinct companies. | `[MUST · debate-4 §4.8 · invariant · all]` |
-| Lessons change briefs and soft rubric weights only. Gates, hard criteria and tool policies have no lesson path. | `[MUST · debate-3 MUST 18 · invariant · all]` |
-| `evaluator_vs_founder_disagreement` sustained >20% over 10 builds moves the evaluator to `strong` for that company. | `[MUST · H1 · B · all · design choice]` (§2 row 25) |
+| After any false done (evaluator pass, founder fail; or nightly regression on a verified feature) the worker opens one `Lesson` row and the planner makes one checklist or gate edit. No postmortem document. | `[MUST · H11 · B · all · invariant]` (synthesis-decisions §2 row 26) |
+| `Lesson.scope ∈ {company, platform}`. Company lessons load only for that company. Platform lessons hold counts and patterns, never tenant facts (domain, provider ids, founder decisions), and need three distinct companies. | `[MUST · debate-4 §4.8 · B · all · invariant]` |
+| Lessons change briefs and soft rubric weights only. Gates, hard criteria and tool policies have no lesson path. | `[MUST · debate-3 MUST 18 · B · all · invariant]` |
+| `evaluator_vs_founder_disagreement` sustained >20% over 10 builds moves the evaluator to `strong` for that company. | `[MUST · H1 · B · all · design choice]` (synthesis-decisions §2 row 25) |
 
 ## 11. Review-queue and card policy
 
@@ -293,14 +290,14 @@ Per-class budgets (estimates from debate-2 §3, to be measured):
 | --- | --- | --- | --- | --- |
 | Review items per build | 2 (direction pick, skeleton walkthrough) + 1 digest | ~10 (6 slice walkthroughs, 1 pick, ~2 breakers) + digests | ~15 | ~20 |
 | Cards per build | 2 (`connect_account`, `go_live`) | ~4 (+ `live_key`, one `fork`) | 6–8 bundled by cluster | 8–12 bundled; defaults apply at deadline |
-| Walkthrough cadence | per build | per slice | per slice | per feature |
+| Walkthrough cadence | per build | per slice | per slice | per slice |
 
 Throughput ceiling: a C2 build of 30 features needs at least two founder-days of review
 and two days of cards. The queue, not compute, is the limit. Intake consumes zero cards.
 
 ## 12. Team metrics (DV1–DV6 and DORA keys)
 
-Recorded from build one. `[MUST · all experiments · invariant · all]` (synthesis-decisions
+Recorded from build one. `[MUST · all experiments · n/a · all · invariant]` (synthesis-decisions
 §4.1). A derived view `feature_metrics` joins the sources; no self-report enters it.
 
 | Metric | Definition | Source table and field |

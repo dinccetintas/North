@@ -1,9 +1,9 @@
 # Findings and verdicts: how to build North's AI engineering team
 
 Purpose: the research report behind the engineering blueprint; what the evidence supports, what it refutes, and what North must measure itself.
-Related: `00-README.md`, `01-research-protocol.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
+Related: `00-README.md`, `01-research-protocol.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `23a-repo-templates.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
 
-Status: final, 2026-10-17. Method: 8 research personas (round 1), 4 adversarial reviewers (round 2), 1 arbiter (round 3). Evidence grades A-D per `01-research-protocol.md` §4; a source keeps the lowest grade any note gave it (`notes/debate-1-skeptic.md` §1.1, adopted in `notes/synthesis-decisions.md` header).
+Status: final, 2026-10-17. Method: 8 research personas (round 1), 4 adversarial reviewers (round 2), 1 arbiter, 3 writers and 1 editor (round 3). Evidence grades A-D per `01-research-protocol.md` §4; a source keeps the lowest grade any note gave it (`notes/debate-1-skeptic.md` §1.1, adopted in `notes/synthesis-decisions.md` header).
 
 ## Abstract
 
@@ -28,7 +28,7 @@ RQ0 asks how an AI engineering team should be structured so that an arbitrary pr
 
 ## 2. Method
 
-Round 1: eight personas each owned one RQ, read primary sources, recorded findings with URL and grade, and stated supports / contradicts / no evidence per hypothesis (`01-research-protocol.md` §4). Round 2: four reviewers attacked every note. Round 3: the arbiter ruled and two writers produced this report and the blueprint.
+Round 1: eight personas each owned one RQ, read primary sources, recorded findings with URL and grade, and stated supports / contradicts / no evidence per hypothesis (`01-research-protocol.md` §4). Round 2: four reviewers attacked every note. Round 3: the arbiter ruled, three writers produced this report and the blueprint in parallel, and an editor made the final consistency pass (Editor's log, end of this file).
 
 | Round | Persona | Note | Owns |
 | --- | --- | --- | --- |
@@ -222,6 +222,7 @@ One line per ruling; full positions and reasons in `synthesis-decisions.md` §2.
 | 32 | Where to relax per-commit correctness | Per commit G0-G2 only; per-feature done and per-slice evaluation never relaxed |
 | 33 | Clarifying questions at forks | Forks are cards with defaults, not questions; the builder never asks mid-build; `AskUserQuestion` removed from builder and critic tool lists |
 | 34 | I6 and I7 in the product core | Removed; `gate()` and append-only ledgers are agent-action invariants; a product ledger reappears only through M-PAY/M-REG |
+| 35 (editor) | G5 transcript audit at C1: `synthesis-decisions.md` §3.4 says the audit runs at C2+, §5 lists a `fast` audit at C1 | Editor applied one ruling in `20`, `24`, `25`, `26`: at C1 the G5 deterministic checks are MUST; the `fast`-tier transcript audit at C1 is MAY, labelled "to be measured"; at C2+ it is MUST. `notes/synthesis-decisions.md` is unchanged |
 
 ## 6. Discussion
 
@@ -269,6 +270,7 @@ Where the base is weak. The founder walkthrough (E4, G9) is the real DV1 oracle;
 | Grade inflation found and corrected | Same source graded A and B in different notes; C-grade H3 promoted to an invariant without passing round 2; Cursor datum graded D then called "strongest" (`debate-1-skeptic.md` §1.1-1.2) | Lowest-grade rule; every blueprint rule carries hypothesis ID, grade, classes and invariant or model-limit kind |
 | Human-subject evidence in the wrong domain | TDD null results, context-rot and multi-turn studies, survey attrition and code-review research are about humans or chat, not agent tool loops | These findings set defaults and are re-tested in `packages/evals` per model release |
 | Cost figures are estimates | Only one measured harness run ($124.70) exists; per-step costs assume token shapes (`synthesis-decisions.md` §5) | No per-feature price is published before 20 golden tasks produce `agent_runs` medians |
+| Editor's choices where the rulings are silent | Per-item read-set caps (`22` §11 chosen, `24` §2 aligned: TaskBrief 4 KB, `git log` 1 KB, sum 20 KB); `walkthrough` item cadence per slice at C4 (`20` §1 step 10, `24` §11); DV3 measured at the skeleton's first E3 row (`24` §12, `23` §3 step 7); G5 audit at C1 MAY (§5 row 35) | Design constants; re-tune on DV3, DV4 and `agent_runs`, never on self-report |
 
 ## 8. Experiments North must run
 
@@ -361,3 +363,21 @@ Primary URLs cited in this file, deduplicated.
 - https://www.kernel.org/doc/html/latest/process/submitting-patches.html
 - https://www.veracode.com/resources/genai-code-security-report/; https://www.veracode.com/news/llms-are-getting-smarter-but-not-safer-veracode-2026-genai-code-security-report-finds-ai-generated-code-security-has-stalled-at-56%25-pass-rate/
 - Mellegård et al. 2018, IEEE Software, doi 10.1109/MS.2018.2880822 (not retrieved; listed as the experiment target)
+
+## Editor's log
+
+Final pass, 2026-10-17. One editor read `notes/synthesis-decisions.md`, `CLAUDE.md` and every top-level file, then made the corrections below. `notes/` and `01-research-protocol.md` are untouched.
+
+| File | Corrections |
+| --- | --- |
+| `00` | New file: README with abstract, Özet, usage steps, milestone split, headline numbers, file map, reading order, vocabulary pointer, decided vs to-be-measured, related documents, provenance, open questions |
+| `10` | Related line adds `23a`; status line and §2 name the 3 writers and the editor; §5 row 35 records the G5 audit ruling; §7 row records the editor's choices where the rulings are silent; this log |
+| `20` | Related adds `23a`; §0 states the inline bracket form `[LEVEL · Hn · grade · classes · kind]` and the `n/a` grade; headline rule "per §2 row 7" now points at `synthesis-decisions.md`; join table C1 gates: G5 deterministic MUST, `fast` audit MAY (to be measured); the "inconsistency inside the rulings" paragraph replaced by the editor's ruling; G0 row adds `docs/SPEC.md` rows (synthesis §6 amendment to rule 9); G5 classes cell; reading order adds `23a` and renumbers |
+| `21` | 13 tags converted from `LEVEL [...]` to `[LEVEL · ...]`; tag-convention pointer "synthesis §4" corrected to `20` §0; "Writers of `20` carry..." replaced by a pointer to `20` §6; column header "Level and tag" to "Tag" |
+| `22` | 11 tags converted; `[MUST · CLAUDE.md · all · invariant]` given the grade field `n/a`; convention pointer to `20` §0 |
+| `23` | 7 tags converted; 5 tags that folded grades into the hypothesis field split into five parts; A15 pointer "`24-` §widening" to `24-` §7; two "`26-` gap 23" pointers to `26-` §5; DV3 measurement moved from step 8 (walkthrough) to step 7 (first E3 row), matching `20` §1 step 6 and `24` §12 |
+| `23a` | Related adds `01` and `10` |
+| `24` | Purpose, Related and "Rulings carried" each on one line; Related adds `23a`; §0 lists all five kinds; 6 tags given a grade field or reordered to five parts; read-set caps aligned with `22` §11 (TaskBrief ≤4 KB, `git log` ≤1 KB); §4 backoff pointer §8 corrected to §9; 8 bare "§2 row n" pointers prefixed with `synthesis-decisions`; fleet table C1 audit column marked MAY; §11 walkthrough cadence at C4 "per feature" corrected to "per slice" |
+| `25` | Header as `24`; Related adds `23a`; G1 mock-policy pointer §6 to §5 and G5 gaming-scan pointer §7 to §6; G5 classes cell; cadence sentence says "every gate that applies at the class"; §6 transcript-audit paragraph and tag carry the C1 MAY / C2+ MUST ruling; 6 three-part tags in the structural-controls table expanded to five parts; 2 gap tags given `n/a`; `26-` §6 corrected to §5 (provider table) and `26-` §4 to §3 (tenancy probe); 5 bare "§2 row n" pointers prefixed |
+| `26` | Header as `24`; Related adds `23a`; Purpose says "the spec corrections" (the table has seven, not two); §2 gains the G5 audit scope paragraph; fleet-stop tag reordered to five parts |
+| all | Em-dash sweep: none found; every table row re-counted after the tag edits (pipe counts equal per table); no file over 400 lines |

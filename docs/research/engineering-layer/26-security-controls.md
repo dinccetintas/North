@@ -1,18 +1,14 @@
 # 26. Security controls
 
-Purpose: the threat model, the twenty MUST rules with the arbiter's amendments, the
-generated-app security table, kill switch and quota scope, provider sandbox ownership, the
-verified SDK option names, and the two spec corrections the build session must make.
+Purpose: the threat model, the twenty MUST rules with the arbiter's amendments, the generated-app security table, kill switch and quota scope, provider sandbox ownership, the verified SDK option names, and the spec corrections the build session must make.
 
-Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`,
-`20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`,
-`23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`,
-`25-verification-and-evidence.md`. Rulings carried: `notes/synthesis-decisions.md` §6;
-§2 rows 18, 22, 23, 24; gaps 16, 20, 23.
+Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `23a-repo-templates.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`.
+
+Rulings carried: `notes/synthesis-decisions.md` §6; §2 rows 18, 22, 23, 24; gaps 16, 20, 23.
 
 ## 0. Tag convention and stance
 
-Tags are `[LEVEL · hypothesis · lowest grade · classes · kind]` as in `24-*.md` §0. Every
+Tags are `[LEVEL · hypothesis · lowest grade · classes · kind]` as in `20-blueprint-overview.md` §0. Every
 rule here is `invariant` and applies to all classes unless stated. Stance (debate-3
 preamble): prompts never count as controls. METR's "don't cheat" prompts moved hacking from
 ~80% to 70–95% (RQ5 §KQ2, A, https://metr.org/blog/2025-06-05-recent-reward-hacking/).
@@ -159,6 +155,10 @@ Added rules from the amendments (synthesis-decisions §6):
 24. MUST keep per-company kill covering runs, task workspaces and preview deploys within 5 s,
     and a separate fleet-wide stop for model incidents (debate-3 §7; debate-4 §4.10). §4.
 
+Scope of the G5 transcript audit (editor's ruling, `20-blueprint-overview.md` §4): the
+deterministic G5 checks are MUST at every class; the `fast`-tier transcript audit is MUST at
+C2+ and MAY at C1, labelled to be measured. Like rule 14, the audit vetoes and never passes.
+
 Rejected: none. Downgraded: "sealed environment holds against retrieval" is kept as an A2/A3
 control, not as an anti-cheating result (synthesis-decisions §2 row 18). The shallow
 single-commit, credential-free, registry-only workspace costs ≈0 because the worker
@@ -222,7 +222,7 @@ items 1–3 are the additions that make 5 s real (debate-3 §7).
 A separate operator control, not the founder's kill switch: the gateway refuses every
 request, Inngest pauses every engineering function, and no new sandbox starts. Trigger:
 model incident or cost runaway. Owner: North operator. It never touches founder data and
-never applies card defaults. `[MUST · debate-4 §4.10 · invariant · fleet]`.
+never applies card defaults. `[MUST · debate-4 §4.10 · B · fleet · invariant]`.
 
 ### 4.3 Budget guards (rule 17)
 

@@ -2,7 +2,7 @@
 
 Purpose: the exact files the worker renders into every generated repository from `intake.json`, so that no model writes always-on prose (synthesis §2 row 12; `23-architecture-and-principles.md` §5).
 
-Related: `00-README.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
+Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `20-blueprint-overview.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
 
 Rendering rules: slots are `{{ ... }}` and come only from `intake.json` or the `BuildPlan` header; a slot with no value renders as the default shown; the static part above the `TENANT` marker is byte-identical across companies (prompt-cache prefix); the worker fails the render if the output exceeds 200 lines or 8 KB. Template versions are tagged `template_version` and recorded on the `BuildPlan`.
 

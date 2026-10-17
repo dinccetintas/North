@@ -1,7 +1,7 @@
 # Blueprint overview: the engineering loop on one page
 
 Purpose: the entry point for the build session; the loop, the complexity classes, the roles, the join table that says what applies at each class, and the reading order for `21`-`26`.
-Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
+Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md`, `21-intake-protocol.md`, `22-spec-and-plan-artifacts.md`, `23-architecture-and-principles.md`, `23a-repo-templates.md`, `24-team-topology-and-orchestration.md`, `25-verification-and-evidence.md`, `26-security-controls.md`.
 
 Status: final, 2026-10-17. Every rule below is carried from `notes/synthesis-decisions.md` (§3.1, §3.2, §5, §7 gap 5); where that file and a round-1 note disagree, this file follows the rulings. Vocabulary is canonical (`synthesis-decisions.md` §3); the retired aliases listed there do not appear in the blueprint.
 
@@ -17,7 +17,7 @@ Every rule in `21`-`26` carries five tags, in this order (`synthesis-decisions.m
 | Classes | C1-C4, or flag names | Where the rule applies. "all" means every class |
 | Kind | invariant, model-limit rule (dated), release-1 rule, design choice, process | Invariants are not re-tested. Model-limit rules carry a date and are re-run in `packages/evals` at every model release (`RQ4-agent-harness-orchestration.md` §Open 8) |
 
-Example: "Fresh session per feature; after a failed gate restart from artifacts with `FixBrief`" is MUST, H6, A premise, all classes, model-limit rule dated 2026-10 (`synthesis-decisions.md` §4.1).
+Example: "Fresh session per feature; after a failed gate restart from artifacts with `FixBrief`" is MUST, H6, A premise, all classes, model-limit rule dated 2026-10 (`synthesis-decisions.md` §4.1). Inline, `21`-`26` write the five tags as one bracket: `[LEVEL · Hn · grade · classes · kind]`, for example `[MUST · H6 · A premise · all · model-limit (2026-10)]`. A grade of `n/a` marks a rule carried from `CLAUDE.md` or a gap, not from evidence.
 
 The headline rules, tagged (`synthesis-decisions.md` §4.1):
 
@@ -30,7 +30,7 @@ The headline rules, tagged (`synthesis-decisions.md` §4.1):
 | Evaluator: fresh context, own config dir, read-only, no Agent or web tools, pinned alias and rubric, platform-fixed budget; deterministic criteria decide, model vetoes | MUST | H1 | A separation, B browser | all | invariant | 24, 25 |
 | Fresh session per feature; restart from artifacts with `FixBrief` after any failed gate; transcript resume only for crash or timeout | MUST | H6 | A premise | all | model-limit rule, 2026-10 | 24 |
 | Session-start read set ≤20 KB in fixed order | MUST | H6, H9' | B | all | invariant | 24 |
-| Wave size 1; read-only fan-out ≤3 Explore subagents; parallel writers only per §2 row 7 | MUST | H7 | B/C | all | release-1 rule | 24 |
+| Wave size 1; read-only fan-out ≤3 Explore subagents; parallel writers only per `synthesis-decisions.md` §2 row 7 | MUST | H7 | B/C | all | release-1 rule | 24 |
 | `BuildPlan` rows canonical in DB; `features.json` a worker projection; EARS statement; Gherkin `steps`; trace-check | MUST (gates C2+, reports C1) | H5 | B | all | invariant | 22 |
 | Intake: 5 multiple-choice questions, defaults pre-selected, zero cards, assumptions digest | MUST | H4, H12 | A/D | all | design choice, to be measured | 21 |
 | `CLAUDE.md` ≤200 lines / ≤8 KB from a template filled by `intake.json`; hooks for anything that must never happen | MUST | H9' | B | all | invariant | 23 |
@@ -154,7 +154,7 @@ One table from class to everything downstream (`synthesis-decisions.md` §5, §3
 | | C1 `landing` | C2 `app` | C3 `platform` | C4 `critical` |
 | --- | --- | --- | --- | --- |
 | Features / slices (typical, est.) | 6 / 1 | 30 / 6 | 50-80 / 8-12 | 80+ / 12+ |
-| Gates | G0, G1, G2, G5 (deterministic flags plus `fast` audit), G6, G7 once, G8, G9 per build | + G3, RLS probe, trace-check as gate, G7 per slice, G9 per milestone | + Reviewer, ADR, design doc, cross-tenant and cross-role probe, M-RT when flagged | + M-PAY / M-REG modules, G7 per feature, G4 nightly informational, Consultant on escalation |
+| Gates | G0, G1, G2, G5 deterministic checks (`fast` transcript audit MAY, to be measured), G6, G7 once, G8, G9 per build | + G3, RLS probe, trace-check as gate, G7 per slice, G9 per milestone | + Reviewer, ADR, design doc, cross-tenant and cross-role probe, M-RT when flagged | + M-PAY / M-REG modules, G7 per feature, G4 nightly informational, Consultant on escalation |
 | Roles | Builder + Evaluator + worker (plan from template) | + Planner (`standard`; `strong` on an M-PAY slice) | + Reviewer; Planner `strong`; Consultant on escalation level 2 (MAY) | + Consultant on escalation level 2; security checklist mandatory |
 | Evaluator tier | `standard`, one pass | `standard` per slice; `strong` after sustained founder disagreement | `standard` per slice | `standard` per feature |
 | Evaluation unit (E3) | the build (one slice) | slice | slice | feature |
@@ -175,7 +175,7 @@ Always-on artifacts at every class: `CLAUDE.md` (template), `docs/SPEC.md`, `doc
 
 Thresholds carried into the gates (`synthesis-decisions.md` §5; detail in `25`): assertion density ≥1 value assertion per test; edit/test cycles per file ≤8 before G5 flags; rate-limit probe 30 requests in 10 s expects 429; Lighthouse performance ≥70 and accessibility ≥90 at C1-C2, ≥80 and ≥95 at C3+; PR ≤400 changed lines (generated files and lockfiles excluded); axe `violations == []`. All tuned on DV5, never on self-report.
 
-One inconsistency inside the rulings, for the build session: `synthesis-decisions.md` §3.4 lists the G5 transcript audit as C2+, while §5 includes a `fast` audit at C1 at about $0.02 per run. This table follows §5; treat the C1 audit as MAY until `agent_runs` shows whether it ever vetoes at C1.
+Editor's ruling on the G5 transcript audit, because the rulings disagree (`synthesis-decisions.md` §3.4 says C2+; §5 lists a `fast` audit at C1 at about $0.02 per run): at C1 the G5 deterministic checks are MUST; the `fast`-tier transcript audit at C1 is MAY, labelled "to be measured"; at C2+ it is MUST. `24`, `25` and `26` say the same; `10-findings-and-verdicts.md` §5 row 35 records it.
 
 Monthly dev budget, tiered (est.): $49 in total; 80 change runs $22, 4 acceptance builds $19, nightly G8 $3, sandbox $5 (`debate-2-pragmatist.md` §1.4).
 
@@ -183,12 +183,12 @@ Gates at a glance (`synthesis-decisions.md` §3.4; detail and thresholds in `25`
 
 | Gate | Content | Runs | Decides | Classes |
 | --- | --- | --- | --- | --- |
-| G0 | protected-path diff on the pushed SHA: tests outside the feature, `e2e/acceptance/**`, CI, lockfile, `.github/**`, `.claude/**`, `features.json` planner fields | worker | deterministic; a hit fails the task | all |
+| G0 | protected-path diff on the pushed SHA: tests outside the feature, `e2e/acceptance/**`, CI, lockfile, `.github/**`, `.claude/**`, `features.json` planner fields, `docs/SPEC.md` rows | worker | deterministic; a hit fails the task | all |
 | G1 | typecheck, lint (`--max-warnings 0`), build, file ≤400 / function ≤50, boundary and dependency-direction lint, `vi.mock` allowlist, PR ≤400 changed lines | worker verifier sandbox | exit codes | all |
 | G2 | builder unit and property tests, `failOnFlakyTests` | worker | exit code | all |
 | G3 | integration tests on local Supabase and Inngest | worker | exit code | C2+ |
 | G4 | mutation score (StrykerJS incremental) | worker, nightly | informational only | C4 |
-| G5 | gaming scan: assertion-density lint, special-case grep, edit/test-cycle count from `audit_tool_calls`; transcript audit on `fast` | worker; model veto-only | deterministic flags fail; audit vetoes | all (audit: see note above) |
+| G5 | gaming scan: assertion-density lint, special-case grep, edit/test-cycle count from `audit_tool_calls`; transcript audit on `fast` | worker; model veto-only | deterministic flags fail; audit vetoes | all (deterministic checks); audit MUST at C2+, MAY at C1 (to be measured) |
 | G6 | preview deploy READY for `commit_sha` via provider API; smoke HTTP with body assertions; secret scan; client-bundle JWT scan; frozen-lockfile install; OSV scan; security headers; RLS probe when `auth` | worker | deterministic | all |
 | G7 | Evaluator runs the acceptance suite from Storage with a fresh recorded seed on the preview; axe `violations == []`; Lighthouse thresholds; DB probes; per-criterion hard thresholds; E3 rows | Evaluator + worker | deterministic per criterion; model may veto or rank only | all; unit per the join table |
 | G8 | nightly deterministic replay of all verified suites on staging, no model; companies with a commit or dependency bump in the last 7 days; full sweep weekly | worker | regression stops the line | all |
@@ -229,11 +229,12 @@ Read in this order. Each file answers one question and carries the rulings liste
 | 3 | `21-intake-protocol.md` | Which questions, in what order, when to stop, how to classify, what the C1 plan looks like, how cards carry defaults? | §2 rows 4, 16; §3.1; intake rule; gaps 7, 12, 14 |
 | 4 | `22-spec-and-plan-artifacts.md` | What are the artifacts, their Zod schemas, size bounds and owners; how do `BuildPlan`, `features.json`, `progress.md`, `TaskBrief`, `FixBrief`, `GateReport`, `TestReport`, `ReviewReport`, `Lesson` look? | §2 rows 17, 19, 21; §3.3; gaps 2, 3, 7, 8 |
 | 5 | `23-architecture-and-principles.md` | Which invariants bind agents and which bind the codebase, with the lint or probe for each; the decision matrix by class and module; the walking-skeleton procedure; infrastructure and `CLAUDE.md` templates? | §4.1 invariants; §2 rows 5, 6, 12; gaps 4, 11, 15, 19 |
-| 6 | `24-team-topology-and-orchestration.md` | Roles and permissions; session-start read set; fresh-context and restart rules; retry state machine; escalation ladder and the architectural line; widening procedure; fleet table; lesson scope; review-queue and card policy; metrics? | §2 rows 1, 2, 3, 7, 8, 20, 25, 26, 27; §3.5; gaps 1, 6, 9, 17, 18, 22 |
-| 7 | `25-verification-and-evidence.md` | Evidence ladder E0-E4 with schema; gates G0-G9 with class column; evaluation unit; acceptance-suite authorship, storage and regeneration; mock policy as lint; gaming scan; nightly G8 and bisection; walkthrough script; thresholds; `sync_observed`? | §2 rows 5, 6, 8, 13, 14, 15; §3.4; §3.5; gaps 10, 13, 16, 21 |
-| 8 | `26-security-controls.md` | Threat model; the twenty MUST rules with amendments; generated-app security table and class modules; kill switch and quota; provider sandbox ownership; spec corrections? | §6; §2 rows 18, 22, 23, 24; gaps 16, 20, 23 |
-| 9 | `10-findings-and-verdicts.md` | Why these rules; what the evidence supports and refutes; what North must measure? | §1, §2, deletions |
-| 10 | `01-research-protocol.md` and `notes/synthesis-decisions.md` | The question, variables and hypotheses; the rulings themselves | source of record |
+| 6 | `23a-repo-templates.md` | What exact files does the worker render into a founder repo (`CLAUDE.md`, rules, hooks, `init.sh`, lint, `SPEC.md` header)? | §2 row 12; gaps 15, 19 |
+| 7 | `24-team-topology-and-orchestration.md` | Roles and permissions; session-start read set; fresh-context and restart rules; retry state machine; escalation ladder and the architectural line; widening procedure; fleet table; lesson scope; review-queue and card policy; metrics? | §2 rows 1, 2, 3, 7, 8, 20, 25, 26, 27; §3.5; gaps 1, 6, 9, 17, 18, 22 |
+| 8 | `25-verification-and-evidence.md` | Evidence ladder E0-E4 with schema; gates G0-G9 with class column; evaluation unit; acceptance-suite authorship, storage and regeneration; mock policy as lint; gaming scan; nightly G8 and bisection; walkthrough script; thresholds; `sync_observed`? | §2 rows 5, 6, 8, 13, 14, 15; §3.4; §3.5; gaps 10, 13, 16, 21 |
+| 9 | `26-security-controls.md` | Threat model; the twenty MUST rules with amendments; generated-app security table and class modules; kill switch and quota; provider sandbox ownership; spec corrections? | §6; §2 rows 18, 22, 23, 24; gaps 16, 20, 23 |
+| 10 | `10-findings-and-verdicts.md` | Why these rules; what the evidence supports and refutes; what North must measure? | §1, §2, deletions |
+| 11 | `01-research-protocol.md` and `notes/synthesis-decisions.md` | The question, variables and hypotheses; the rulings themselves | source of record |
 
 Where a `2x` file is silent, prefer the lowest-cost deterministic option and label the rule "to be measured" (`synthesis-decisions.md` §8 closing line).
 

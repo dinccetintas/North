@@ -6,7 +6,7 @@ Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md
 
 Rulings carried: `notes/synthesis-decisions.md` §2 rows 5, 6, 12, 34; §3.1; §4.1 invariant rows; §7 gaps 4, 11, 15, 19. Templates are in `23a-repo-templates.md` (split rule, synthesis §8).
 
-Tag convention: `LEVEL [hypothesis · lowest grade · classes · kind]`, as in `21-intake-protocol.md`.
+Tag convention: `[LEVEL · hypothesis · lowest grade · classes · kind]`, as in `20-blueprint-overview.md` §0.
 
 ## 1. Two invariant tables
 
@@ -14,7 +14,7 @@ Debate-4 §1.2 found that RQ3 listed North's runtime rules (`gate()`, append-onl
 
 ### 1.1 Table A: agent-action invariants (North's agents, every class)
 
-MUST [CLAUDE.md, H2, H13 · A/B · all · invariant] for every row unless marked.
+[MUST · CLAUDE.md, H2, H13 · A/B · all · invariant] for every row unless marked.
 
 | # | Invariant | Check (deterministic) | Source |
 | --- | --- | --- | --- |
@@ -32,12 +32,12 @@ MUST [CLAUDE.md, H2, H13 · A/B · all · invariant] for every row unless marked
 | A12 | Session-start read set ≤20 KB in the fixed order of `22-` §11 | Dispatcher test over byte caps and order | H6, H9' |
 | A13 | Any role may `halt` through a North tool; the worker parks the build and opens a `breaker` item | Tool exists in every role's list; worker test | synthesis §2 row 31 |
 | A14 | `CLAUDE.md` and `.claude/rules/*.md` in founder repos are templates filled from `intake.json`; the planner never writes always-on prose | Diff of the committed file against the rendered template is empty | synthesis §2 row 12 (ETH, A, https://arxiv.org/abs/2602.11988) |
-| A15 | Wave size 1 at release 1; parallel writers only per `24-` §widening with declared `writes` | Dispatcher refuses two active builders per build unless `parallel: true` and `modules.json` exist | H7 (B/C) · release-1 rule |
+| A15 | Wave size 1 at release 1; parallel writers only per `24-` §7 with declared `writes` | Dispatcher refuses two active builders per build unless `parallel: true` and `modules.json` exist | H7 (B/C) · release-1 rule |
 | A16 | Metrics recorded from build one: `evaluator_fail_rate_on_builder_done`, `evaluator_vs_founder_disagreement`, G5 flag rate, breaker trips, cost per accepted feature by role | Columns on `agent_runs` and `evidence`; nightly report | synthesis §4.1 metrics row |
 
 ### 1.2 Table B: generated-codebase invariants (the founder's product)
 
-MUST [H8 half 1 (A), H11 (B) · all unless noted · invariant until H8' says otherwise]. Each row is a lint, probe or test the worker runs in G1 or G6 (`25-verification-and-evidence.md`). Ablation H8' drops any row whose removal moves nothing (synthesis §1).
+[MUST · H8 half 1, H11 · A, B · all unless noted · invariant until H8' says otherwise]. Each row is a lint, probe or test the worker runs in G1 or G6 (`25-verification-and-evidence.md`). Ablation H8' drops any row whose removal moves nothing (synthesis §1).
 
 | # | Invariant | Check | Classes | Lineage |
 | --- | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ MUST [H8 half 1 (A), H11 (B) · all unless noted · invariant until H8' says oth
 | I15 | No secrets in client bundle or repo | gitleaks on diff; client-chunk JWT scan fails on `service_role`; `.env*` untracked | all | debate-3 §6 |
 | S | The generated-app security table of `26-security-controls.md` (auth via `getUser()`, rate limit, headers, semgrep OWASP, frozen lockfile and OSV, no undeclared outbound host) | G6 checks, no founder switch | all | debate-3 §6 |
 
-SHOULD [Metz/Abramov (C); Anthropic advisory vs deterministic (B) · all · process]:
+[SHOULD · I9 Metz/Abramov, I13 Anthropic advisory vs deterministic · C, B · all · process]:
 
 | # | Rule | Check |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ RQ3 §KQ1 records the canon's authors disagreeing in writing on these points, an
 
 ## 2. Decision matrix by class and module
 
-SHOULD [RQ3 §KQ5 (C/B); H12 (B cost) · all · design choice (to be measured)]. The default stack is a design choice that intake never asks about: Next.js (TypeScript), Supabase (Auth, Postgres with RLS, Storage), Vercel previews, Fly for a second deployable, Stripe for money. Grade B (vendor documentation) and North's own ADRs 0003, 0006, 0007. Every cell is one line; the reason follows in parentheses with its grade.
+[SHOULD · RQ3 §KQ5, H12 cost · C/B · all · design choice (to be measured)]. The default stack is a design choice that intake never asks about: Next.js (TypeScript), Supabase (Auth, Postgres with RLS, Storage), Vercel previews, Fly for a second deployable, Stripe for money. Grade B (vendor documentation) and North's own ADRs 0003, 0006, 0007. Every cell is one line; the reason follows in parentheses with its grade.
 
 ### 2.1 By class
 
@@ -99,7 +99,7 @@ SHOULD [RQ3 §KQ5 (C/B); H12 (B cost) · all · design choice (to be measured)].
 | M-PAY (`payments`, C2+) | Stripe Checkout and webhooks behind an owned adapter (ADR 0005 pattern, B) | Money as integer minor units; idempotent webhook handler keyed by event id | `payments`, `stripe_events` append-only | Nightly Stripe test-mode contract test; webhook-signature test; lint: no card fields in any schema; planner `strong` for the slice (synthesis §3.1) | Stable webhook alias (§4); `live_key` card before any live key |
 | M-RT (`realtime`, C3) | Second deployable: socket or CRDT service behind a port; no further split (RQ3 matrix, C) | Pure, deterministic merge core (FP) | Event log for state | Two-browser evaluator; `sync_observed` evidence; deterministic merge simulation (`25-`) | Two deployables pinned to one `commit_sha` (§4) |
 | M-REG (`regulated`, C4) | Audit table and consent record as first-class modules | Explicit retention and consent states | Append-only audit table; consent rows; residency check | G9 mandatory per milestone; residency probe; E4 required | Region pinned at project creation |
-| M-INT (`integrations`) | One owned adapter per provider behind a port; fakes allowed only with a nightly contract test (synthesis §2 row 13) | Ports and adapters | Sync tables per provider with provenance | Contract test against the account named in `26-` gap 23; `vi.mock` allowlist | `connect_account` card; sandbox mode default |
+| M-INT (`integrations`) | One owned adapter per provider behind a port; fakes allowed only with a nightly contract test (synthesis §2 row 13) | Ports and adapters | Sync tables per provider with provenance | Contract test against the account named in `26-` §5; `vi.mock` allowlist | `connect_account` card; sandbox mode default |
 | M-AI (`ai_core`, C2+) | Model calls behind a port; model IDs in one file; prompts as data (RQ3 matrix, C) | Functional core, imperative shell; typed tool schemas | Fixed eval set stored with the plan | Prompt-injection cases in the acceptance suite; cost ceiling per run as a gate | None extra |
 | M-BATCH (`batch`, C2+) | Pure transforms plus an imperative shell on a job runner; idempotent steps (RQ3 matrix, C) | Schema per stage (Zod) | Golden files in repo | Golden-file tests; row-count and schema-drift gates | Job runner (pg_cron or Inngest) in the same deployable |
 
@@ -125,7 +125,7 @@ Precedence: class row first, then every module row adds. Nothing in a module row
 
 ## 3. Walking-skeleton procedure
 
-MUST [H3 (C), H2 mechanism (c) · all · invariant] (synthesis §4.1 row 4): pipeline first, deployed preview, first acceptance test before feature code, skeleton kept and replayed nightly. RQ3 §Synthesis (3) steps 1–12, amended by the rulings. Each step names who runs it and what ends it.
+[MUST · H3, H2 mechanism (c) · C · all · invariant] (synthesis §4.1 row 4): pipeline first, deployed preview, first acceptance test before feature code, skeleton kept and replayed nightly. RQ3 §Synthesis (3) steps 1–12, amended by the rulings. Each step names who runs it and what ends it.
 
 | # | Step | Runs | Ends when |
 | --- | --- | --- | --- |
@@ -135,8 +135,8 @@ MUST [H3 (C), H2 mechanism (c) · all · invariant] (synthesis §4.1 row 4): pip
 | 4 | First acceptance test. The evaluator authors the suite for the spine features from `steps` into Storage (I11). It runs red against the trivial page. At C1 the template smoke suite is used. | evaluator (C2+); template (C1) | Suite exists at `acceptance/.../<sha256(steps)>/`; TestReport `fail` recorded |
 | 5 | Guardrails before feature code. Install table B lints, `dependency-cruiser`, RLS probe (when `auth`), `.claude/rules/*.md`, hooks, protected-path list. | worker, from templates | G1 passes on the empty skeleton |
 | 6 | Thinnest code that makes the spine pass. Real adapters, real rows, real HTTP; Transaction Script allowed; no mocks at the edges. One feature per session. | builder | Spine features reach `built` with G0–G6 pass |
-| 7 | Evaluate the spine. G7 on the preview with a fresh seed; E2 and E3 rows per criterion. | evaluator and worker | `verified` on every spine feature |
-| 8 | Founder walkthrough of the skeleton. One `walkthrough` review item: generated script from `steps`, one tap per step, one screenshot, one sentence (G9). DV3 is measured here. | founder | pass, or fail which opens intake round 2 (`21-` §5) |
+| 7 | Evaluate the spine. G7 on the preview with a fresh seed; E2 and E3 rows per criterion. DV3 is measured here (`24-` §12). | evaluator and worker | `verified` on every spine feature |
+| 8 | Founder walkthrough of the skeleton. One `walkthrough` review item: generated script from `steps`, one tap per step, one screenshot, one sentence (G9). | founder | pass, or fail which opens intake round 2 (`21-` §5) |
 | 9 | Widen slice by slice. Each feature: fresh session, its own `writes`, ≤400 changed lines, evaluated per the class's evaluation unit. Wave size 1 at release 1; `24-` holds the widening procedure. | worker dispatch, builder, evaluator | All features in a slice `verified`; one `walkthrough` item per slice at C2+ |
 | 10 | Consolidate on the third occurrence. When three slices share a shape, the planner schedules one serial consolidation feature after the wave (I9), kept deep and behind the dependency lint. | planner, builder | G1–G7 green after the consolidation feature |
 | 11 | Keep the skeleton alive. The spine suite and every verified suite replay nightly without a model (G8); a regression stops the line and triggers deterministic bisection (`24-`). | worker | Nightly report green |
@@ -146,7 +146,7 @@ Step 4 and step 6 together resolve the TDD question (synthesis §2 row 5): the e
 
 ## 4. Infrastructure template per class and module
 
-MUST [debate-4 §1.3 · B · all · design choice] (gap 11). What deploys where, how a preview gets a stable public URL, and how two deployables are pinned to one `commit_sha` in evidence.
+[MUST · debate-4 §1.3 · B · all · design choice] (gap 11). What deploys where, how a preview gets a stable public URL, and how two deployables are pinned to one `commit_sha` in evidence.
 
 | Class or module | Deployables | Preview | Production | Data | Evidence pin |
 | --- | --- | --- | --- | --- | --- |
@@ -155,14 +155,14 @@ MUST [debate-4 §1.3 · B · all · design choice] (gap 11). What deploys where,
 | C4 | As C3 | As C3 | `go_live` card per milestone | Region pinned; audit and ledger tables append-only | As C3 plus E4 (founder or provider) per milestone |
 | M-PAY | No new deployable | Webhooks need a stable URL: a per-company alias `preview-<companyId>.<north-preview-domain>` that the worker repoints to the latest READY preview of the integration branch; the Stripe test-mode endpoint is registered once against the alias | Production webhook on the production domain | `stripe_events` keyed by event id | Webhook test evidence names the alias and `commit_sha` |
 | M-RT | Second deployable: a Fly app per company for the socket or CRDT service | One Fly release per `commit_sha` (image tag = `commit_sha`); the web preview points at it by env | Both promoted together | Event log table | E2 row carries `deploy_id` (Vercel) and `fly_release` (Fly) with the same `commit_sha`; G6 confirms both READY before G7 |
-| M-INT | No new deployable | Provider sandbox or test account per `26-` gap 23; `connect_account` card for the founder's own | Live keys only via `live_key` card | Sync tables | Contract-test evidence nightly |
+| M-INT | No new deployable | Provider sandbox or test account per `26-` §5; `connect_account` card for the founder's own | Live keys only via `live_key` card | Sync tables | Contract-test evidence nightly |
 | M-BATCH | No new deployable; job runner in the same project | Jobs run against preview data with `{seed}` prefix | As class | Golden files | Row-count evidence per run |
 
 Common rules: every preview run seeds fresh test data with the recorded seed and deletes nothing; one anonymous fetch without the bypass secret per G6 (debate-3 §4.2); `init.sh` boots the local stack in one command; secrets live in Vercel and Fly env, never in the repo (I15).
 
 ## 5. Always-on files for the founder repository
 
-MUST [H9' (B), ETH (A) · all · invariant] (synthesis §4.1 `CLAUDE.md` row; §2 row 12).
+[MUST · H9', ETH · B, A · all · invariant] (synthesis §4.1 `CLAUDE.md` row; §2 row 12).
 
 | Rule | Detail |
 | --- | --- |

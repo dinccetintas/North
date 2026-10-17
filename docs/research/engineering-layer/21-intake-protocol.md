@@ -6,7 +6,7 @@ Related: `00-README.md`, `01-research-protocol.md`, `10-findings-and-verdicts.md
 
 Rulings carried: `notes/synthesis-decisions.md` §2 rows 4, 16, 27, 33; §3.1; §3.6; §4.1 intake row; §7 gaps 7, 12, 14.
 
-Tag convention (synthesis §4): `LEVEL [hypothesis · lowest grade · classes · kind]`. Kinds: `invariant`, `model-limit (dated)`, `design choice (to be measured)`, `process`, `release-1 rule`.
+Tag convention (`20-blueprint-overview.md` §0): `[LEVEL · hypothesis · lowest grade · classes · kind]`. Kinds: `invariant`, `model-limit (dated)`, `design choice (to be measured)`, `process`, `release-1 rule`.
 
 ## 1. Where intake sits
 
@@ -20,7 +20,7 @@ Tag convention (synthesis §4): `LEVEL [hypothesis · lowest grade · classes ·
 | Review items consumed | One digest, which is free (synthesis §3.5). |
 | Founder minutes | Recorded as `intake_minutes` (DV4). Target under 5 minutes; to be measured by H4'. |
 
-MUST [H4 · A for "asking beats guessing", D for "bounded beats open" · all · design choice (to be measured)]: intake asks at most five multiple-choice questions, each with a pre-selected default, and consumes zero cards (synthesis §2 row 4; RQ1 §KQ2, https://raw.githubusercontent.com/github/spec-kit/main/templates/commands/clarify.md).
+[MUST · H4 · A for "asking beats guessing", D for "bounded beats open" · all · design choice (to be measured)]: intake asks at most five multiple-choice questions, each with a pre-selected default, and consumes zero cards (synthesis §2 row 4; RQ1 §KQ2, https://raw.githubusercontent.com/github/spec-kit/main/templates/commands/clarify.md).
 
 ## 2. Q0: the restatement (read, never asked)
 
@@ -69,7 +69,7 @@ Never asked, always defaulted (RQ1 §KQ5, https://raw.githubusercontent.com/gith
 
 ## 4. Selection rule
 
-MUST [H4 · A/D · all · design choice (to be measured)]: Q1, Q2 and Q3 are always shown. They confirm drafts, so they cost seconds. Two further slots go to Q4–Q9 by score. Q10 is drafted into the digest and never occupies a slot.
+[MUST · H4 · A/D · all · design choice (to be measured)]: Q1, Q2 and Q3 are always shown. They confirm drafts, so they cost seconds. Two further slots go to Q4–Q9 by score. Q10 is drafted into the digest and never occupies a slot.
 
 ```
 rank        = { C1: 1, C2: 2, C3: 3, C4: 4 }
@@ -96,11 +96,11 @@ The intake worker evaluates the rule after every answer, in this order. The firs
 
 Stop is not silence: the digest (§8) and the class sentence (§11) are always emitted.
 
-MUST [H4 · A/D · all · design choice]: round 2 exists only after a failed skeleton walkthrough (G9 `fail`). It asks at most three questions, chosen by the same score among the unasked Q4–Q9 plus the question mapped to the failed step's category (synthesis §3.6). No per-phase mini-intake (synthesis §4.2).
+[MUST · H4 · A/D · all · design choice]: round 2 exists only after a failed skeleton walkthrough (G9 `fail`). It asks at most three questions, chosen by the same score among the unasked Q4–Q9 plus the question mapped to the failed step's category (synthesis §3.6). No per-phase mini-intake (synthesis §4.2).
 
 ## 6. Zero intake cards
 
-MUST [H10 · B · all · invariant]: intake opens no decision card. Reasons: the quota (3/day) is shared with every department; the studio spec rules that drafts never consume quota (synthesis §2 row 16); a question with a safe default is an assumption, not a decision.
+[MUST · H10 · B · all · invariant]: intake opens no decision card. Reasons: the quota (3/day) is shared with every department; the studio spec rules that drafts never consume quota (synthesis §2 row 16); a question with a safe default is an assumption, not a decision.
 
 | Unresolved item at intake close | Becomes | Quota |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ MUST [H10 · B · all · invariant]: intake opens no decision card. Reasons: the
 
 ## 7. How the non-technical founder sees it
 
-MUST [H10 · C · all · design choice]: one question per screen; two to five options; the recommended option first and marked; each option carries one line of consequence in product words and, where known, a time or account cost ("adds a Stripe account and about two days"). Progress reads "2 of 5". "Build it" is visible from Q3. EARS, ADRs, class codes and gate names never appear (debate-2 §5).
+[MUST · H10 · C · all · design choice]: one question per screen; two to five options; the recommended option first and marked; each option carries one line of consequence in product words and, where known, a time or account cost ("adds a Stripe account and about two days"). Progress reads "2 of 5". "Build it" is visible from Q3. EARS, ADRs, class codes and gate names never appear (debate-2 §5).
 
 Rendering rules the intake worker enforces: option text ≤ 12 words; consequence ≤ 20 words; no stack nouns (framework, hosting, auth provider) in any option; the digest renders each assumption as "We assumed X. Change" with a one-tap flip.
 
@@ -200,7 +200,7 @@ export const IntakeRecord = z.object({
 
 ## 10. Complexity classifier
 
-MUST [H12 · B for the cost argument, D for effect · all · design choice (to be measured)]: `classify(answers, restatement)` is a pure function in `packages/core/src/engineering/classify.ts`, exported, Vitest-tested with the table below. No model is called.
+[MUST · H12 · B for the cost argument, D for effect · all · design choice (to be measured)]: `classify(answers, restatement)` is a pure function in `packages/core/src/engineering/classify.ts`, exported, Vitest-tested with the table below. No model is called.
 
 ```ts
 const MIN_CLASS: Record<Flag, ClassCode> = {
@@ -268,7 +268,7 @@ Flag consequences: `payments` "a Stripe account and test payments before any rea
 
 ## 12. C1 single-slice plan template
 
-MUST [H5 · B · C1 · design choice]: at C1 no planner runs. The template filler (worker, deterministic) emits `docs/SPEC.md` rows and a `BuildPlan` from `intake.json`. Schema in `22-spec-and-plan-artifacts.md` §3. Slots in braces come from `intake.json`.
+[MUST · H5 · B · C1 · design choice]: at C1 no planner runs. The template filler (worker, deterministic) emits `docs/SPEC.md` rows and a `BuildPlan` from `intake.json`. Schema in `22-spec-and-plan-artifacts.md` §3. Slots in braces come from `intake.json`.
 
 ```jsonc
 {
@@ -334,16 +334,16 @@ export const ForkCard = z.object({
 });
 ```
 
-| Rule | Level and tag |
+| Rule | Tag |
 | --- | --- |
-| Only `gate()` opens a `fork` card; the builder and critics have no `AskUserQuestion` (synthesis §2 row 33) | MUST [H10 · B · all · invariant] |
-| A fork cluster is one card: forks are clustered when their features share a `slice` or their `assumptions` intersect; the card carries a recommended set (debate-4 §7.7) | MUST [H10 · B · all · invariant] |
-| Every card carries `default` and `default_applies_at` (opened_at + 24 h); the worker applies the default at the deadline, writes the assumption flip, marks `blast_radius` suspect | MUST [H10 · B · all · invariant] |
-| A task that needs a second card in one day proceeds on the default at `default_applies_at`; it is parked only when `default == null` (synthesis §6 rule 19) | MUST [H10 · B · all · invariant] |
-| A card lists 2–3 options (CONTEXT.md `DecisionCard`); more options means the planner has not clustered | MUST [H10 · C · all · process] |
-| Appetite overrun is a `breaker` review item, never a card (synthesis §2 row 27) | MUST [H13 · A · all · invariant] |
+| Only `gate()` opens a `fork` card; the builder and critics have no `AskUserQuestion` (synthesis §2 row 33) | [MUST · H10 · B · all · invariant] |
+| A fork cluster is one card: forks are clustered when their features share a `slice` or their `assumptions` intersect; the card carries a recommended set (debate-4 §7.7) | [MUST · H10 · B · all · invariant] |
+| Every card carries `default` and `default_applies_at` (opened_at + 24 h); the worker applies the default at the deadline, writes the assumption flip, marks `blast_radius` suspect | [MUST · H10 · B · all · invariant] |
+| A task that needs a second card in one day proceeds on the default at `default_applies_at`; it is parked only when `default == null` (synthesis §6 rule 19) | [MUST · H10 · B · all · invariant] |
+| A card lists 2–3 options (CONTEXT.md `DecisionCard`); more options means the planner has not clustered | [MUST · H10 · C · all · process] |
+| Appetite overrun is a `breaker` review item, never a card (synthesis §2 row 27) | [MUST · H13 · A · all · invariant] |
 
-Expected card counts per build are in synthesis §5 (C1: 2; C2: ~4; C3: 6–8 bundled; C4: 8–12 bundled). Writers of `20-blueprint-overview.md` carry the founder-days consequence.
+Expected card counts per build are in synthesis §5 (C1: 2; C2: ~4; C3: 6–8 bundled; C4: 8–12 bundled). `20-blueprint-overview.md` §6 carries the founder-days consequence.
 
 ## 14. What intake records for the experiments
 
