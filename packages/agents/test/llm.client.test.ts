@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { AnthropicLlm, LlmError, MockLlm, parseStructured, selectLlm, type AnthropicClientOptions, type AnthropicMessagesApi } from "../src/llm/client";
+import { AnthropicLlm, LlmError, llmModeOf, MockLlm, parseStructured, selectLlm, type AnthropicClientOptions, type AnthropicMessagesApi } from "../src/llm/client";
 
 const Answer = z.object({ answer: z.number() });
 
@@ -83,6 +83,41 @@ describe("parseStructured and selectLlm", () => {
     expect(selectLlm({ AGENT_RUNTIME: "claude-agent-sdk" }).name).toBe("mock");
     expect(selectLlm({ ANTHROPIC_API_KEY: "sk-test" }).name).toBe("mock");
     expect(selectLlm({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "sk-test" }).name).toBe("anthropic");
+  });
+});
+
+describe("STG-1 / TST-5 llmModeOf, the one predicate behind selectLlm and the web health line", () => {
+  const SDK = "claude-agent-sdk";
+
+  it("is live only with the SDK runtime and a key together", () => {
+    expect(llmModeOf({ AGENT_RUNTIME: SDK, ANTHROPIC_API_KEY: "k" })).toBe("live");
+  });
+
+  it("is mock for an empty env, the SDK runtime without a key, and a key without the SDK runtime", () => {
+    expect(llmModeOf({})).toBe("mock");
+    expect(llmModeOf({ AGENT_RUNTIME: SDK })).toBe("mock");
+    expect(llmModeOf({ AGENT_RUNTIME: SDK, ANTHROPIC_API_KEY: "" })).toBe("mock");
+    expect(llmModeOf({ AGENT_RUNTIME: "mock", ANTHROPIC_API_KEY: "k" })).toBe("mock");
+    expect(llmModeOf({ AGENT_RUNTIME: "", ANTHROPIC_API_KEY: "k" })).toBe("mock");
+    expect(llmModeOf({ ANTHROPIC_API_KEY: "k" })).toBe("mock");
+  });
+
+  it("is mock for an unknown runtime spelling, such as the SDK name with a trailing space", () => {
+    expect(llmModeOf({ AGENT_RUNTIME: `${SDK} `, ANTHROPIC_API_KEY: "k" })).toBe("mock");
+  });
+
+  it("never throws, whatever NORTH_MODEL_PROFILE holds (that is selectLlm's concern, not the health line's)", () => {
+    expect(llmModeOf({ AGENT_RUNTIME: SDK, ANTHROPIC_API_KEY: "k", NORTH_MODEL_PROFILE: "cheap" })).toBe("live");
+    expect(llmModeOf({ NORTH_MODEL_PROFILE: "cheap" })).toBe("mock");
+  });
+
+  it("agrees with selectLlm on every combination, so the two cannot drift", () => {
+    for (const runtime of [undefined, "", "mock", SDK, `${SDK} `]) {
+      for (const key of [undefined, "", "k"]) {
+        const env = { AGENT_RUNTIME: runtime, ANTHROPIC_API_KEY: key };
+        expect(selectLlm(env).name).toBe(llmModeOf(env) === "live" ? "anthropic" : "mock");
+      }
+    }
   });
 });
 

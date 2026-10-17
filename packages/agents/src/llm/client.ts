@@ -180,15 +180,27 @@ function profileFrom(option: ModelProfile | undefined, raw: string | undefined):
 }
 
 /**
- * Mock unless `AGENT_RUNTIME=claude-agent-sdk` and an API key are both
- * present. The live client is built with `options.baseURL ??
+ * STG-1, TST-5: whether `env` would arm the live model, "live" only when
+ * `AGENT_RUNTIME` is exactly `claude-agent-sdk` and an API key is present,
+ * otherwise "mock". It reads the two settings and never returns, logs or
+ * carries the key, and it never throws (an unknown `NORTH_MODEL_PROFILE` is
+ * `selectLlm`'s concern). `selectLlm` decides with this same predicate, so the
+ * two cannot drift. The web health line reports it through this function, so
+ * the web app never names the key itself (the CI worker-only-secrets grep).
+ */
+export function llmModeOf(env: NodeJS.ProcessEnv = process.env): "mock" | "live" {
+  return env.AGENT_RUNTIME === "claude-agent-sdk" && Boolean(env.ANTHROPIC_API_KEY) ? "live" : "mock";
+}
+
+/**
+ * Mock unless `llmModeOf(env)` is "live" (`AGENT_RUNTIME=claude-agent-sdk` and
+ * an API key both present). The live client is built with `options.baseURL ??
  * env.ANTHROPIC_BASE_URL`, `options.apiKey ?? env.ANTHROPIC_API_KEY` and the
  * profile `options.profile ?? env.NORTH_MODEL_PROFILE` (default production; an
  * unknown name throws).
  */
 export function selectLlm(env: NodeJS.ProcessEnv = process.env, mockResponses?: Record<string, unknown>, options: SelectLlmOptions = {}): LlmClient {
-  const live = env.AGENT_RUNTIME === "claude-agent-sdk" && Boolean(env.ANTHROPIC_API_KEY);
-  if (!live) return MockLlm.fromRecord(mockResponses ?? {});
+  if (llmModeOf(env) !== "live") return MockLlm.fromRecord(mockResponses ?? {});
   const profile = profileFrom(options.profile, env.NORTH_MODEL_PROFILE);
   const client = clientOptionsOf({ baseURL: options.baseURL ?? env.ANTHROPIC_BASE_URL, apiKey: options.apiKey ?? env.ANTHROPIC_API_KEY });
   return new AnthropicLlm((options.createApi ?? anthropicMessagesApi)(client), { profile });
