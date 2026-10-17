@@ -37,11 +37,10 @@ jobs:
     steps:
       - name: Started from the default branch
         env:
-          REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
-            echo "::error::start the acceptance from the default branch ($DEFAULT_BRANCH), not from $REF_NAME: it deploys the branch to staging and its pull request goes to the default branch"
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::refused ref $GITHUB_REF: start the acceptance from the default branch (refs/heads/$DEFAULT_BRANCH); it deploys that branch to staging and its pull request goes to the default branch"
             exit 1
           fi
 
@@ -49,7 +48,12 @@ jobs:
     needs: branch
     runs-on: ubuntu-latest
     environment: acceptance
-    timeout-minutes: 120
+    # The job timeout must exceed every step timeout added up plus the untimed steps (checkout, setup, install, guard,
+    # upload, issue or pull request), so a hang is always a step failure and never a job cancellation: a cancelled job
+    # skips the `!cancelled()` steps and the failure issue. The timed steps sum to 155 minutes (migrate 10, vercel 15,
+    # fly deploy 20, health 5, check 10, journey 65, costs or evidence 10, reset 10, purge 10), leaving 25 for the
+    # untimed ones. Add a step timeout and this sum changes with it.
+    timeout-minutes: 180
     permissions:
       contents: write
       pull-requests: write

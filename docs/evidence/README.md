@@ -112,13 +112,17 @@ waiting run; a newer waiting run replaces an older waiting one, and a run in
 progress is never cancelled. An `acceptance` run that waits for the founder's
 approval holds the group, so approve or reject it promptly.
 
-**Branches.** A schedule runs the default branch. A manual dispatch of the
-nightly deploys the branch it was started on to staging. `acceptance` refuses
-to start from any other branch than the default one (a separate job fails
-before the founder is asked to approve). The "Run workflow" button exists only
-once the workflow file is on the default branch, so the first run by hand
-happens after the merge: Actions, `nightly-staging`, Run workflow, profile
-`smoke`.
+**Branches.** Staging only ever runs the default branch's migrations and code.
+A schedule runs the default branch. A manual dispatch must select the default
+branch under "Use workflow from"; the environments `staging` and `acceptance`
+restrict deployment branches to the default branch (a founder setting, below),
+so the environment refuses any other ref before a step runs. `acceptance` also
+has a job of its own that fails unless `$GITHUB_REF` is exactly
+`refs/heads/<default branch>` (a tag named like the branch does not pass) and
+prints the refused ref; it runs before the founder is asked to approve. The
+"Run workflow" button exists only once the workflow file is on the default
+branch, so the first run by hand happens after the merge: Actions,
+`nightly-staging`, Run workflow, profile `smoke`.
 
 ## Secrets and variables
 

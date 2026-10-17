@@ -1,13 +1,15 @@
 name: nightly-staging
 
-# TST-3 (M7 Task 21): the nightly real journey on staging. It deploys the checked-out branch to the staging web
+# TST-3 (M7 Task 21): the nightly real journey on staging. It deploys the default branch to the staging web
 # (Vercel `staging` environment), worker (Fly `north-worker-staging`) and database (Supabase `north-staging`): a
-# schedule always runs the default branch, a manual dispatch deploys the branch it was started on (so a dispatch
-# from another branch puts that branch's code on staging). It checks the deployment read-only, runs the live
-# founder journey (`pnpm e2e:staging`: real Claude on the `smoke` profile, a fresh `e2e-` user, a real magic link
-# through Resend), reads the cost per company and uploads the evidence. Red means a GitHub issue
-# `nightly staging failed <date>`. docs/evidence/README.md lists the secrets and variables;
-# docs/runbooks/staging.md is the manual form of every command here.
+# schedule runs the default branch, and a manual dispatch must select the default branch under "Use workflow from".
+# The environment `staging` restricts deployment branches to the default branch (a founder setting, see
+# docs/evidence/README.md), so any other ref is refused before a step runs: staging only ever runs the default
+# branch's migrations and code. It checks the deployment read-only, runs the live founder journey
+# (`pnpm e2e:staging`: real Claude on the `smoke` profile, a fresh `e2e-` user, a real magic link through Resend),
+# reads the cost per company and uploads the evidence. Red means a GitHub issue `nightly staging failed <date>`.
+# docs/evidence/README.md lists the secrets and variables; docs/runbooks/staging.md is the manual form of every
+# command here.
 #
 # Founder-gated: nothing here has run. It needs the GitHub environment `staging` (secrets and variables below) and
 # the staging accounts of docs/runbooks/staging.md. Until `vars.STAGING_WEB_URL` is set the first step prints a
@@ -35,7 +37,12 @@ jobs:
   journey:
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 120
+    # The job timeout must exceed every step timeout added up plus the untimed steps (checkout, setup, install, guard,
+    # upload, issue or pull request), so a hang is always a step failure and never a job cancellation: a cancelled job
+    # skips the `!cancelled()` steps and the failure issue. The timed steps sum to 155 minutes (migrate 10, vercel 15,
+    # fly deploy 20, health 5, check 10, journey 65, costs or evidence 10, reset 10, purge 10), leaving 25 for the
+    # untimed ones. Add a step timeout and this sum changes with it.
+    timeout-minutes: 180
     permissions:
       contents: read
       issues: write
@@ -48,8 +55,8 @@ jobs:
         # bash with `-e -o pipefail`.
         shell: bash
     steps:
-      # A schedule runs the default branch; a manual dispatch runs the branch it was started on. No git credential is
-      # kept in .git/config: nothing here pushes.
+      # The default branch: a schedule runs it, and the environment's deployment-branch rule refuses a dispatch from any
+      # other ref before this step. No git credential is kept in .git/config: nothing here pushes.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
