@@ -59,6 +59,7 @@ fly secrets set SUPABASE_URL=<url> SUPABASE_SERVICE_ROLE_KEY=<service role key> 
   INNGEST_EVENT_KEY=<event key> INNGEST_SIGNING_KEY=<signing key> \
   NEXT_PUBLIC_APP_URL=https://<web>
 fly deploy --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
+fly ssh console --config apps/worker/fly.toml -C "sh -c 'mkdir -p /data/workspaces /data/sandbox /data/agent-config && chown -R node:node /data'"   # added by M7: once, before the first agent run (the volume hides the image's /data)
 curl -fsS https://<worker>.fly.dev/health
 ```
 
@@ -276,7 +277,7 @@ separately: `stripe:setup` against the live account with `--live`, then
 
 ## 14. Incident first steps
 
-1. `pnpm production:check -- … --json > docs/evidence/incident-<date>.json`.
+1. `pnpm -s production:check -- … --json > docs/evidence/incident-<date>.json` (`-s`: no pnpm banner in the JSON).
 2. Stop spend and agents for one company with its kill switch (5 s SLA); for
    everything: `fly secrets set AGENT_RUNTIME=mock` (and
    `INTEGRATIONS_MODE=sandbox` if external effects are the problem).

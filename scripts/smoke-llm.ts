@@ -72,6 +72,7 @@ import {
   type TaskRecord,
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
+import { purgeSmokeUser } from "./lib/purge-smoke-user";
 import { checkHealth, spentUsdOf } from "./smoke-llm-health";
 import { attempt, buildReport, databaseRefusal, evidencePathFor, formatTable, messageOf, okLine, pickPreview, planFor, summariseRuns, type SmokeGateway, type SmokePlan, type SmokeRuntime, type SmokeSummary } from "./smoke-llm-helpers";
 import { gatewayDeltaUsd, smokeProblems, type SmokeFacts } from "./smoke-llm-verdict";
@@ -269,8 +270,7 @@ async function run(plan: SmokePlan, gate: Gate): Promise<number> {
     console.error(`\nsmoke LLM: FAIL\n- ${problems.join("\n- ")}\n${await stopCompany(ctx)}`);
     return 1;
   }
-  const deleted = await db.auth.admin.deleteUser(ownerId);
-  if (deleted.error) console.warn(`could not delete the smoke user ${ownerId} (${deleted.error.message}); its company stays in the database`);
+  await purgeSmokeUser(db, ownerId);
   console.log(okLine({ runtime: gate.runtime, ledgerUsd: facts.summary.totalCostUsd, gatewayUsd }));
   return 0;
 }

@@ -34,6 +34,7 @@
     "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "production:check": "tsx scripts/production-check.ts",
     "staging:check": "tsx scripts/production-check.ts -- --env staging",
+    "staging:purge-e2e": "tsx scripts/staging-purge-e2e.ts",
     "stripe:setup": "tsx scripts/stripe-setup.ts",
     "lighthouse:pwa": "bash scripts/lighthouse-pwa.sh",
     "purge:due": "tsx scripts/purge-due.ts",

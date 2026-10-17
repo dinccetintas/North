@@ -18,13 +18,14 @@
  *   every user's usage ratio for the month (only with a key that may read `usage`)
  *
  * Usage:
- *   [STRIPE_READ_KEY=<restricted read-only key>] [NORTH_USAGE_READ_KEY=<key>] \
+ *   [STRIPE_READ_KEY=<restricted read-only key>] [NORTH_USAGE_READ_KEY=<key>] [VERCEL_AUTOMATION_BYPASS_SECRET=<secret>] \
  *   pnpm production:check -- --web https://<web> --worker https://<worker> \
  *     --supabase https://<ref>.supabase.co --anon-key <anon key> [--env production|staging] [--json] [--allow-dev-inngest]
  * `pnpm staging:check` is the same command with `--env staging`; every check but the worker's
  * health rules runs unchanged in both. Env fallbacks for the flags: NORTH_WEB_URL, NORTH_WORKER_URL,
  * NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, NORTH_CHECK_ENV. The two
- * secret keys are read from the environment only, never from a flag, so they
+ * secret keys and the Vercel bypass secret (a web behind Deployment Protection, STG-1; sent
+ * to the web's origin only) are read from the environment only, never from a flag, so they
  * stay out of shell history and `ps` (M6 review L11).
  * Exit 1 when any check fails; `skip` and `warn` do not fail.
  */
@@ -53,6 +54,8 @@ export interface CheckConfig {
   readonly anonKey: string;
   readonly stripeKey: string | null;
   readonly usageKey: string | null;
+  /** STG-1: the Vercel automation bypass secret for a web behind Deployment Protection (the staging environment); sent to the web's origin only. */
+  readonly webBypassSecret?: string | null;
   /** Local runs only: accept an Inngest serve endpoint in dev mode. */
   readonly allowDevInngest: boolean;
   readonly now: Date;
@@ -234,8 +237,27 @@ export async function usageRatios(c: CheckConfig, f: FetchLike): Promise<CheckRe
   return result("usage-ratios", over.length > 0 ? "warn" : "pass", `${period}: ${list}`);
 }
 
+/**
+ * STG-1: Vercel answers 401 to a protected deployment (the staging custom
+ * environment) unless the request carries the automation bypass secret. With
+ * a secret, every request to the web's own origin gets
+ * `x-vercel-protection-bypass`; a request to any other origin (the worker,
+ * Supabase, Stripe, a look-alike host) never does.
+ */
+export function withWebBypass(f: FetchLike, webUrl: string, secret: string | null): FetchLike {
+  if (!secret) return f;
+  const origin = new URL(webUrl).origin;
+  return (input, init = {}) => {
+    if (new URL(input).origin !== origin) return f(input, init);
+    const headers = new Headers(init.headers);
+    headers.set("x-vercel-protection-bypass", secret);
+    return f(input, { ...init, headers });
+  };
+}
+
 /** Every check in order; a check that throws (a network error, a timeout) is a failure with its message. */
-export async function runChecks(c: CheckConfig, f: FetchLike = (input, init) => fetch(input, init)): Promise<readonly CheckResult[]> {
+export async function runChecks(c: CheckConfig, fetchImpl: FetchLike = (input, init) => fetch(input, init)): Promise<readonly CheckResult[]> {
+  const f = withWebBypass(fetchImpl, c.webUrl, c.webBypassSecret ?? null);
   const checks: readonly [string, () => Promise<CheckResult>][] = [
     ["web-health", () => webHealth(c, f)],
     ["worker-health", () => workerHealth(c, f)],
@@ -263,7 +285,7 @@ const trimUrl = (value: string | undefined, name: string): string => {
 };
 
 /** The secret keys and the only place each is read from (M6 review L11: a flag would put it in shell history and `ps`). */
-const KEY_FLAGS: Readonly<Record<string, string>> = Object.freeze({ "--usage-key": "NORTH_USAGE_READ_KEY", "--stripe-key": "STRIPE_READ_KEY" });
+const KEY_FLAGS: Readonly<Record<string, string>> = Object.freeze({ "--usage-key": "NORTH_USAGE_READ_KEY", "--stripe-key": "STRIPE_READ_KEY", "--bypass-secret": "VERCEL_AUTOMATION_BYPASS_SECRET" });
 
 /** Refuses a key passed as a flag, naming the flag and its variable, never the value. */
 function refuseKeyFlags(argv: readonly string[]): void {
@@ -303,6 +325,7 @@ export function configFrom(argv: readonly string[], env: NodeJS.ProcessEnv, now 
     anonKey,
     stripeKey: (env.STRIPE_READ_KEY ?? "").trim() || null,
     usageKey: (env.NORTH_USAGE_READ_KEY ?? "").trim() || null,
+    webBypassSecret: (env.VERCEL_AUTOMATION_BYPASS_SECRET ?? "").trim() || null,
     allowDevInngest: values["allow-dev-inngest"] === true,
     json: values.json === true,
     now,

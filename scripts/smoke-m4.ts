@@ -40,6 +40,7 @@ import {
   type Database,
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
+import { purgeSmokeUser } from "./lib/purge-smoke-user";
 
 const INNGEST_BASE_URL = process.env.INNGEST_BASE_URL ?? "http://localhost:8288";
 const WORKER_URL = process.env.WORKER_URL ?? "http://localhost:3101";
@@ -287,7 +288,7 @@ async function main() {
   console.log(
     `smoke M4 OK: campaign ${ctx.campaign.providerCampaignId} active→paused_cap→active→paused_cap→paused_kill→active, ${csv.entries} ledger entries (meta_ads + cold_email), cap cards 2 (approve, decline), batch of 5 sent with 2 replies, kill switch ${killLatency} ms, cards today ${await cardsOpenedToday(db, ctx.companyId, today())}, actions ${final.actions}, csv ${csv.rows} rows`,
   );
-  await db.auth.admin.deleteUser(ctx.ownerId);
+  await purgeSmokeUser(db, ctx.ownerId);
 }
 
 main().catch((error) => {

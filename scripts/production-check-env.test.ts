@@ -1,6 +1,6 @@
 /** STG-1, TST-5: the production check's env-dependent worker and web health rules, end to end against a fake fetch (moved out of `production-check.test.ts`); no network. */
 import { describe, expect, it } from "vitest";
-import { configFrom, report, runChecks, type CheckConfig, type CheckResult } from "./production-check";
+import { configFrom, report, runChecks, withWebBypass, type CheckConfig, type CheckResult } from "./production-check";
 import { ANON, check, config, fake, green, healthyWorker, introspection, NOW, stagingWorker, SUPABASE, WEB, WORKER } from "./production-check-fixtures";
 
 const workerRoute = `GET ${WORKER}/health`;
@@ -120,5 +120,36 @@ describe("TST-5 production check", () => {
     expect(() => configFrom([], { ...urlEnv, NORTH_CHECK_ENV: "nonsense" }, NOW)).toThrow(/NORTH_CHECK_ENV.*nonsense.*production.*staging/s);
     expect(() => configFrom(["--env"], urlEnv, NOW)).toThrow();
     expect(() => configFrom(["--env", "staging", "--env", "production"], urlEnv, NOW)).toThrow(/--env.*once/);
+  });
+});
+
+describe("STG-1 Vercel Deployment Protection (the staging web)", () => {
+  const SECRET = "fake-bypass-secret-0123456789";
+  const onWeb = (url: string): boolean => url.startsWith(`${WEB}/`);
+
+  it("with the bypass secret every request to the web's origin carries x-vercel-protection-bypass, no other request does, and the report never prints it", async () => {
+    const deployment = fake(green());
+    const results = await runChecks(config({ webBypassSecret: SECRET }), deployment.fetch);
+    expect(results.filter((r) => r.status !== "pass")).toEqual([]);
+    expect(deployment.calls.filter((c) => onWeb(c.url)).map((c) => c.headers["x-vercel-protection-bypass"])).toEqual([SECRET, SECRET, SECRET, SECRET]);
+    for (const c of deployment.calls.filter((c) => !onWeb(c.url))) expect(JSON.stringify(c.headers)).not.toContain(SECRET);
+    for (const json of [false, true]) expect(report(config({ webBypassSecret: SECRET }), results, json)).not.toContain(SECRET);
+  });
+
+  it("another scheme, port or a look-alike host is another origin and never gets the header; without the secret no request carries it", async () => {
+    const probe = fake({});
+    const bypassing = withWebBypass(probe.fetch, WEB, SECRET);
+    for (const url of ["https://north.example.evil.test/api/health", "https://evil.test/https://north.example/", "http://north.example/api/health", "https://north.example:8443/api/health", `${WEB}/api/health`]) await bypassing(url, {});
+    expect(probe.calls.map((c) => c.headers["x-vercel-protection-bypass"] ?? null)).toEqual([null, null, null, null, SECRET]);
+    const plain = fake(green());
+    await runChecks(config(), plain.fetch);
+    expect(plain.calls.filter((c) => "x-vercel-protection-bypass" in c.headers)).toEqual([]);
+  });
+
+  it("the secret comes from VERCEL_AUTOMATION_BYPASS_SECRET only (trimmed, blank = unset); a flag is refused, naming the variable", () => {
+    expect(configFrom([], { ...urlEnv, VERCEL_AUTOMATION_BYPASS_SECRET: ` ${SECRET} ` }, NOW).webBypassSecret).toBe(SECRET);
+    expect(configFrom([], { ...urlEnv, VERCEL_AUTOMATION_BYPASS_SECRET: "  " }, NOW).webBypassSecret).toBeNull();
+    expect(configFrom([], urlEnv, NOW).webBypassSecret).toBeNull();
+    expect(() => configFrom([`--bypass-secret=${SECRET}`], urlEnv, NOW)).toThrow(/VERCEL_AUTOMATION_BYPASS_SECRET/);
   });
 });

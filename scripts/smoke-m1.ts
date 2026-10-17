@@ -21,6 +21,7 @@ import {
   type Database,
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
+import { purgeSmokeUser } from "./lib/purge-smoke-user";
 
 const INNGEST_BASE_URL = process.env.INNGEST_BASE_URL ?? "http://localhost:8288";
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 240_000);
@@ -94,7 +95,7 @@ async function main() {
   console.log(
     `smoke M1 OK in ${Math.round((Date.now() - started) / 1000)}s: ${onboarding.length} onboarding tasks done, ${artifacts.length} artifacts, plan "${plan.summary.slice(0, 60)}…" with ${plan.tasks.length} tasks, ${ledger.length} ledger entries, ${runs.data?.length} agent runs`,
   );
-  await db.auth.admin.deleteUser(ownerId);
+  await purgeSmokeUser(db, ownerId);
 }
 
 main().catch((error) => {

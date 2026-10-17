@@ -1,0 +1,91 @@
+# Fly.io app definition for the North STAGING worker (STG-1, ADR 0015). Same image as production
+# (apps/worker/fly.toml), different app, smaller bill: the machine stops when idle. Deploy from the repo root:
+#   fly launch --no-deploy --copy-config --config apps/worker/fly.staging.toml   (first time)
+#   fly volumes create north_staging_data --config apps/worker/fly.staging.toml --region ams --size 3
+#   fly deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile
+# docs/runbooks/staging.md walks through every step; `pnpm staging:check` verifies the result read-only.
+#
+# Staging runs real Claude (the `north-test` Anthropic workspace, $50 limit) and live adapters, but only
+# against the founder's test accounts: NORTH_TEST_FENCE=1 makes the gate refuse every outside target that is
+# not on the NORTH_FENCE_* lists (TST-5). The worker's env schema refuses the fence, the cassette recorder and
+# a cheaper model profile under NODE_ENV=production unless NORTH_ENV=staging, and the staging check asserts
+# fence on and env staging.
+#
+# Secrets (`fly secrets set NAME=<value> … --config apps/worker/fly.staging.toml`; never in this file, never
+# in the web app; the staging project's own values, never production's):
+#   required        SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY  INNGEST_EVENT_KEY  INNGEST_SIGNING_KEY   (north-staging, Inngest env `staging`)
+#                   NEXT_PUBLIC_APP_URL (the Vercel staging domain: links in cards, briefs and checkout returns)
+#   billing         STRIPE_SECRET_KEY  STRIPE_WEBHOOK_SECRET   (sandbox keys only: sk_test_…; both or neither)
+#   agents          ANTHROPIC_API_KEY                          (the `north-test` workspace key; read by the model gateway alone)
+#   compliance      NORTH_WORKER_PUBLIC_URL (https://north-worker-staging.fly.dev; required: INTEGRATIONS_MODE=live)
+#                   UNSUBSCRIBE_SECRET (16+ characters, never `sandbox-unsubscribe-secret`)
+#   connections     CONNECTIONS_ENCRYPTION_KEY                 (required: INTEGRATIONS_MODE=live; a staging key, not production's)
+#                   GITHUB_CLIENT_ID  GITHUB_CLIENT_SECRET     (the staging OAuth app of the GitHub test org)
+#                   VERCEL_CLIENT_ID  VERCEL_CLIENT_SECRET  META_APP_ID  META_APP_SECRET
+#                   GOOGLE_CLIENT_ID  GOOGLE_CLIENT_SECRET     (the OAuth client in Testing: consent lapses every 7 days)
+#                   STRIPE_CONNECT_CLIENT_ID  STRIPE_CONNECT_CLIENT_SECRET
+#   fence           NORTH_FENCE_META_AD_ACCOUNTS (the Meta sandbox ad account id)  NORTH_FENCE_GITHUB_OWNERS (the test org)
+#                   NORTH_FENCE_RECIPIENT_DOMAINS (staging.<domain>, the test inboxes)  NORTH_FENCE_VERCEL_PREFIX (default e2e-)
+#   delivery        RESEND_API_KEY  RESEND_FROM  VAPID_PUBLIC_KEY  VAPID_PRIVATE_KEY  VAPID_SUBJECT
+#   observability   SENTRY_DSN  SENTRY_CLIENT_SECRET  LANGFUSE_PUBLIC_KEY  LANGFUSE_SECRET_KEY  LANGFUSE_HOST   (Langfuse `north-staging`)
+#   retention       RETENTION_PURGE_ENABLED   (leave unset; `pnpm staging:purge-e2e` removes the e2e users)
+#
+# Unlike production, staging is born live with the SDK runtime (the [env] block below): it exists to run the
+# real thing against test accounts. The nightly and acceptance workflows change NORTH_MODEL_PROFILE and
+# NORTH_DAILY_CAP_USD with `fly secrets set` for one run and reset them to smoke / 1 afterwards (a secret
+# overrides [env]). On 0.0.0.0 the loopback-only sandbox routes are never mounted.
+#
+# A volume mounted at /data hides the image's /data directories: before the first agent run, once,
+#   fly ssh console --config apps/worker/fly.staging.toml -C "sh -c 'mkdir -p /data/workspaces /data/sandbox /data/agent-config && chown -R node:node /data'"
+app = "north-worker-staging"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  WORKER_HOST = "0.0.0.0"
+  WORKER_PORT = "3101"
+  WORKSPACE_ROOT = "/data/workspaces"
+  SANDBOX_ROOT = "/data/sandbox"
+  AGENT_CONFIG_ROOT = "/data/agent-config"
+  # STG-1: this deployment is staging; only staging may run the fence, cassettes or a cheaper profile under NODE_ENV=production.
+  NORTH_ENV = "staging"
+  # TST-5: default deny for every outside target not on the NORTH_FENCE_* lists (secrets above).
+  NORTH_TEST_FENCE = "1"
+  # TST-1: the Haiku-tier profile and a $1 gateway cap per UTC day; workflows raise both for one run and reset them.
+  NORTH_MODEL_PROFILE = "smoke"
+  NORTH_DAILY_CAP_USD = "1"
+  AGENT_RUNTIME = "claude-agent-sdk"
+  INTEGRATIONS_MODE = "live"
+  # TST-2: forward to the model API and store nothing; the nightly records cassettes in CI, not here.
+  NORTH_CASSETTE_MODE = "off"
+  # CMP-1: every request reaches the machine through Fly's proxy, which sets Fly-Client-IP; the /u/{token} rate limit counts that client.
+  NORTH_TRUST_PROXY = "1"
+
+[http_service]
+  internal_port = 3101
+  force_https = true
+  # Idle staging costs nothing: Fly stops the machine and starts it on the next request (the first one waits for the boot).
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.checks]
+    [http_service.checks.health]
+      grace_period = "20s"
+      interval = "30s"
+      method = "GET"
+      path = "/health"
+      timeout = "5s"
+
+[[mounts]]
+  source = "north_staging_data"
+  destination = "/data"
+  initial_size = "3gb"
+
+# The SDK runtime's agent subprocesses and their workspaces need the larger machine (production switches to it at the flip).
+[[vm]]
+  size = "performance-2x"
+  memory = "4gb"

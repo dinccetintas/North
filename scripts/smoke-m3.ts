@@ -28,6 +28,7 @@ import {
   type Database,
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
+import { purgeSmokeUser } from "./lib/purge-smoke-user";
 
 const INNGEST_BASE_URL = process.env.INNGEST_BASE_URL ?? "http://localhost:8288";
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000);
@@ -135,7 +136,7 @@ async function main() {
   console.log(
     `smoke M3 OK: repo ${beforeApprove.find((a) => a.kind === "repo.create")?.externalRef}, preview ${preview.externalRef} (200), live ${live.evidence.ref} (200), decline kept preview, fail-once recovered on attempt 2, fail-always escalated with a learning, screen designs delivered, unverified done refused`,
   );
-  await db.auth.admin.deleteUser(ownerId);
+  await purgeSmokeUser(db, ownerId);
 }
 
 main().catch((error) => {

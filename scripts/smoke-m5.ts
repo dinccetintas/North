@@ -14,6 +14,7 @@
 import { createCompany, createGoal, setKillSwitch, setOnboardingStep, setSenderIdentity, updateProfile, upsertBudgets, upsertPushSubscription } from "@north/db";
 import { day1, day2, day3, day4, day5, day6, day7 } from "./smoke-m5/days";
 import { day8, wholeRun } from "./smoke-m5/days-late";
+import { purgeSmokeUser } from "./lib/purge-smoke-user";
 import { assert, avoidScanCron, counts, db, QUOTA, resetClock, TIMEZONE, type Ctx } from "./smoke-m5/harness";
 
 const THESIS = "Bookkeeping for solo consultants that closes the month in one click.";
@@ -38,6 +39,7 @@ async function createOwner(): Promise<Ctx> {
 async function main(): Promise<void> {
   await avoidScanCron();
   const ctx0 = await createOwner();
+  let passed = false;
   try {
     const d1 = await day1(ctx0);
     const c2 = await day2(d1.ctx, d1);
@@ -48,11 +50,13 @@ async function main(): Promise<void> {
     const c7 = await day7(c6);
     const d8 = await day8(c7, d1.plan1);
     console.log(await wholeRun(d8.ctx, d3, d8));
+    passed = true;
   } finally {
-    // The rows stay (the owner cannot be deleted: the cascade into `actions` is refused by the append-only trigger);
-    // the kill switch keeps the crons off this company, and the worker goes back on the wall clock.
+    // The kill switch keeps the crons off this company and the worker goes back on the wall clock. A failed run's rows
+    // stay for inspection; a passed run's owner is purged (ADR 0016: `auth.admin.deleteUser` is refused by the append-only tables).
     await setKillSwitch(db, ctx0.companyId, true).catch(() => undefined);
     await resetClock();
+    if (passed) await purgeSmokeUser(db, ctx0.ownerId);
   }
 }
 
