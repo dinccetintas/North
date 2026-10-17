@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import { costAtHighestRate, costOfUsage } from "@north/core";
 import { z } from "zod";
 import { createCapture } from "./capture";
-import { cassetteKey, holdsAnthropicKey, readCassette, writeCassette, type CassetteResponse } from "./cassette";
+import { cassetteKey, holdsAnthropicKey, keyPathOf, MESSAGES_PATH, readCassette, writeCassette, type CassetteResponse } from "./cassette";
 import { betaHeaderOf, forwardedRequestHeaders, hasLoopbackHost, hasPlaceholderKey, isEncoded, isEventStream, replyHeaders, upstreamHeaders } from "./headers";
 import { resolveOptions, type GatewayOptions, type ResolvedOptions } from "./options";
 import { createSseUsage, type SseUsage } from "./sse";
@@ -46,7 +46,7 @@ type Route = "messages" | "count_tokens";
 
 /** The only paths proxied, by route. The upstream path comes from here, never from the request. */
 const ROUTE_PATHS: Readonly<Record<string, Route>> = Object.freeze({ "/v1/messages": "messages", "/v1/messages/count_tokens": "count_tokens" });
-const UPSTREAM_PATHS: Readonly<Record<Route, string>> = Object.freeze({ messages: "/v1/messages", count_tokens: "/v1/messages/count_tokens" });
+const UPSTREAM_PATHS: Readonly<Record<Route, string>> = Object.freeze({ messages: MESSAGES_PATH, count_tokens: "/v1/messages/count_tokens" });
 
 /** A request body that is a JSON object; anything else is not a Messages request. */
 const BodySchema = z.record(z.string(), z.unknown());
@@ -185,7 +185,7 @@ async function conclude(ctx: Context, ex: Exchange, req: IncomingMessage, status
   }
   try {
     const stored = { status, headers: replyHeaders(headers), body: captured };
-    await writeCassette(ctx.opts.cassetteDir, ex.key, stored, { method: "POST", path: req.url ?? "", headers: forwardedRequestHeaders(req.headers), body: ex.body });
+    await writeCassette(ctx.opts.cassetteDir, ex.key, stored, { method: "POST", path: keyPathOf(req.url ?? ""), headers: forwardedRequestHeaders(req.headers), body: ex.body });
   } catch (error) {
     ctx.opts.log(`gateway: could not record ${ex.key.slice(0, 12)}: ${error instanceof Error ? error.message : "write failed"}`);
   }
@@ -292,7 +292,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   if (!parsed.success) return sendError(res, 400, { type: "north_gateway_bad_request" });
   if (!underCap(ctx, res)) return;
   ctx.counters.requests += 1;
-  const key = cassetteKey({ path: `${UPSTREAM_PATHS.messages}${screened.search}`, betaHeader: betaHeaderOf(req.headers), body: parsed.data });
+  const key = cassetteKey({ path: keyPathOf(req.url ?? ""), betaHeader: betaHeaderOf(req.headers), body: parsed.data });
   if (ctx.opts.mode === "replay") return replayFrom(ctx, res, key);
   forward(ctx, req, res, { route: "messages", search: screened.search, body, key });
 }

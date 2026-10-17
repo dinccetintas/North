@@ -126,10 +126,14 @@ describe("TST-2 scrubCassette", () => {
     expect(scrubCassette("Bearer abcdefghijklmnopqrstuvwxyz")).toBe("Bearer REDACTED");
   });
 
-  it("leaves plain English alone: 'the bearer of this note', 'Bearer bonds', a short word after Bearer", () => {
-    const prose = "the bearer of this note may enter; Bearer bonds pay; the Bearer shortword";
+  it("leaves plain English alone: 'the bearer of this note', 'Bearer bonds', a short word after the scheme", () => {
+    const prose = "the bearer of this note may enter; Bearer bonds pay; the Bearer shortword; bearer of 15 chars";
     expect(scrubCassette(prose)).toBe(prose);
-    expect(scrubCassette("bearer abcdefghijklmnopqrstuvwxyz")).toBe("bearer abcdefghijklmnopqrstuvwxyz"); // the scheme is spelled Bearer
+  });
+
+  it("reads the scheme in any case, token-shaped only: 'bearer <16+ characters>' is a token too", () => {
+    expect(scrubCassette("bearer abcdefghijklmnopqrstuvwxyz")).toBe("Bearer REDACTED");
+    expect(scrubCassette('{"h":"BEARER eyJhbGciOi.payload.sig"}')).toBe('{"h":"Bearer REDACTED"}');
   });
 
   it("redacts emails under @north.test and only those", () => {

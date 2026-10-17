@@ -6,6 +6,8 @@ const executablePath = process.env.E2E_CHROMIUM_PATH;
 
 export default defineConfig({
   testDir: "./e2e",
+  /** TST-2: with NORTH_CASSETTE_MODE=replay in this process (pnpm e2e:replay), fail unless the worker replays; otherwise a no-op. */
+  globalSetup: "./e2e/global-setup.ts",
   /** Production-build flows (the offline brief) run with playwright.prod.config.ts: `pnpm e2e:prod`. */
   testIgnore: /\.prod\.spec\.ts$/,
   timeout: 60_000,

@@ -10,6 +10,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { holdsAnthropicKey, scrubCassette, type HeaderInput } from "./cassette-scan";
+
+// The patterns, markers, scrubber and key test live in cassette-scan.ts; this module is the gateway's one door to them.
+export { ANTHROPIC_KEY, BEARER_TOKEN, REDACTED_ADDRESS, REDACTED_BEARER, REDACTED_KEY, bodyTexts, holdsAnthropicKey, holdsOpenAddress, northTestAddresses, scrubCassette } from "./cassette-scan";
+export type { AddressSpan, HeaderInput } from "./cassette-scan";
 
 const KeySchema = z.string().regex(/^[0-9a-f]{64}$/, "a cassette key is a sha256 hex digest");
 
@@ -71,29 +76,27 @@ export function cassetteKey(input: CassetteKeyInput): string {
   return createHash("sha256").update(canonicalJson({ path: input.path, betaHeader: normaliseBeta(input.betaHeader), body: input.body })).digest("hex");
 }
 
-// ---- scrubbing --------------------------------------------------------------
+// ---- the request target -------------------------------------------------------
 
-const ANTHROPIC_KEY = /sk-ant-[A-Za-z0-9_-]+/g;
-// The scheme is spelled `Bearer`, followed by a long token: plain English ("the bearer of this note") stays.
-const BEARER_TOKEN = /Bearer [A-Za-z0-9._~+/-]{16,}=*/g;
-const NORTH_TEST_EMAIL = /[A-Za-z0-9._%+-]+@north\.test\b/gi;
-
-/** Matches one Anthropic key (no `g` flag, so `test` keeps no state). */
-const ANTHROPIC_KEY_ONCE = /sk-ant-[A-Za-z0-9_-]+/;
+/** The only route that is keyed and recorded. */
+export const MESSAGES_PATH = "/v1/messages";
 
 /**
- * Removes what must never be committed from a request: Anthropic keys, bearer
- * tokens (`Bearer` and a token of 16 or more characters) and email addresses
- * under `@north.test`. Idempotent; the replacements keep JSON strings valid.
+ * The request target a key is made of and a cassette stores: the Messages route
+ * plus the query, as URL parsing reads it (`/v1/./messages?beta=true` is
+ * `/v1/messages?beta=true`; an empty `?` is no query). The recorder stores this
+ * as `request.path` and hashes it into the key, so the two cannot drift apart.
+ * `url` is the request target the gateway has already screened as the
+ * Messages route.
  */
-export function scrubCassette(text: string): string {
-  return text.replace(ANTHROPIC_KEY, "sk-ant-REDACTED").replace(BEARER_TOKEN, "Bearer REDACTED").replace(NORTH_TEST_EMAIL, "redacted@north.test");
+export function keyPathOf(url: string): string {
+  return `${MESSAGES_PATH}${new URL(url, "http://gateway.invalid").search}`;
 }
+
+// ---- the file ---------------------------------------------------------------
 
 /** latin1 maps bytes 1:1 to characters, so scrubbing never alters the other bytes of a request body. */
 const scrubBody = (body: Buffer): Buffer => Buffer.from(scrubCassette(body.toString("latin1")), "latin1");
-
-// ---- the file ---------------------------------------------------------------
 
 /** Canonical base64 (a regex over megabytes of it would be slow); the empty string is an empty body. */
 const Base64 = z.string().refine((text) => Buffer.from(text, "base64").toString("base64") === text, "not base64");
@@ -134,9 +137,6 @@ export function sdkVersionOf(userAgent: string | null | undefined): string | nul
   return AGENT_SDK_FIELD.exec(userAgent ?? "")?.[1] ?? null;
 }
 
-/** Headers as Node hands them over: a repeated header may be an array. */
-export type HeaderInput = Readonly<Record<string, string | string[] | undefined>>;
-
 /** One side of a recorded exchange as the gateway replays it: `readCassette` returns plain-string headers. */
 export interface CassetteResponse {
   readonly status: number;
@@ -166,16 +166,6 @@ function cleanHeaders(headers: HeaderInput, dropped: ReadonlySet<string>, clean:
     kept[lower] = clean(Array.isArray(value) ? value.join(", ") : String(value));
   }
   return kept;
-}
-
-/**
- * True when the body (or a header value) holds something shaped like an
- * Anthropic key. A response like that is never recorded: unlike a request, it
- * cannot be scrubbed without changing what replay serves.
- */
-export function holdsAnthropicKey(body: Buffer, headers: HeaderInput = {}): boolean {
-  const headerText = Object.values(headers).flat().join("\n");
-  return ANTHROPIC_KEY_ONCE.test(body.toString("latin1")) || ANTHROPIC_KEY_ONCE.test(headerText);
 }
 
 const fileOf = (dir: string, key: string): string => join(dir, `${KeySchema.parse(key)}.json`);

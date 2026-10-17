@@ -4,59 +4,22 @@
  * the checker are tested against each other); a file is then broken the way a
  * hand edit, a rename or a stale recording would. No stack, no network, no key.
  */
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cassetteKey, writeCassette } from "../apps/worker/src/gateway/cassette";
 import { checkDirectory, readPin, sdkVersionOf, secretFindings, summaryLine, verdictFor } from "./cassette-check";
-
-const PIN = "0.3.301";
-const SDK_AGENT = "claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301)";
-const AT = () => new Date("2026-10-17T09:00:00.000Z");
-const PATH = "/v1/messages?beta=true";
-const BETA = "interleaved-thinking-2025-05-14";
+import { PIN, SDK_AGENT, b64, edited, makeDir, makeSubdir, parsed, putIn, recordIn, removeDir, requestBody, type Recorded } from "./cassette-check-fixtures";
 
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "north-cassette-check-"));
+  dir = await makeDir();
 });
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await removeDir(dir);
 });
 
-const requestBody = (extra: Record<string, unknown> = {}) => ({ model: "claude-haiku-5-5", max_tokens: 64, messages: [{ role: "user", content: "Write one line about the company." }], ...extra });
-const keyFor = (body: unknown) => cassetteKey({ path: PATH, betaHeader: BETA, body });
-
-interface Recorded {
-  readonly key: string;
-  readonly name: string;
-  readonly text: string;
-}
-
-/** Records one exchange with the gateway's writer and returns the file as it is on disk. */
-async function record(body: Record<string, unknown> = requestBody(), userAgent: string = SDK_AGENT): Promise<Recorded> {
-  const key = keyFor(body);
-  const headers = { "user-agent": userAgent, "anthropic-beta": BETA, "content-type": "application/json" };
-  await writeCassette(dir, key, { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from('{"content":[{"type":"text","text":"A line."}]}') }, { method: "POST", path: PATH, headers, body: Buffer.from(JSON.stringify(body)) }, AT);
-  return { key, name: `${key}.json`, text: await readFile(join(dir, `${key}.json`), "utf8") };
-}
-
-/** A cassette file as parsed JSON, for tests that break one field. */
-interface CassetteJson {
-  key: string;
-  request: { method: string; path: string; headers: Record<string, string>; body: string };
-  response: { status: number; headers: Record<string, string>; body: string };
-  meta?: Record<string, unknown>;
-}
-const parsed = (file: Recorded): CassetteJson => JSON.parse(file.text) as CassetteJson;
-const edited = (file: Recorded, change: (json: CassetteJson) => void): Recorded => {
-  const json = parsed(file);
-  change(json);
-  return { ...file, text: `${JSON.stringify(json, null, 2)}\n` };
-};
-const b64 = (text: string): string => Buffer.from(text).toString("base64");
-const put = (file: Recorded) => writeFile(join(dir, file.name), file.text);
+const record = (body?: Record<string, unknown>, userAgent?: string) => recordIn(dir, body, userAgent);
+const put = (file: Recorded) => putIn(dir, file);
 
 describe("TST-2 secretFindings", () => {
   it("finds an Anthropic key, a bearer token and a @north.test address, and nothing in clean text", () => {
@@ -261,15 +224,15 @@ describe("TST-2 checkDirectory", () => {
     await put(old);
     expect(await checkDirectory(dir, PIN)).toMatchObject({ files: 2, warnings: 1, failures: 0 });
     const stale = await checkDirectory(dir, "0.3.302");
-    expect(stale).toMatchObject({ files: 2, warnings: 1, failures: 1 });
+    expect(stale).toMatchObject({ files: 2, warnings: 1, failures: 2 }); // the pre-meta file is compared by its stored user agent
     expect(stale.lines.join("\n")).toMatch(/WARN .*unverifiable \(pre-meta cassette\)/);
-    expect(summaryLine(stale)).toBe("cassette check: 2 files, 1 warnings, 1 failed");
+    expect(summaryLine(stale)).toBe("cassette check: 2 files, 1 warnings, 2 failed");
   });
 
   it("anything else in the directory fails: a leftover temp file or a subdirectory could carry what the checks never read", async () => {
     await record();
     await writeFile(join(dir, `.${"a".repeat(64)}.123abc.tmp`), "{}");
-    await mkdir(join(dir, "old"));
+    await makeSubdir(dir, "old");
     const report = await checkDirectory(dir, PIN);
     expect(report.failures).toBe(2);
     expect(report.lines.join("\n")).toMatch(/FAIL \.a+\.123abc\.tmp: unexpected file/);

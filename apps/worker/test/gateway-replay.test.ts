@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GatewayBudget } from "../src/gateway/budget";
 import { cassetteKey } from "../src/gateway/cassette";
 import { startGateway, type Gateway } from "../src/gateway/server";
-import { call, completion as completionBody, jsonHandler, USAGE, useGateway } from "./gateway-helpers";
+import { call, completion as completionBody, jsonHandler, sseEvent, USAGE, useGateway } from "./gateway-helpers";
 
 /**
  * TST-2: record then replay through the gateway. Replay never touches the
@@ -135,6 +135,42 @@ describe("TST-2 record then replay", () => {
     expect(h.logs[0]).not.toContain("sk-ant-abc");
     h.logs.length = 0;
     expect(recorder.stats().spentUsd).toBeGreaterThan(0);
+  });
+
+  it("does not record a streamed reply that spells an Anthropic key in pieces: it is served, logged once, and written nowhere", async () => {
+    const piece = (text: string) => sseEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
+    const stream = [sseEvent("message_start", { message: { model: "claude-haiku-5-5", usage: USAGE } }), piece("the key is sk-"), piece("ant-api03-AbCdEf"), sseEvent("message_delta", { usage: { output_tokens: 7 } }), sseEvent("message_stop", {})].join("");
+    h.upstream.handler = (_request, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(stream);
+    };
+    const recorder = await start("record");
+    const res = await post(recorder, request({ stream: true }));
+    expect(res.status).toBe(200);
+    expect(res.body.toString()).toBe(stream);
+    expect(await readdir(h.dir)).toEqual([]);
+    expect(h.logs).toHaveLength(1);
+    expect(h.logs[0]).toMatch(/Anthropic key/);
+    expect(h.logs[0]).not.toContain("ant-api03");
+    h.logs.length = 0;
+  });
+
+  it("stores the key's own request target, whatever way the caller spelled it, so the stored path hashes to the file name", async () => {
+    const recorder = await start("record");
+    for (const path of ["/v1/./messages?beta=true", "/v1/messages?", "/v1/messages?beta=true"]) {
+      await call(recorder.baseUrl, { path, body: request({ max_tokens: path.length }) });
+    }
+    await recorder.close();
+    const files = await readdir(h.dir);
+    expect(files).toHaveLength(3);
+    const paths: string[] = [];
+    for (const file of files) {
+      const stored = JSON.parse(await readFile(join(h.dir, file), "utf8")) as { key: string; request: { path: string; body: string } };
+      paths.push(stored.request.path);
+      const body = JSON.parse(Buffer.from(stored.request.body, "base64").toString()) as unknown;
+      expect(cassetteKey({ path: stored.request.path, betaHeader: "", body }), file).toBe(stored.key);
+    }
+    expect(paths.sort()).toEqual(["/v1/messages", "/v1/messages?beta=true", "/v1/messages?beta=true"]);
   });
 
   it("stores only the allowlisted request headers, and a different beta flag is a different cassette", async () => {

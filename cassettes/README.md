@@ -59,7 +59,10 @@ recorded before the block existed still replays):
 ## The key
 
 `cassetteKey({ path, betaHeader, body })`: the request path and query as
-forwarded (`/v1/messages?beta=true`), the `anthropic-beta` flags (trimmed,
+`keyPathOf(url)` reads them (`/v1/messages?beta=true`; `/v1/./messages?beta=true`
+is the same target, an empty `?` is no query; the recorder stores this same
+string as `request.path`, so the stored path hashes to the file name), the
+`anthropic-beta` flags (trimmed,
 sorted, comma-joined; empty when there are none) and the request body, as
 canonical JSON (object keys sorted at every depth), after these are replaced in
 every string value:
@@ -84,8 +87,9 @@ The stored **request** passes through `scrubCassette` (body, path and header
 values):
 
 - `sk-ant-...` keys become `sk-ant-REDACTED`
-- `Bearer <token>` (capital B, a token of 16 or more characters) becomes
-  `Bearer REDACTED`; the English word "bearer" is left alone
+- `Bearer <token>` (the scheme in any case, a token of 16 or more characters)
+  becomes `Bearer REDACTED`; the English word "bearer" and a short word after
+  it are left alone
 - any email under `@north.test` becomes `redacted@north.test`
 
 Only these request headers are stored (the ones the gateway forwards):
@@ -99,7 +103,11 @@ cassette). The only headers left out are `set-cookie`,
 `anthropic-organization-id` and the wire headers (`content-length`,
 `transfer-encoding`, `connection`, `keep-alive`). A response that matches
 `sk-ant-[A-Za-z0-9_-]+` is **not recorded** at all (nothing is written, the
-gateway logs it once and still serves the reply). A reply over the capture
+gateway logs it once and still serves the reply). It is read the way its
+reader reads it: JSON strings are decoded (`\u0073k-ant-...` is a key), and for
+a Server-Sent Events reply each content block's `text`, `partial_json` and
+`thinking` deltas are joined, so a key split across events (`"sk-"` then
+`"ant-api03-..."`) is a key too. A reply over the capture
 limit (8 MB) or a compressed one is not recorded either, and is still served.
 An SSE reply over the limit is priced from the stream as it goes by; a JSON
 reply over the limit, or a compressed one, cannot be read, so it is unpriced
@@ -111,25 +119,41 @@ might echo.
 
 ## The cassette check
 
-`pnpm cassette:check` (`scripts/cassette-check.ts`; `NORTH_CASSETTE_DIR` picks
-another directory, default `cassettes`) validates every `*.json` with the
-gateway's own schema (`CassetteFileSchema`) and fails when:
+`pnpm cassette:check` (`scripts/cassette-check.ts`, rules in
+`scripts/cassette-rules.ts`; `NORTH_CASSETTE_DIR` picks another directory,
+default `cassettes`) validates every `*.json` against the gateway's own schema
+and fails when:
 
+- the file is not a cassette, or has a field the schema does not know (at the
+  file, the request, the response or `meta`: the gateway's reader still accepts
+  older files, the check does not accept what it cannot scan);
 - the file name is not its `key` (a renamed or copied cassette);
-- a body, a header or the path matches `sk-ant-[A-Za-z0-9_-]+` (other than the
-  `sk-ant-REDACTED` the scrubber writes), `Bearer <16 or more token
-  characters>`, or an address under `@north.test` other than
-  `redacted@north.test`. The finding names the kind and the place, never the
-  secret. A reply that echoes a made-up `@north.test` address therefore fails
-  the check, because responses are stored verbatim: record from a flow whose
-  replies do not repeat one;
-- `meta.sdkVersion` is not null and differs from the version pinned in
-  `packages/agents/package.json` (both are printed);
+- a body, a header, the path or a metadata string matches
+  `sk-ant-[A-Za-z0-9_-]+` (other than the `sk-ant-REDACTED` the scrubber
+  writes) or `Bearer <16 or more token characters>` (the scheme in any case).
+  Strings are read decoded (`\uXXXX` escapes), bodies the way the gateway reads
+  them (a stream's deltas joined, so a split key is found). The finding names
+  the kind and the place, never the secret;
+- an address under `@north.test` other than `redacted@north.test` sits in a
+  request body, a header or the path. In a **response body** it is only a
+  warning: replies are stored verbatim, and a made-up address in one is
+  expected;
+- a request or response header is `authorization`, `x-api-key`,
+  `proxy-authorization`, `cookie` or `set-cookie` in any case (the gateway
+  stores none of them), or the response has a `content-encoding` other than
+  `identity` (its text cannot be scanned);
+- the Agent SDK version (`meta.sdkVersion`, else, for a cassette from before
+  `meta`, the stored user agent's) differs from the version pinned in
+  `packages/agents/package.json` (both are printed), or `meta.sdkVersion`
+  disagrees with the stored user agent. A `claude-cli/...` user agent that
+  names no `agent-sdk/<version>` only warns, `SDK version not recorded`;
 - `meta.requestScrubbed` is `false` (or `meta` is absent) and the key
   recomputed from the stored path, `anthropic-beta` header and body is not the
-  file name: the request was edited, or the key rules changed. For a cassette
-  with no `meta` this is only a warning, `unverifiable (pre-meta cassette)`,
-  because its scrubbing is unknown;
+  file name: the request was edited, or the key rules changed. A
+  `requestScrubbed: true` is believed only if the stored request holds a
+  redaction marker (`sk-ant-REDACTED`, `Bearer REDACTED`, `redacted@north.test`).
+  For a cassette with no `meta` this is only a warning, `unverifiable (pre-meta
+  cassette)`, because its scrubbing is unknown;
 - the directory holds anything but `*.json` and this README (a leftover
   `.tmp` file, a subfolder), or cannot be read.
 
@@ -139,29 +163,38 @@ An empty directory passes with `cassette check: 0 files, 0 warnings`.
 
 ## Replaying the end-to-end flows
 
-`pnpm e2e:replay` runs the Playwright specs (`apps/web/e2e`, `m0` to `m6`) with
-the worker on the SDK runtime and a replaying gateway:
+`pnpm e2e:replay` runs the Playwright specs (`apps/web/e2e`, `m0` to `m6`)
+against a worker on the SDK runtime with a replaying gateway. **The worker must
+be started with the replay variables: Playwright cannot do it.** Its
+`webServer` runs `pnpm dev` in `apps/web`, which is `next dev` only, so the
+worker is never started by (and never inherits from) the test run. Locally,
+with Supabase up (`pnpm db:start`), from the repo root:
 
 ```bash
-NORTH_CASSETTE_MODE=replay AGENT_RUNTIME=claude-agent-sdk NORTH_ENV=staging NORTH_MODEL_PROFILE=smoke \
-  pnpm --filter @north/web e2e
+# 1. the stack, with the worker replaying (no ANTHROPIC_API_KEY: replay needs none)
+NORTH_CASSETTE_MODE=replay AGENT_RUNTIME=claude-agent-sdk NORTH_ENV=staging NORTH_MODEL_PROFILE=smoke pnpm dev
+
+# 2. in a second shell, once the web (:3100), worker (:3101) and Inngest (:8288) answer
+pnpm e2e:replay
 ```
 
-Playwright starts `pnpm dev` itself when nothing answers on the web port, and
-that child inherits these variables; an already running stack keeps the
-environment it started with (`reuseExistingServer`), so start the worker with
-the same four variables first (no `ANTHROPIC_API_KEY`: replay needs none).
+`pnpm e2e:replay` also sets `NORTH_CASSETTE_MODE=replay` in the Playwright
+process. That marks the run as a replay run, and `apps/web/e2e/global-setup.ts`
+then reads the worker's `/health` and fails the run unless it reports
+`"runtime":"claude-agent-sdk"` and `"gateway":"replay"`, so a worker left on the
+mock runtime (or recording, or live) cannot pass silently. Without that
+variable the global setup does nothing, and the mock `pnpm e2e` is unchanged.
 
-CI job `e2e-replay` does the same: `needs: validate`, a worker `.env` with
-those four variables and no key, `pnpm cassette:check`, then `pnpm
-e2e:replay`; the Playwright report is uploaded when it fails. It runs only when
-`cassettes/*.json` exist: GitHub does not allow `hashFiles` in a job-level
-`if`, so the small job `cassettes` reads the directory and `e2e-replay` is
-skipped unless it reports a file. Until the nightly job (Task 21) has recorded
-a full set, no cassette is committed, `e2e-replay` is skipped, and the mock
-`e2e` job stays the gate. A cassette is committed with the set that covers
-every call the specs make: a miss is a `502 north_cassette_miss` naming the
-file it looked for, and fails the spec.
+CI job `e2e-replay` does the same: `needs: validate`, a worker `.env` with the
+four variables and no key, `pnpm cassette:check`, a step that asserts the same
+`/health` fields, then `pnpm e2e:replay`; the Playwright report is uploaded
+when it fails. It runs only when `cassettes/*.json` exist: GitHub does not
+allow `hashFiles` in a job-level `if`, so the small job `cassettes` reads the
+directory and `e2e-replay` is skipped unless it reports a file. Until the
+nightly job (Task 21) has recorded a full set, no cassette is committed,
+`e2e-replay` is skipped, and the mock `e2e` job stays the gate. A cassette is
+committed with the set that covers every call the specs make: a miss is a
+`502 north_cassette_miss` naming the file it looked for, and fails the spec.
 
 ## Modes
 

@@ -281,6 +281,20 @@ jobs:
             curl -fsS -o /dev/null "$url" || { echo "not up: $url"; tail -n 200 dev.log; exit 1; }
           done
       - run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      # TST-2: a green run must have replayed. The worker is its own process (Playwright's webServer only starts the web),
+      # so assert from its health line that it runs the SDK runtime with a replaying gateway; e2e/global-setup.ts asserts it again.
+      - name: The worker replays cassettes (runtime claude-agent-sdk, gateway replay)
+        run: |
+          curl -fsS http://127.0.0.1:3101/health | node -e '
+            let text = "";
+            process.stdin.on("data", (chunk) => (text += chunk)).on("end", () => {
+              const health = JSON.parse(text);
+              if (health.runtime !== "claude-agent-sdk" || health.gateway !== "replay") {
+                console.error("the worker is not replaying: runtime=" + health.runtime + " gateway=" + health.gateway);
+                process.exit(1);
+              }
+              console.log("the worker replays: runtime=" + health.runtime + " gateway=" + health.gateway);
+            });'
       - run: pnpm e2e:replay
         env:
           CI: "1"
