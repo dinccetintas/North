@@ -12,7 +12,7 @@ describe("TST-1 GatewayBudget", () => {
   it("starts empty on the clock's UTC day", () => {
     const budget = new GatewayBudget(5, at("2026-10-16T23:59:59.999Z"));
     expect(budget.state).toEqual({ capUsd: 5, spentUsd: 0, day: "2026-10-16" });
-    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0, unpriced: 0, day: "2026-10-16" });
+    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0, unpriced: 0, day: "2026-10-16", seededUsd: 0 });
   });
 
   it("settle adds to the day's spend with a new frozen state each time", () => {
@@ -63,7 +63,7 @@ describe("TST-1 GatewayBudget", () => {
     budget.settle(-3);
     budget.settle(Number.POSITIVE_INFINITY);
     budget.settle(0.25);
-    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.25, unpriced: 3, day: "2026-10-16" });
+    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.25, unpriced: 3, day: "2026-10-16", seededUsd: 0 });
   });
 
   it("an estimate that is not a non-negative number is refused", () => {
@@ -127,7 +127,7 @@ describe("TST-1 GatewayBudget", () => {
     budget.settleUnpriced(0.75);
     budget.settleUnpriced(Number.NaN);
     budget.settleUnpriced(-1);
-    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.75, unpriced: 3, day: "2026-10-16" });
+    expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.75, unpriced: 3, day: "2026-10-16", seededUsd: 0 });
   });
 
   it("TST-1 exhaust closes the day under a cap without touching the spend: spentUsd stays what was priced, every reserve is false, and the reason is kept", () => {
@@ -174,5 +174,32 @@ describe("TST-1 GatewayBudget", () => {
     expect(budget.exhaustion()).toBeNull();
     expect(budget.reserve(0)).toBe(true);
     expect(budget.stats()).toMatchObject({ spentUsd: 0, unpriced: 1 });
+  });
+});
+
+describe("TST-1 / STG-1 GatewayBudget seeded at boot", () => {
+  it("TST-1 initialSpentUsd counts against today's cap from the first call, and stats report it as seededUsd", () => {
+    const budget = new GatewayBudget(1, at("2026-10-16T22:00:00Z"), { initialSpentUsd: 0.75 });
+    expect(budget.stats()).toEqual({ capUsd: 1, spentUsd: 0.75, unpriced: 0, day: "2026-10-16", seededUsd: 0.75 });
+    expect(budget.reserve(0.25)).toBe(true);
+    expect(budget.reserve(0.26)).toBe(false);
+    budget.settle(0.25);
+    expect(budget.reserve(0)).toBe(false);
+    expect(budget.stats()).toMatchObject({ spentUsd: 1, seededUsd: 0.75 });
+  });
+
+  it("TST-1 a seed at or over the cap closes the day; the seed applies to the boot's UTC day only", () => {
+    let now = "2026-10-16T23:59:00Z";
+    const budget = new GatewayBudget(1, () => new Date(now), { initialSpentUsd: 1 });
+    expect(budget.reserve(0)).toBe(false);
+    now = "2026-10-17T00:00:01Z";
+    expect(budget.reserve(0.5)).toBe(true);
+    expect(budget.stats()).toEqual({ capUsd: 1, spentUsd: 0, unpriced: 0, day: "2026-10-17", seededUsd: 0 });
+  });
+
+  it("TST-1 no seed is 0, as before; a seed that is negative or not a finite number is refused", () => {
+    expect(new GatewayBudget(1, at("2026-10-16T10:00:00Z")).stats()).toMatchObject({ spentUsd: 0, seededUsd: 0 });
+    expect(new GatewayBudget(1, at("2026-10-16T10:00:00Z"), {}).stats()).toMatchObject({ spentUsd: 0, seededUsd: 0 });
+    for (const bad of [-0.01, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => new GatewayBudget(1, at("2026-10-16T10:00:00Z"), { initialSpentUsd: bad })).toThrow(/initialSpentUsd/);
   });
 });

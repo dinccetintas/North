@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DbClient } from "./client";
 import { dbError } from "./errors";
 import { UuidSchema } from "./json";
+import { readAllPages } from "./paging";
 
 export const AGENT_RUNTIMES = ["claude-agent-sdk", "mock"] as const;
 export type AgentRuntime = (typeof AGENT_RUNTIMES)[number];
@@ -212,4 +213,22 @@ export async function costSummary(db: DbClient, companyId: string, sinceDays: nu
     byRole: groupByRole(rows),
     byDay: groupByDay(rows, timezone),
   });
+}
+
+const SpendRowSchema = z.object({ cost_usd: z.coerce.number().nonnegative() });
+
+/**
+ * STG-1 / TST-1: the model spend every company recorded from `sinceIso` on
+ * (`agent_runs.cost_usd`, the SDK's price per run), which seeds the gateway's
+ * day cap at boot so a restart does not hand out a second allowance. Service
+ * role: under RLS an owner would see only their own runs. Read in pages past
+ * PostgREST's row cap; a row that is not a cost fails the read.
+ */
+export async function sumRunCostsSince(db: DbClient, sinceIso: string): Promise<number> {
+  const since = z.iso.datetime({ offset: true }).parse(sinceIso);
+  const rows = await readAllPages(
+    (from, to) => db.from("agent_runs").select("id, cost_usd").gte("created_at", since).order("id", { ascending: true }).range(from, to),
+    "Could not sum the agent runs' cost",
+  );
+  return usd(rows.reduce((sum, row) => sum + SpendRowSchema.parse(row).cost_usd, 0));
 }

@@ -164,7 +164,7 @@ describe("TST-1 gateway pricing and the day cap", () => {
     const res = await call(gateway.baseUrl, { body: MESSAGES });
     expect(res.status).toBe(200);
     const expected = (1000 * 2 + 150 * 2.5 + 50 * 4 + 500 * 0.1 + 300 * 10) / 1_000_000;
-    expect(gateway.stats()).toEqual({ requests: 1, spentUsd: expect.closeTo(expected, 12), misses: 0, unpriced: 0, capUsd: 0, exhausted: false });
+    expect(gateway.stats()).toEqual({ requests: 1, spentUsd: expect.closeTo(expected, 12), misses: 0, unpriced: 0, capUsd: 0, exhausted: false, seededUsd: 0 });
     expect(budget.stats().spentUsd).toBeCloseTo(expected, 12);
   });
 

@@ -13,6 +13,19 @@ export interface GatewayBudgetStats {
   /** Replies priced by guess (a model with no price, charged the dearest rate) or not at all (no readable usage, which closes the day under a cap). */
   readonly unpriced: number;
   readonly day: string;
+  /** STG-1: what the boot seed (`initialSpentUsd`) put on today's spend; 0 without one and from the next UTC day on. Already inside `spentUsd`. */
+  readonly seededUsd: number;
+}
+
+/** How a budget starts. */
+export interface GatewayBudgetOptions {
+  /**
+   * STG-1: spend already made today before this process started (the worker
+   * seeds it from `agent_runs` at boot), so a restart, a wake from auto-stop or
+   * a deploy does not hand out a second allowance. Counts on the boot's UTC
+   * day only. A finite number of USD, 0 or more (default 0).
+   */
+  readonly initialSpentUsd?: number;
 }
 
 const utcDay = (date: Date): string => date.toISOString().slice(0, 10);
@@ -27,15 +40,20 @@ export class GatewayBudget {
   private current: TestRunBudget;
   private unpricedCount = 0;
   private exhausted: { readonly day: string; readonly reason: string } | null = null;
+  private readonly seed: { readonly day: string; readonly usd: number };
 
-  /** Throws when `capUsd` is not a finite number of at least 0. */
+  /** Throws when `capUsd` or `options.initialSpentUsd` is not a finite number of at least 0. */
   constructor(
     capUsd: number,
     private readonly clock: () => Date = () => new Date(),
+    options: GatewayBudgetOptions = {},
   ) {
-    const parsed = TestRunBudgetSchema.safeParse({ capUsd, spentUsd: 0, day: utcDay(clock()) });
+    const seedUsd = options.initialSpentUsd ?? 0;
+    if (!Number.isFinite(seedUsd) || seedUsd < 0) throw new Error(`GatewayBudget: initialSpentUsd must be a finite number of USD, 0 or more (got ${String(seedUsd)})`);
+    const parsed = TestRunBudgetSchema.safeParse({ capUsd, spentUsd: seedUsd, day: utcDay(clock()) });
     if (!parsed.success) throw new Error(`GatewayBudget: the cap must be a number of USD, 0 or more (got ${String(capUsd)})`);
     this.current = Object.freeze(parsed.data);
+    this.seed = Object.freeze({ day: parsed.data.day, usd: seedUsd });
   }
 
   /** Today's budget (rolled to the clock's UTC day first). */
@@ -105,10 +123,10 @@ export class GatewayBudget {
     return this.exhausted?.day === day ? this.exhausted.reason : null;
   }
 
-  /** Cap, today's spend, the unpriced count and the day. */
+  /** Cap, today's spend (the seed included), the unpriced count, the day and today's part of the boot seed. */
   stats(): GatewayBudgetStats {
     const { capUsd, spentUsd, day } = this.sync();
-    return Object.freeze({ capUsd, spentUsd, unpriced: this.unpricedCount, day });
+    return Object.freeze({ capUsd, spentUsd, unpriced: this.unpricedCount, day, seededUsd: this.seed.day === day ? this.seed.usd : 0 });
   }
 
   private sync(): TestRunBudget {

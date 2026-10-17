@@ -63,7 +63,7 @@ function budgetProblems(h: Health, maxCostUsd: number): string[] {
   if (budget === null || budget.capUsd <= 0) return ["the gateway reports no day cap: start the worker with NORTH_DAILY_CAP_USD=0.50 (the run's hard stop)"];
   if (budget.capUsd > maxCostUsd) return [`the gateway's budget.capUsd is ${budget.capUsd}, above the smoke's ${maxCostUsd}: set NORTH_DAILY_CAP_USD=0.50`];
   if (budget.exhausted) return ["the gateway closed today's budget (a reply it could not price): wait for the next UTC day or restart the worker"];
-  if (budget.spentUsd >= budget.capUsd) return [`the gateway already spent $${budget.spentUsd} of today's $${budget.capUsd} cap: wait for the next UTC day or restart the worker`];
+  if (budget.spentUsd >= budget.capUsd) return [`the gateway already spent $${budget.spentUsd} of today's $${budget.capUsd} cap: wait for the next UTC day (a restart re-reads today's spend from agent_runs, STG-1)`];
   return [];
 }
 

@@ -34,7 +34,7 @@ import { parseArgs } from "node:util";
 import { BILLING_EVENT_TYPES, USAGE_ALERT_RATIO, usageRatio } from "@north/core";
 import { localMonth } from "@north/core/time";
 import { stripeCall } from "../packages/integrations/src/live/stripe-http";
-import { CHECK_ENVS, failedHealthRules, healthFacts, isCheckEnv, type CheckEnv } from "./production-check-rules";
+import { budgetFacts, CHECK_ENVS, failedHealthRules, healthFacts, isCheckEnv, type CheckEnv } from "./production-check-rules";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export type CheckStatus = "pass" | "fail" | "skip" | "warn";
@@ -120,7 +120,7 @@ export async function workerHealth(c: CheckConfig, f: FetchLike): Promise<CheckR
   const clock = str(h, "clock");
   const time = str(h, "time");
   const clockIsWall = typeof h.clockIsWall === "boolean" ? h.clockIsWall : clock !== null && time !== null && Math.abs(Date.parse(clock) - Date.parse(time)) <= CLOCK_SKEW_MS;
-  const detail = `mode ${str(h, "mode") ?? "?"}, runtime ${str(h, "runtime") ?? "?"}, webhooks stripe ${on(webhooks.stripe) ? "on" : "off"}, sentry ${on(webhooks.sentry) ? "on" : "off"}, clock ${clockIsWall ? "= wall" : "simulated"}, ${healthFacts(h)}`;
+  const detail = `mode ${str(h, "mode") ?? "?"}, runtime ${str(h, "runtime") ?? "?"}, webhooks stripe ${on(webhooks.stripe) ? "on" : "off"}, sentry ${on(webhooks.sentry) ? "on" : "off"}, clock ${clockIsWall ? "= wall" : "simulated"}, ${healthFacts(h)}${budgetFacts(h)}`;
   const problems = [
     clockIsWall ? null : "the worker clock is not the wall clock (NORTH_CLOCK_START or /sandbox/clock in production)",
     on(webhooks.stripe) ? null : "the Stripe webhook is not mounted (set STRIPE_WEBHOOK_SECRET on Fly)",

@@ -5,7 +5,7 @@
 #   fly deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile
 # docs/runbooks/staging.md walks through every step; `pnpm staging:check` verifies the result read-only.
 #
-# Staging runs real Claude (the `north-test` Anthropic workspace, $50 limit) and live adapters, but only
+# Staging runs real Claude (the `north-test` Anthropic workspace: its $50 limit is the hard ceiling) and live adapters, but only
 # against the founder's test accounts: NORTH_TEST_FENCE=1 makes the gate refuse every outside target that is
 # not on the NORTH_FENCE_* lists (TST-5). The worker's env schema refuses the fence, the cassette recorder and
 # a cheaper model profile under NODE_ENV=production unless NORTH_ENV=staging, and the staging check asserts
@@ -55,6 +55,9 @@ primary_region = "ams"
   # TST-5: default deny for every outside target not on the NORTH_FENCE_* lists (secrets above).
   NORTH_TEST_FENCE = "1"
   # TST-1: the Haiku-tier profile and a $1 gateway cap per UTC day; workflows raise both for one run and reset them.
+  # Auto-stop, deploys and secret changes restart the process: the worker seeds the gateway at boot with the day's
+  # agent_runs spend (a lower bound: SDK-priced; a failed read seeds the full cap), so the cap survives them. The
+  # workspace's $50 limit stays the hard ceiling; persisting the gateway's own priced spend per day is an M8 follow-up.
   NORTH_MODEL_PROFILE = "smoke"
   NORTH_DAILY_CAP_USD = "1"
   AGENT_RUNTIME = "claude-agent-sdk"

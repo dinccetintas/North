@@ -9,12 +9,13 @@ export { selfBaseUrl } from "./host";
 /** Within this many milliseconds of the wall clock the worker's clock counts as the wall clock. */
 const WALL_TOLERANCE_MS = 1000;
 
-/** The day's model budget as the gateway reports it. `exhausted` is its own field: a day closed by a reply that could not be priced. */
+/** The day's model budget as the gateway reports it. `exhausted` is its own field: a day closed by a reply that could not be priced. `seededUsd` (STG-1) is the part of `spentUsd` read from `agent_runs` at boot. */
 export interface HealthBudget {
   readonly capUsd: number;
   readonly spentUsd: number;
   readonly unpriced: number;
   readonly exhausted: boolean;
+  readonly seededUsd: number;
 }
 
 export interface WorkerHealth {
@@ -44,7 +45,7 @@ export interface WorkerHealth {
 }
 
 /** The parts of the worker's gateway the health line reads. */
-export type HealthGateway = Pick<WorkerGateway, "mode"> & { stats(): Pick<GatewayStats, "capUsd" | "spentUsd" | "unpriced" | "exhausted"> };
+export type HealthGateway = Pick<WorkerGateway, "mode"> & { stats(): Pick<GatewayStats, "capUsd" | "spentUsd" | "unpriced" | "exhausted" | "seededUsd"> };
 
 /** What `workerHealth` reads besides the env: the clock, tracing, the fence and the gateway. */
 export interface HealthSources {
@@ -57,11 +58,11 @@ export interface HealthSources {
 
 export type HealthEnv = Pick<WorkerEnv, "INTEGRATIONS_MODE" | "AGENT_RUNTIME" | "WORKER_HOST" | "SENTRY_CLIENT_SECRET" | "STRIPE_WEBHOOK_SECRET" | "UNSUBSCRIBE_SECRET" | "NORTH_MODEL_PROFILE" | "NORTH_ENV">;
 
-/** The four budget numbers, copied field by field so nothing else of the gateway's stats can reach the health line. */
+/** The five budget fields, copied field by field so nothing else of the gateway's stats can reach the health line. */
 function budgetOf(gateway: HealthGateway | null): HealthBudget | null {
   if (gateway === null) return null;
-  const { capUsd, spentUsd, unpriced, exhausted } = gateway.stats();
-  return Object.freeze({ capUsd, spentUsd, unpriced, exhausted });
+  const { capUsd, spentUsd, unpriced, exhausted, seededUsd } = gateway.stats();
+  return Object.freeze({ capUsd, spentUsd, unpriced, exhausted, seededUsd });
 }
 
 /**

@@ -32,6 +32,8 @@ export interface GatewayStats {
   readonly capUsd: number;
   /** Today was closed by a 2xx reply with no readable usage (`GatewayBudget.exhaust`). Its own flag: `spentUsd` stays what was priced. */
   readonly exhausted: boolean;
+  /** STG-1: the part of today's `spentUsd` the worker seeded at boot from `agent_runs` (0 without a seed, and from the next UTC day on). */
+  readonly seededUsd: number;
 }
 
 /** A running gateway. */
@@ -335,8 +337,8 @@ export async function startGateway(options: GatewayOptions): Promise<Gateway> {
     baseUrl: `http://127.0.0.1:${port}`,
     close: () => closeServer(server),
     stats: (): GatewayStats => {
-      const { capUsd, spentUsd, unpriced } = opts.budget.stats();
-      return Object.freeze({ requests: ctx.counters.requests, spentUsd, misses: ctx.counters.misses, unpriced, capUsd, exhausted: opts.budget.exhaustion() !== null });
+      const { capUsd, spentUsd, unpriced, seededUsd } = opts.budget.stats();
+      return Object.freeze({ requests: ctx.counters.requests, spentUsd, misses: ctx.counters.misses, unpriced, capUsd, exhausted: opts.budget.exhaustion() !== null, seededUsd });
     },
   });
 }

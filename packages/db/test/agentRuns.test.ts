@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { costSummary, listRecentRuns, recordAgentRun, type RecordAgentRunInput } from "../src/agentRuns";
+import { costSummary, listRecentRuns, recordAgentRun, sumRunCostsSince, type RecordAgentRunInput } from "../src/agentRuns";
 import { DbError } from "../src/errors";
 import { createTask } from "../src/tasks";
 import { createCompanyFor, createOwnerWithCompany, createTestUser, deleteTestUser, grantPlan, service, type OwnedCompany, type TestUser } from "./fixtures";
@@ -93,6 +93,32 @@ describe("agent runs repository (OBS-1)", () => {
     expect((await costSummary(service, companyId, 60)).costUsd).toBe(102.75);
     expect(await costSummary(stranger.client, companyId, 30)).toMatchObject({ runs: 0, costUsd: 0 });
     await expect(costSummary(service, companyId, 0)).rejects.toThrow();
+  });
+
+  it("STG-1 sumRunCostsSince (service role) sums every company's agent_runs.cost_usd from an instant on, and refuses a non-ISO instant", async () => {
+    const companyId = await createCompanyFor(owned.owner, "agentruns-since");
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    const before = { since: await sumRunCostsSince(service, since), dayAgo: await sumRunCostsSince(service, dayAgo), threeDaysAgo: await sumRunCostsSince(service, threeDaysAgo) };
+    await recordAgentRun(service, run(companyId, { costUsd: 0.25 }));
+    await recordAgentRun(service, run(owned.companyId, { costUsd: 0.125 }));
+    await service.from("agent_runs").insert({ company_id: companyId, role: "design", model: "m", runtime: "mock", status: "succeeded", cost_usd: 100, created_at: new Date(Date.now() - 2 * 86_400_000).toISOString() });
+    expect((await sumRunCostsSince(service, since)) - before.since).toBeCloseTo(0.375, 9);
+    expect((await sumRunCostsSince(service, dayAgo)) - before.dayAgo).toBeCloseTo(0.375, 9);
+    expect((await sumRunCostsSince(service, threeDaysAgo)) - before.threeDaysAgo).toBeCloseTo(100.375, 9);
+    expect(await sumRunCostsSince(service, "2999-01-01T00:00:00.000Z")).toBe(0);
+    await expect(sumRunCostsSince(service, "today")).rejects.toThrow();
+  });
+
+  it("STG-1 sumRunCostsSince reads every page: 1001 runs in one window add up exactly", async () => {
+    const companyId = owned.companyId;
+    const window = "2001-01-01T00:00:00.000Z";
+    const before = await sumRunCostsSince(service, window);
+    const rows = Array.from({ length: 1001 }, (_, i) => ({ company_id: companyId, role: "research", model: "m", runtime: "mock", status: "succeeded", cost_usd: 0.001, created_at: new Date(Date.parse(window) + i * 1000).toISOString() }));
+    const { error } = await service.from("agent_runs").insert(rows);
+    expect(error).toBeNull();
+    expect((await sumRunCostsSince(service, window)) - before).toBeCloseTo(1.001, 9);
   });
 
   it("OBS-1 (M6): a run carries its Langfuse trace id, null without a tracer", async () => {

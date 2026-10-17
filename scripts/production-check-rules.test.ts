@@ -1,7 +1,7 @@
 /** STG-1, TST-5: the env-dependent rules the worker's /health line must satisfy, on their own (the check wires them in `production-check-env.test.ts`). */
 import { describe, expect, it } from "vitest";
 import { MODEL_PROFILES } from "@north/core";
-import { failedHealthRules, healthFacts, healthRulesFor, isCheckEnv, type CheckEnv, type HealthLine } from "./production-check-rules";
+import { budgetFacts, failedHealthRules, healthFacts, healthRulesFor, isCheckEnv, type CheckEnv, type HealthLine } from "./production-check-rules";
 
 const budget = { capUsd: 5, spentUsd: 0.4, unpriced: 0, exhausted: false };
 const production: HealthLine = { mode: "sandbox", runtime: "mock", profile: "production", fence: false, gateway: "off", env: "production", unsubscribe: true, budget: null };
@@ -170,3 +170,18 @@ describe("STG-1 healthRulesFor", () => {
     expect(healthFacts({ ...production, profile: "smoke\nPASS worker-health", gateway: "x".repeat(200), env: 7 })).toBe("profile ?, fence off, gateway ?, env ?");
   });
 });
+
+describe("STG-1 budgetFacts: the day's budget on the check's detail line", () => {
+  it("STG-1 shows the spend, the cap and the part seeded at boot; no cap reads as such", () => {
+    expect(budgetFacts({ budget: { capUsd: 1, spentUsd: 0.4321, unpriced: 0, exhausted: false, seededUsd: 0.4 } })).toBe(", budget $0.4321 of $1.0000 (seeded $0.4000 at boot)");
+    expect(budgetFacts({ budget: { capUsd: 0, spentUsd: 0.5, unpriced: 0, exhausted: false, seededUsd: 0 } })).toBe(", budget $0.5000 (no cap)");
+  });
+
+  it("STG-1 says nothing without a budget, and leaves out what an older worker or an odd value does not report", () => {
+    expect(budgetFacts({ budget: null })).toBe("");
+    expect(budgetFacts({})).toBe("");
+    expect(budgetFacts({ budget: { capUsd: 1, spentUsd: 0.25, unpriced: 0, exhausted: false } })).toBe(", budget $0.2500 of $1.0000");
+    expect(budgetFacts({ budget: { capUsd: "1", spentUsd: Number.NaN, seededUsd: "x" } })).toBe(", budget ? of ?");
+  });
+});
+

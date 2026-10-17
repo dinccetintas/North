@@ -20,7 +20,7 @@ describe("STG-1 staging check", () => {
   it("fence on, env staging, the smoke profile and a recording gateway pass, with what it found in the detail", async () => {
     const result = await workerCheck({ ...stagingWorker, profile: "smoke", fence: true, env: "staging", gateway: "record" }, "staging");
     expect(result).toMatchObject({ id: "worker-health", status: "pass" });
-    expect(result.detail).toBe("mode live, runtime claude-agent-sdk, webhooks stripe on, sentry on, clock = wall, profile smoke, fence on, gateway record, env staging");
+    expect(result.detail).toBe("mode live, runtime claude-agent-sdk, webhooks stripe on, sentry on, clock = wall, profile smoke, fence on, gateway record, env staging, budget $0.1000 of $0.5000 (seeded $0.0500 at boot)");
   });
 
   it("any of the three profiles passes in staging; a gateway that replays, a production env or a missing budget on the SDK runtime fails", async () => {

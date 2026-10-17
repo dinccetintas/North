@@ -124,3 +124,21 @@ export function healthFacts(health: HealthLine): string {
   const fence = typeof health.fence === "boolean" ? (health.fence ? "on" : "off") : "?";
   return `profile ${word(health.profile)}, fence ${fence}, gateway ${word(health.gateway)}, env ${word(health.env)}`;
 }
+
+const dollars = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(4)}` : "?");
+
+/**
+ * STG-1: the day's model budget for the check's detail line, e.g.
+ * `, budget $0.4321 of $1.0000 (seeded $0.4000 at boot)`; empty without a
+ * budget object, `(no cap)` for a cap of 0, and the seed left out when the
+ * worker does not report one (older than the boot seed).
+ */
+export function budgetFacts(health: HealthLine): string {
+  const b = health.budget;
+  if (!isObj(b)) return "";
+  const spent = `, budget ${dollars(b.spentUsd)}`;
+  if (b.capUsd === 0) return `${spent} (no cap)`;
+  const seeded = typeof b.seededUsd === "number" && Number.isFinite(b.seededUsd) ? ` (seeded ${dollars(b.seededUsd)} at boot)` : "";
+  return `${spent} of ${dollars(b.capUsd)}${seeded}`;
+}
+

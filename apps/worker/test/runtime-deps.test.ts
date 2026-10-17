@@ -46,16 +46,18 @@ const roles = await loadRoles(AGENTS_DIR);
 /** Seams that record what `buildRuntimeDeps` hands to the gateway, the runtime and the LLM client, without starting a server. */
 function recordingSeams(extra: Partial<RuntimeDepsOptions> = {}) {
   const gatewayOptions: GatewayOptions[] = [];
+  const spendReads: string[] = [];
   const runtimeDeps: ClaudeAgentSdkDeps[] = [];
   const llmClients: AnthropicClientOptions[] = [];
   const llmCalls: Array<Parameters<typeof selectLlm>> = [];
-  const fakeGateway: Gateway = { baseUrl: "http://127.0.0.1:4999", close: vi.fn(async () => undefined), stats: () => ({ requests: 0, spentUsd: 0, misses: 0, unpriced: 0, capUsd: 0.5, exhausted: false }) };
+  const fakeGateway: Gateway = { baseUrl: "http://127.0.0.1:4999", close: vi.fn(async () => undefined), stats: () => ({ requests: 0, spentUsd: 0, misses: 0, unpriced: 0, capUsd: 0.5, exhausted: false, seededUsd: 0 }) };
   const options: RuntimeDepsOptions = {
     roles,
     clock: () => new Date("2026-03-01T10:00:00Z"),
     embedder: nullEmbedder,
     hostEnv: HOST_ENV,
     startGateway: async (opts) => (gatewayOptions.push(opts), fakeGateway),
+    readSpentSince: async (since) => (spendReads.push(since), 0),
     selectRuntime: (deps, env) => (runtimeDeps.push(deps), selectRuntime(deps, env)),
     selectLlm: (env, mock, opts) => {
       llmCalls.push([env, mock, opts]);
@@ -63,7 +65,7 @@ function recordingSeams(extra: Partial<RuntimeDepsOptions> = {}) {
     },
     ...extra,
   };
-  return { options, gatewayOptions, runtimeDeps, llmClients, llmCalls, fakeGateway };
+  return { options, gatewayOptions, spendReads, runtimeDeps, llmClients, llmCalls, fakeGateway };
 }
 
 describe("SEC-1 buildRuntimeDeps with the Agent SDK runtime", () => {
@@ -128,7 +130,7 @@ describe("SEC-1 buildRuntimeDeps with the Agent SDK runtime", () => {
     const dir = await mkdtemp(join(tmpdir(), "north-runtime-deps-"));
     try {
       const env = sdkEnv({ ANTHROPIC_API_KEY: undefined, NORTH_CASSETTE_MODE: "replay", NORTH_CASSETTE_DIR: dir });
-      const result = await buildRuntimeDeps(env, db, NO_TRACER, silent, { roles, clock: () => new Date(), embedder: nullEmbedder, hostEnv: HOST_ENV });
+      const result = await buildRuntimeDeps(env, db, NO_TRACER, silent, { roles, clock: () => new Date(), embedder: nullEmbedder, hostEnv: HOST_ENV, readSpentSince: async () => 0 });
       expect(result.gateway?.mode).toBe("replay");
       expect(result.gateway?.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(result.gateway?.stats()).toMatchObject({ requests: 0, capUsd: 0.5, exhausted: false });
@@ -145,7 +147,7 @@ describe("SEC-1 buildRuntimeDeps with the Agent SDK runtime", () => {
       res.end(completion("claude-haiku-5-5", { input_tokens: 1000, output_tokens: 200 }, '{"answer":4}'));
     };
     const env = sdkEnv({ NORTH_CASSETTE_MODE: "off", ANTHROPIC_BASE_URL: upstream.url, NORTH_DAILY_CAP_USD: "1" });
-    const result = await buildRuntimeDeps(env, db, NO_TRACER, silent, { roles, clock: () => new Date(), embedder: nullEmbedder, hostEnv: HOST_ENV });
+    const result = await buildRuntimeDeps(env, db, NO_TRACER, silent, { roles, clock: () => new Date(), embedder: nullEmbedder, hostEnv: HOST_ENV, readSpentSince: async () => 0 });
     try {
       expect(await result.llm.structured({ schema: z.object({ answer: z.number() }), system: "s", user: "2+2?", model: "classifier" })).toEqual({ answer: 4 });
       expect(upstream.seen).toHaveLength(1);
@@ -156,6 +158,59 @@ describe("SEC-1 buildRuntimeDeps with the Agent SDK runtime", () => {
       await result.gateway?.close();
       await upstream.close();
     }
+  });
+});
+
+describe("STG-1 the gateway's day cap survives a restart: the budget is seeded at boot", () => {
+  const BOOT = "2026-03-01T00:00:00.000Z";
+
+  it("STG-1 seeds the budget with the ledger's spend since the start of the worker clock's UTC day", async () => {
+    const seams = recordingSeams({ readSpentSince: async (since) => (seams.spendReads.push(since), 0.2) });
+    const logs: string[] = [];
+    await buildRuntimeDeps(sdkEnv(), db, NO_TRACER, (m) => logs.push(m), seams.options);
+    expect(seams.spendReads).toEqual([BOOT]);
+    expect(logs).toEqual([`gateway: $0.2000 spent since ${BOOT} (agent_runs) counts against today's $0.5 cap`]);
+    expect(seams.gatewayOptions[0]?.budget.stats()).toMatchObject({ capUsd: 0.5, spentUsd: 0.2, seededUsd: 0.2, day: "2026-03-01" });
+  });
+
+  it("STG-1 a failed read (or an answer that is not a cost) fails closed: the day counts as spent (the full cap), nothing is admitted, and it is logged", async () => {
+    const seams = recordingSeams({ readSpentSince: async () => Promise.reject(new Error("db unreachable")) });
+    const logs: string[] = [];
+    await buildRuntimeDeps(sdkEnv(), db, NO_TRACER, (m) => logs.push(m), seams.options);
+    const budget = seams.gatewayOptions[0]?.budget;
+    expect(budget?.stats()).toMatchObject({ capUsd: 0.5, spentUsd: 0.5, seededUsd: 0.5 });
+    expect(budget?.reserve(0)).toBe(false);
+    expect(logs.join("\n")).toMatch(/could not read today's spend.*db unreachable.*full cap/);
+    for (const answer of [Number.NaN, -1]) {
+      const odd = recordingSeams({ readSpentSince: async () => answer });
+      await buildRuntimeDeps(sdkEnv(), db, NO_TRACER, silent, odd.options);
+      expect(odd.gatewayOptions[0]?.budget.stats()).toMatchObject({ spentUsd: 0.5, seededUsd: 0.5 });
+    }
+  });
+
+  it("STG-1 with no cap (0) nothing is read and nothing is seeded", async () => {
+    const seams = recordingSeams();
+    await buildRuntimeDeps(sdkEnv({ NORTH_DAILY_CAP_USD: "0" }), db, NO_TRACER, silent, seams.options);
+    expect(seams.spendReads).toEqual([]);
+    expect(seams.gatewayOptions[0]?.budget.stats()).toMatchObject({ capUsd: 0, spentUsd: 0, seededUsd: 0 });
+  });
+
+  it("STG-1 by default the seed is read from agent_runs since the day's start, through the db", async () => {
+    const queries: Array<{ table: string; gte: [string, string] }> = [];
+    const pages = [[{ id: "a", cost_usd: "0.125" }, { id: "b", cost_usd: 0.25 }], []];
+    const fakeDb = {
+      from: (table: string) => ({
+        select: () => ({
+          gte: (column: string, value: string) => ({
+            order: () => ({ range: async () => (queries.push({ table, gte: [column, value] }), { data: pages.shift() ?? [], error: null }) }),
+          }),
+        }),
+      }),
+    } as unknown as DbClient;
+    const seams = recordingSeams();
+    await buildRuntimeDeps(sdkEnv(), fakeDb, NO_TRACER, silent, { roles, clock: () => new Date("2026-03-01T10:00:00Z"), embedder: nullEmbedder, hostEnv: HOST_ENV, startGateway: async (opts) => (seams.gatewayOptions.push(opts), seams.fakeGateway) });
+    expect(queries[0]).toEqual({ table: "agent_runs", gte: ["created_at", BOOT] });
+    expect(seams.gatewayOptions[0]?.budget.stats()).toMatchObject({ spentUsd: 0.375, seededUsd: 0.375 });
   });
 });
 
@@ -185,6 +240,7 @@ describe("SEC-1 buildRuntimeDeps with the mock runtime", () => {
     const seams = recordingSeams();
     const result = await buildRuntimeDeps(workerEnv(base as NodeJS.ProcessEnv), db, NO_TRACER, silent, seams.options);
     expect(seams.gatewayOptions).toEqual([]);
+    expect(seams.spendReads).toEqual([]);
     expect(result.gateway).toBeNull();
     expect(result.runtime.name).toBe("mock");
     expect(result.llm.name).toBe("mock");

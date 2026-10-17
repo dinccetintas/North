@@ -29,7 +29,7 @@ export interface Call {
 /** A production worker on the mock runtime, every field the check reads green. */
 export const healthyWorker = { ok: true, app: "north-worker", mode: "sandbox", runtime: "mock", webhooks: { sentry: true, stripe: true }, unsubscribe: true, clockIsWall: true, profile: "production", fence: false, gateway: "off", env: "production", budget: null };
 /** A staging worker on the SDK runtime: the fence on, the smoke profile, the gateway recording, its day's budget on the line. */
-export const stagingWorker = { ...healthyWorker, mode: "live", runtime: "claude-agent-sdk", profile: "smoke", fence: true, gateway: "record", env: "staging", budget: { capUsd: 0.5, spentUsd: 0.1, unpriced: 0, exhausted: false } };
+export const stagingWorker = { ...healthyWorker, mode: "live", runtime: "claude-agent-sdk", profile: "smoke", fence: true, gateway: "record", env: "staging", budget: { capUsd: 0.5, spentUsd: 0.1, unpriced: 0, exhausted: false, seededUsd: 0.05 } };
 /** A manifest with the content the PWA check asks for. */
 export const goodManifest = {
   name: "North",

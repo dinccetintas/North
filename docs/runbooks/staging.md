@@ -1,17 +1,13 @@
 # Runbook: staging
 
 Staging (STG-1) is production's topology with its own accounts, fenced to test
-accounts: `apps/web` in the Vercel Pro team's `staging` custom environment,
-`apps/worker` as the Fly app `north-worker-staging`
-(`apps/worker/fly.staging.toml`), the hosted Supabase project `north-staging`,
-the Inngest environment `staging`. Stripe (sandbox), Resend (a staging
-subdomain that sends and receives), VAPID, Langfuse (`north-staging`) and
-optionally Sentry are accounts with keys. The founder logs into it; the nightly
-journey (T3) and the milestone acceptance (T4) run against it. Every file that
-describes staging lives in the repo (`apps/worker/fly.staging.toml`,
-`apps/worker/Dockerfile`, `apps/web/vercel.json`, `.env.example`'s staging
-block, this runbook, `scripts/production-check.ts`,
-`scripts/staging-purge-e2e.ts`); only the values live in dashboards.
+accounts: the web in the Vercel Pro team's `staging` custom environment, the
+worker as the Fly app `north-worker-staging` (`apps/worker/fly.staging.toml`),
+Supabase `north-staging`, the Inngest environment `staging`; Stripe (sandbox),
+Resend (a subdomain that sends and receives), VAPID, Langfuse and optionally
+Sentry are accounts with keys. The founder logs into it; the nightly journey
+(T3) and the milestone acceptance (T4) run against it. Every file describing
+it is in the repo; only the values live in dashboards.
 
 Rules that hold on every step:
 
@@ -24,19 +20,23 @@ Rules that hold on every step:
   target that is not on the `NORTH_FENCE_*` lists (the Meta sandbox ad account,
   the GitHub test org, `e2e-` Vercel projects, `staging.<domain>` inboxes, and
   `sk_test_` Stripe keys, built in). Empty lists deny everything (TST-5).
-- **Spend is capped twice**: the `north-test` Anthropic workspace ($50 limit) and
-  the gateway's `NORTH_DAILY_CAP_USD` (1 on the `smoke` profile).
+- **Spend: a hard ceiling and a daily cap.** The `north-test` Anthropic
+  workspace's $50 limit is the hard ceiling. Under it the model gateway caps
+  each UTC day at `NORTH_DAILY_CAP_USD` (1 on the `smoke` profile). Every wake
+  from auto-stop, deploy and `fly secrets set` restarts the process, so the
+  worker seeds the gateway at boot with the day's spend recorded in
+  `agent_runs` (`/health` → `budget.seededUsd`); the cap survives restarts
+  that way, and a failed read seeds the full cap (nothing runs; fail closed).
+  The seed is a lower bound: `agent_runs` holds the SDK's price per run, not
+  the gateway's, and a run cut off by the restart may be missing from it.
+  M8 follow-up: the gateway persists its own priced spend per day.
 - The founder provisions the accounts (`docs/evidence/M7/FOUNDER-CHECKLIST.md`,
   Task 23); whoever deploys runs the commands below. Write values as
   `<your key>` in notes and tickets, never the key.
 
-Placeholders: `<web>` is the web's production host (staging is
-`staging.<web>`), `<domain>` the mail domain (staging mail is
-`staging.<domain>`), `<staging ref>` the `north-staging` project ref.
-
-Order: Supabase → Inngest → Fly → Vercel → Stripe → Sentry, Resend, VAPID,
-Langfuse → staging check → mode and profile → the e2e purge → test accounts →
-incidents. Section 15 lists what was never run.
+Placeholders: `<web>` is the production web host (staging is `staging.<web>`),
+`<domain>` the mail domain, `<staging ref>` the `north-staging` project ref.
+Sections follow production's order; section 15 lists what was never run.
 
 ## 1. Supabase (`north-staging`)
 
@@ -70,24 +70,24 @@ incidents. Section 15 lists what was never run.
    `smtp.resend.com`, port 465, user `resend`, password the sending key
    (section 7), sender `North Staging <auth@staging.<domain>>`. Check Auth →
    Rate Limits allows a few sign-ins an hour (each run signs up once).
-7. The service role key goes to Fly staging (section 3), the GitHub environment
-   `staging` (`STAGING_SERVICE_ROLE_KEY`, for the e2e purge) and, for a one-off
-   command, your shell. Nowhere else.
+7. The service role key goes only to Fly staging, the GitHub environment
+   `staging` (`STAGING_SERVICE_ROLE_KEY`, the e2e purge) and a one-off shell.
 
 ## 2. Inngest (environment `staging`)
 
 1. Create the environment `staging`; copy its **event key** and **signing key**.
-2. After sections 3 and 4 are deployed, sync both serve endpoints:
-   `https://staging.<web>/api/inngest` and
+2. After sections 3 and 4, sync `https://staging.<web>/api/inngest` and
    `https://north-worker-staging.fly.dev/api/inngest`.
-3. The web sits behind Deployment Protection (section 4), so Inngest needs the
-   bypass secret to reach `/api/inngest`: give it to Inngest's Vercel
-   integration, or sync the URL with `?x-vercel-protection-bypass=<secret>`
-   (Vercel reads the bypass from a header or that query parameter). Not
-   verified in this task: on the first sync the app must list its functions; a
-   401 means the bypass is missing.
-4. Both processes get both keys; `INNGEST_DEV` stays unset (the staging check
-   fails on a serve endpoint in dev mode).
+3. The web is behind Deployment Protection (section 4), so Inngest needs the
+   bypass secret. Prefer the header: give the secret to Inngest's Vercel
+   integration where it supports Deployment Protection, so it sends
+   `x-vercel-protection-bypass` itself. The fallback, syncing
+   `…/api/inngest?x-vercel-protection-bypass=<secret>` (Vercel reads that
+   query parameter too), puts the secret in the app URL Inngest's dashboard
+   shows to everyone with access; rotate it if that URL is shared. Unverified:
+   the first sync must list the functions; a 401 means no bypass.
+4. Both processes get both keys; `INNGEST_DEV` stays unset (the check fails on
+   a serve endpoint in dev mode).
 
 ## 3. Fly (the worker, `north-worker-staging`)
 
@@ -106,29 +106,29 @@ fly ssh console --config apps/worker/fly.staging.toml \
 curl -fsS https://north-worker-staging.fly.dev/health
 ```
 
-- The first deploy boots only with that first set: `NODE_ENV=production` needs
-  `INNGEST_SIGNING_KEY`; live mode needs `CONNECTIONS_ENCRYPTION_KEY` and
-  `NORTH_WORKER_PUBLIC_URL`; the SDK runtime needs `ANTHROPIC_API_KEY` (the
-  `north-test` workspace's key, never production's); `UNSUBSCRIBE_SECRET` is 16
-  characters or more and never `sandbox-unsubscribe-secret` (without it every
-  outreach send is refused).
-- The volume mounted at `/data` hides the image's `/data` directories (root
-  owned on a fresh volume), so the `chown` line runs once, before the first
-  agent run (Task 15 ruling). If a run logs `EACCES` under `/data`, run it
-  again and `fly machine restart --config apps/worker/fly.staging.toml`.
-- `fly.staging.toml` lists every secret by group; the connection and fence
-  secrets come in section 13, the billing ones in section 5, the delivery and
-  observability ones in sections 6–9. Until section 13 the fence lists are
-  empty and the fence denies every outside target.
-- `auto_stop_machines = true`, `min_machines_running = 0`: an idle staging
-  machine stops and the next request (Inngest's cron calls included) starts it.
-  The first request after a stop waits for the boot; `curl` the health line
-  before a check.
-- Mode, runtime, profile and cap are in `[env]` (`live`, `claude-agent-sdk`,
-  `smoke`, `$1`); section 11 changes them for one run.
-- The task workspaces of purged e2e users stay on the volume (section 12). Once
-  a week, **staging only**:
-  `fly ssh console --config apps/worker/fly.staging.toml -C "sh -c 'find /data/workspaces /data/agent-config -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} +'"`.
+- The first deploy boots only with that set: production mode needs
+  `INNGEST_SIGNING_KEY`, live mode `CONNECTIONS_ENCRYPTION_KEY` and
+  `NORTH_WORKER_PUBLIC_URL`, the SDK runtime `ANTHROPIC_API_KEY` (the
+  `north-test` key); `UNSUBSCRIBE_SECRET` is 16+ characters and never the
+  sandbox default (without it every outreach send is refused).
+- A volume at `/data` hides the image's `/data` directories (root owned when
+  fresh), so the `chown` line runs once before the first agent run (Task 15
+  ruling); after an `EACCES` under `/data`, run it again and `fly machine restart`.
+- The other secrets come in sections 5–9 and 13 (`fly.staging.toml` lists them
+  by group); until section 13 the fence lists are empty and deny everything.
+- `auto_stop_machines = true`, `min_machines_running = 0`: an idle machine
+  stops and the next request (Inngest crons included) waits for its boot, so
+  `curl` the health line before a check. It stays on: an always-on
+  `performance-2x` is outside the budget. Mode, runtime, profile and the cap
+  (`$1` per UTC day, seeded at boot) are in `[env]`; section 11 changes them.
+- A task's workspace is `/data/workspaces/<task id>` (`taskWorkspace`,
+  `packages/agents`) and stays after the e2e purge (section 12);
+  `/data/workspaces/exports` and `/data/agent-config/<company id>` (each
+  company's agent config) must persist. Weekly, **staging only**, remove the
+  task workspaces untouched for 2 days and nothing else (GNU find):
+  ```bash
+  fly ssh console --config apps/worker/fly.staging.toml -C "sh -c 'find /data/workspaces -mindepth 1 -maxdepth 1 -type d -mtime +2 -regextype posix-extended -regex \".*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\" -print -exec rm -rf {} +'"
+  ```
 
 ## 4. Vercel (the web, the Pro team's `staging` environment)
 
@@ -208,15 +208,17 @@ Facts below from Resend's docs, read 2026-10-17.
 1. Domains → Add `staging.<domain>`; add the sending records Resend shows;
    verify.
 2. **Receiving**: the domain's details → the receiving toggle on; add the single
-   MX record shown, at the lowest priority for that name. A subdomain is the
-   recommended shape when the root already has MX records. Receiving needs no
+   MX record shown, with the priority value Resend shows (it will be the only
+   MX record on the subdomain). A subdomain is the recommended shape when the
+   root already has MX records. Receiving needs no
    TXT record. Resend receives for **any** address on the domain: the inbox
    `e2e@staging.<domain>` and the per-run sign-up addresses
    `e2e-<stamp>-<project>@staging.<domain>` of the live journey.
 3. Keys: a **sending** key limited to the domain (the worker's
-   `RESEND_API_KEY` and Supabase's SMTP password, section 1.6), and a key that
-   may read received mail for the e2e reader only (`E2E_RESEND_KEY` in the
-   GitHub environment `staging`). The reader (Task 20) lists
+   `RESEND_API_KEY` and Supabase's SMTP password, section 1.6), and a
+   **full-access** key for the e2e reader (`E2E_RESEND_KEY`): a sending-only
+   key cannot read received mail. The full-access key lives only in the GitHub
+   environment `staging`, never on Fly, Vercel or in a file. The reader (Task 20) lists
    `GET https://api.resend.com/emails/receiving?limit=<1..100>` (paged with
    `after`/`before`; there is **no recipient filter**, so it matches `to`
    itself) and reads `GET https://api.resend.com/emails/receiving/{id}` for
@@ -254,16 +256,15 @@ unset VERCEL_AUTOMATION_BYPASS_SECRET STRIPE_READ_KEY
 ```
 
 `pnpm staging:check` already passes `--env staging` (a second `--env` is a
-usage error); `pnpm production:check -- --env staging …` is the same command.
-`-s` keeps pnpm's banner out of the JSON file; drop `--json` to read it as
-lines. Green means every check `pass`: the worker line with `fence` true,
-`env` staging, `mode` live, `runtime` claude-agent-sdk, a gateway that is not
-replaying, `unsubscribe` true and the day's budget on the line; the web line
-with `llm` mock; `/sandbox/sites/` and `/sandbox/clock` 404 on the worker; no
-anonymous row in `companies`; both buckets private; manifest and service
-worker; both Inngest endpoints in cloud mode with both keys; the Stripe endpoint (with the read key; without it, and
-without `NORTH_USAGE_READ_KEY`, those two `skip`, which does not fail). Exit 1
-on any failure. Run it after every deploy and first in any incident.
+usage error); `-s` keeps pnpm's banner out of the JSON; drop `--json` for
+lines. Green is every check `pass`: the worker with `fence` true, `env`
+staging, `mode` live, `runtime` claude-agent-sdk, no replaying gateway,
+`unsubscribe` true and the day's budget (spend, cap, boot seed); the web with
+`llm` mock; no sandbox route on the worker; no anonymous `companies` row;
+private buckets; manifest and service worker; both Inngest endpoints in cloud
+mode; the Stripe endpoint (`skip` without the read key, as `usage-ratios` is
+without `NORTH_USAGE_READ_KEY`; a skip does not fail). Run it after every
+deploy and first in any incident.
 
 ## 11. Mode, runtime and profile (no flip)
 
@@ -282,36 +283,36 @@ unset both to return. Never turn the fence off on staging.
 ## 12. Purging e2e users (RET-1, ADR 0016)
 
 Every live journey signs up a fresh `e2e-<stamp>-<project>@staging.<domain>`
-user. `pnpm staging:purge-e2e` lists the auth users whose address has that
-shape (`e2e-` and then anything, at exactly `E2E_MAIL_DOMAIN`, or at any
-`staging.<domain>` host when it is unset) and, with `--yes`, purges each through
-the one delete path: it ends the user's entitlement with the service role
-(ADR 0016's smoke cleanup), then the worker's `purgeOwner` (the purge mark,
-storage objects, `purge_owner` with reason `e2e`, one `purge_log` row each,
-then the auth user).
+user. `pnpm staging:purge-e2e` lists the auth users whose address is `e2e-`
+and then anything at exactly `E2E_MAIL_DOMAIN` (required) and who were created
+at least `--older-than-minutes` ago (default 120, so a run still going keeps
+its user; the dry run lists the younger ones it skips), and with `--yes`
+purges each through the one delete path: it ends the user's entitlement with
+the service role (ADR 0016's smoke cleanup), then the worker's `purgeOwner`
+(the purge mark, storage objects, `purge_owner` with reason `e2e`, one
+`purge_log` row each, then the auth user).
 
 ```bash
 read -rs SUPABASE_SERVICE_ROLE_KEY && export SUPABASE_SERVICE_ROLE_KEY   # north-staging's service role key
 export NORTH_ENV=staging NORTH_PRODUCTION_SUPABASE_REF=<production ref> \
   SUPABASE_URL=https://<staging ref>.supabase.co E2E_MAIL_DOMAIN=staging.<domain>
-pnpm staging:purge-e2e              # lists
-pnpm staging:purge-e2e -- --yes     # purges, prints the count
+pnpm -s staging:purge-e2e              # lists what it would purge and what it skips
+pnpm -s staging:purge-e2e -- --yes     # purges, prints the count
 unset SUPABASE_SERVICE_ROLE_KEY NORTH_ENV NORTH_PRODUCTION_SUPABASE_REF SUPABASE_URL E2E_MAIL_DOMAIN
 ```
 
-It refuses before reading anything unless `NORTH_ENV=staging` is set **and**
-`SUPABASE_URL` does not contain `NORTH_PRODUCTION_SUPABASE_REF`; without a
-production ref it refuses unless you pass `--i-know-this-is-not-production`.
-Task workspaces stay on the worker's volume (the image carries no scripts);
-section 3 prunes them. The nightly and acceptance workflows run the same
-command last (Task 21), with the environment's `STAGING_SUPABASE_URL` and
+It refuses before reading anything unless `NORTH_ENV=staging` and
+`E2E_MAIL_DOMAIN=staging.<domain>` are set **and** no label of
+`SUPABASE_URL`'s host equals `NORTH_PRODUCTION_SUPABASE_REF` (any case); with
+no production ref, only `--i-know-this-is-not-production` lets it run. Task
+workspaces stay on the volume (section 3 prunes them). The nightly and
+acceptance workflows run it last (Task 21) with `STAGING_SUPABASE_URL` and
 `STAGING_SERVICE_ROLE_KEY` as `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 
 ## 13. Test accounts and connections (the fence, TST-5)
 
-Each connection is the founder's test account, and each allow-list names only
-it. Set the worker's secrets with `--config apps/worker/fly.staging.toml`, the
-public ids on Vercel `staging` too.
+Each connection is a founder's test account and each allow-list names only it;
+worker secrets with `--config apps/worker/fly.staging.toml`, public ids on Vercel too.
 
 1. **GitHub**: a test organisation (e.g. `<test-org>`) and a staging OAuth app
    owned by it: homepage `https://staging.<web>`, callback
@@ -351,46 +352,47 @@ public ids on Vercel `staging` too.
    `fly secrets set AGENT_RUNTIME=mock --config apps/worker/fly.staging.toml`
    (and `INTEGRATIONS_MODE=sandbox` if external effects are the problem), or
    `fly scale count 0 --config apps/worker/fly.staging.toml`.
-3. Spend: the gateway's `/health` `budget` (the day's spend and cap), then the
-   `north-test` workspace in the Anthropic console.
+3. Spend: the gateway's `/health` `budget` (the day's spend, cap and boot
+   seed; `staging:check` prints them), then the `north-test` workspace in the
+   Anthropic console (the hard ceiling).
 4. Inngest `staging` → Runs; Langfuse `north-staging`;
    `fly logs --config apps/worker/fly.staging.toml`.
 
 ## 15. Founder-gated: what this task could not verify
 
-Task 19 wrote the files and proved the scripts locally (the purge path, the
-guard, the check's bypass header, the TOML against the worker's env schema);
-no staging account existed, so **nothing here has run against staging**. Once
-the founder has provisioned the accounts (Supabase `north-staging`, Fly app and
-token, the Vercel Pro `staging` environment with its domain and bypass secret,
-Inngest `staging`, Resend `staging.<domain>` with receiving and its keys, the
-Stripe sandbox, the GitHub test org and its OAuth app, the Google OAuth client
-in Testing, the Meta sandbox ad account, Langfuse `north-staging`, the
-`north-test` key as Fly's `ANTHROPIC_API_KEY` and as `ANTHROPIC_TEST_API_KEY`),
-run, in order:
+Task 19 proved the scripts locally (the purge path, the guard, the age floor,
+the check's bypass header, the gateway's boot seed, the TOML against the
+worker's env schema); no staging account existed, so **nothing here has run
+against staging**. Once the founder has provisioned the accounts (section 13,
+`FOUNDER-CHECKLIST.md`), run these in order with `set -o pipefail`; each writes
+one evidence file under `docs/evidence/M7/` and prints no key.
 
-1. Supabase (section 1): `cd packages/db && npx supabase link --project-ref <staging ref> && npx supabase db push && npx supabase functions deploy embed`,
-   then the two `vault.create_secret` lines, the Auth URLs and the Resend SMTP.
-   Evidence: the push output; `select public.embedding_queue_depth();` at 0
-   after a memory write; a magic link arriving at `e2e@staging.<domain>`.
-2. Fly (section 3): `fly launch --no-deploy --copy-config --config apps/worker/fly.staging.toml`,
-   `fly volumes create north_staging_data --config apps/worker/fly.staging.toml --region ams --size 3`,
-   the `fly secrets set … --config apps/worker/fly.staging.toml` lines of
-   sections 3, 5, 7–9 and 13,
-   `fly deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile`,
-   the `chown` line. Evidence: `curl -fsS https://north-worker-staging.fly.dev/health`
-   reads `env` staging, `fence` true, `runtime` claude-agent-sdk, `mode` live.
-3. Vercel (section 4): the environment, its variables, Deployment Protection,
-   then `vercel deploy --target=staging`. Evidence: `https://staging.<web>/login`
-   opens for a team member.
-4. Inngest (section 2): sync both endpoints, the web's through the bypass.
-   Evidence: both apps listed with their functions.
-5. The check (section 10):
-   `pnpm -s staging:check -- --web https://staging.<web> --worker https://north-worker-staging.fly.dev --supabase https://<staging ref>.supabase.co --anon-key <staging publishable key> --json > docs/evidence/M7/staging-check.json`
-   with `VERCEL_AUTOMATION_BYPASS_SECRET` exported. Evidence:
-   `docs/evidence/M7/staging-check.json` with `"ok": true` and every check `pass`
-   (`usage-ratios` is `skip` without `NORTH_USAGE_READ_KEY`, which is fine).
-6. The connections (section 13). Evidence: one screenshot per connected test
-   account in `docs/evidence/M7/`.
-7. After the first live journey (Task 20), the purge (section 12):
-   `pnpm staging:purge-e2e -- --yes`. Evidence: `purged N of N e2e user(s)`.
+1. Supabase (section 1; then append the `embedding_queue_depth()` reading, 0 after a memory write):
+   ```bash
+   (cd packages/db && npx supabase link --project-ref <staging ref> && npx supabase db push && npx supabase functions deploy embed) 2>&1 | tee docs/evidence/M7/staging-supabase.txt
+   ```
+2. Fly (section 3, after its secrets): the health line reads `env` staging, `fence` true, `runtime` claude-agent-sdk, `mode` live, a `budget` with `seededUsd`.
+   ```bash
+   { fly deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile && fly ssh console --config apps/worker/fly.staging.toml -C "sh -c 'mkdir -p /data/workspaces /data/sandbox /data/agent-config && chown -R node:node /data && ls -ld /data/*'" && curl -fsS https://north-worker-staging.fly.dev/health; } 2>&1 | tee docs/evidence/M7/staging-fly-deploy.txt
+   ```
+3. Vercel (section 4; `VERCEL_AUTOMATION_BYPASS_SECRET` exported): `login 200`, and `401` without the bypass.
+   ```bash
+   { vercel deploy --target=staging && curl -sS -o /dev/null -w "login %{http_code}\n" -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" https://staging.<web>/login && curl -sS -o /dev/null -w "without bypass %{http_code}\n" https://staging.<web>/login; } 2>&1 | tee docs/evidence/M7/staging-vercel.txt
+   ```
+4. Inngest (section 2, after both syncs): both introspections read `"mode":"cloud"` with a function count.
+   ```bash
+   { curl -sS https://north-worker-staging.fly.dev/api/inngest; echo; curl -sS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" https://staging.<web>/api/inngest; echo; } | tee docs/evidence/M7/staging-inngest.txt
+   ```
+5. Resend (section 7, after a magic link went to `e2e@staging.<domain>`): the list's metadata (`id`, `to`, `from`, `subject`, `created_at`) shows it.
+   ```bash
+   curl -sS "https://api.resend.com/emails/receiving?limit=5" -H "Authorization: Bearer $E2E_RESEND_KEY" | tee docs/evidence/M7/staging-resend.txt
+   ```
+6. The check (section 10; the bypass secret exported): `"ok": true`, every check `pass` (`usage-ratios` may `skip`).
+   ```bash
+   pnpm -s staging:check -- --web https://staging.<web> --worker https://north-worker-staging.fly.dev --supabase https://<staging ref>.supabase.co --anon-key <staging publishable key> --json | tee docs/evidence/M7/staging-check.json
+   ```
+7. The connections (section 13): one screenshot per test account, `docs/evidence/M7/staging-connection-<provider>.png`.
+8. After the first live journey (Task 20), the purge (section 12, its env exported): `purged N of N e2e user(s)`.
+   ```bash
+   pnpm -s staging:purge-e2e -- --yes 2>&1 | tee docs/evidence/M7/staging-purge.txt
+   ```

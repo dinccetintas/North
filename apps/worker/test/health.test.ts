@@ -28,7 +28,7 @@ const clock = new SimClock();
 
 const gateway = (exhausted: boolean): HealthGateway => ({
   mode: "replay",
-  stats: () => ({ requests: 3, spentUsd: 0.12, misses: 1, unpriced: 1, capUsd: 0.5, exhausted }),
+  stats: () => ({ requests: 3, spentUsd: 0.12, misses: 1, unpriced: 1, capUsd: 0.5, exhausted, seededUsd: 0.1 }),
 });
 
 describe("STG-1 workerHealth: profile, fence, gateway, env and budget", () => {
@@ -37,12 +37,12 @@ describe("STG-1 workerHealth: profile, fence, gateway, env and budget", () => {
     expect(health).toMatchObject({ ok: true, runtime: "claude-agent-sdk", profile: "smoke", fence: true, gateway: "replay", env: "staging" });
   });
 
-  it("TST-1 reports the day's budget with exhausted as its own field, apart from spentUsd", () => {
+  it("TST-1 reports the day's budget with exhausted as its own field, apart from spentUsd, and the boot seed (STG-1) as seededUsd", () => {
     const open = workerHealth(env, { clock: () => clock.now(), simClock: clock, tracing: false, fence: fencePolicyFor(env), gateway: gateway(false) });
-    expect(open.budget).toEqual({ capUsd: 0.5, spentUsd: 0.12, unpriced: 1, exhausted: false });
+    expect(open.budget).toEqual({ capUsd: 0.5, spentUsd: 0.12, unpriced: 1, exhausted: false, seededUsd: 0.1 });
     // A closed day is the flag alone: the spend is passed through as priced, never raised to the cap.
     const closed = workerHealth(env, { clock: () => clock.now(), simClock: clock, tracing: false, fence: fencePolicyFor(env), gateway: gateway(true) });
-    expect(closed.budget).toEqual({ capUsd: 0.5, spentUsd: 0.12, unpriced: 1, exhausted: true });
+    expect(closed.budget).toEqual({ capUsd: 0.5, spentUsd: 0.12, unpriced: 1, exhausted: true, seededUsd: 0.1 });
   });
 
   it("TST-5 without a gateway (mock runtime) the gateway is off and there is no budget; a fence that is off reads false", () => {

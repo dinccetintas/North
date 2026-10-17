@@ -34,8 +34,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("ADR 0016 purgeReadyPatch", () => {
-  it("ends the entitlement with retention_until behind the clock by more than the worker's margin, so purge_owner accepts it", () => {
+describe("STG-1 / ADR 0016 purgeReadyPatch", () => {
+  it("STG-1 ends the entitlement with retention_until behind the clock by more than the worker's margin, so purge_owner accepts it", () => {
     const patch = purgeReadyPatch(NOW);
     expect(patch.status).toBe("ended");
     expect(Date.parse(patch.retention_until)).toBe(NOW.getTime() - RETENTION_PAST_MS);
@@ -45,16 +45,16 @@ describe("ADR 0016 purgeReadyPatch", () => {
   });
 });
 
-describe("ADR 0016 purgeTestUser", () => {
-  it("writes the patch to the user's entitlement first and stops with a message naming the user when the database refuses", async () => {
+describe("STG-1 / ADR 0016 purgeTestUser", () => {
+  it("STG-1 writes the patch to the user's entitlement first and stops with a message naming the user when the database refuses", async () => {
     const { db, calls } = fakeDb({ message: "permission denied for table entitlements" });
     await expect(purgeTestUser(db, USER, "e2e", { now: () => NOW })).rejects.toThrow(new RegExp(`${USER}.*permission denied`));
     expect(calls).toEqual([{ table: "entitlements", patch: purgeReadyPatch(NOW), column: "user_id", value: USER }]);
   });
 });
 
-describe("ADR 0016 purgeSmokeUser", () => {
-  it("never throws: a failed purge is a readable warning naming the user and the cause, and the result is false", async () => {
+describe("STG-1 / ADR 0016 purgeSmokeUser", () => {
+  it("STG-1 never throws: a failed purge is a readable warning naming the user and the cause, and the result is false", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { db } = fakeDb({ message: "permission denied for table entitlements" });
     await expect(purgeSmokeUser(db, USER)).resolves.toBe(false);
@@ -62,7 +62,7 @@ describe("ADR 0016 purgeSmokeUser", () => {
     expect(String(warn.mock.calls[0]?.[0])).toMatch(new RegExp(`could not purge the smoke user ${USER}.*permission denied.*stay`));
   });
 
-  it("refuses a reason that is not a purge_owner label before touching the database", async () => {
+  it("STG-1 refuses a reason that is not a purge_owner label before touching the database", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { db, calls } = fakeDb(null);
     await expect(purgeSmokeUser(db, USER, "Not A Label")).resolves.toBe(false);
