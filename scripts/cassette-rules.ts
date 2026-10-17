@@ -160,7 +160,7 @@ function sdkFindings(data: Cassette, pin: string): Findings {
   const recorded = claimed ?? fromAgent;
   const failures: string[] = [];
   if (claimed !== null && fromAgent !== null && claimed !== fromAgent) failures.push(`meta.sdkVersion ${claimed} disagrees with the user agent's ${fromAgent}: the pin cannot be compared to an edited record`);
-  if (recorded !== null && recorded !== pin) failures.push(`recorded with Agent SDK ${recorded}, but packages/agents/package.json pins ${pin}: re-record it (the nightly job does)`);
+  if (recorded !== null && recorded !== pin) failures.push(`recorded with Agent SDK ${recorded}, but packages/agents/package.json pins ${pin}: re-record it (cassettes/README.md, Re-recording)`);
   const unnamed = recorded === null && userAgent.startsWith("claude-cli/");
   const warnings = unnamed ? [`SDK version not recorded: the user agent is ${printable(userAgent.split(" ")[0] ?? "")} but names no agent-sdk/<version>, so the pin cannot be compared`] : [];
   return { failures, warnings };

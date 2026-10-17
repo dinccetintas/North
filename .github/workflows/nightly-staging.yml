@@ -1,0 +1,303 @@
+name: nightly-staging
+
+# TST-3 (M7 Task 21): the nightly real journey on staging. It deploys the default branch to the staging web (Vercel
+# `staging` environment), worker (Fly `north-worker-staging`) and database (Supabase `north-staging`), checks the
+# deployment read-only, runs the live founder journey (`pnpm e2e:staging`: real Claude on the `smoke` profile, a
+# fresh `e2e-` user, a real magic link through Resend), reads the cost per company and uploads the evidence.
+# Red means a GitHub issue `nightly staging failed <date>`. docs/evidence/README.md lists the secrets and variables;
+# docs/runbooks/staging.md is the manual form of every command here.
+#
+# Founder-gated: nothing here has run. It needs the GitHub environment `staging` (secrets and variables below) and
+# the staging accounts of docs/runbooks/staging.md; the first run is `workflow_dispatch` with profile `smoke`.
+#
+# Rules: every secret reaches a step through `env:`, never inside a `run:` text; no `set -x`; GitHub masks the values
+# in the log; `scripts/evidence-guard.sh` looks for the bypass secret and the Resend key in everything uploaded and
+# stops the upload when one is found. Cassettes are not recorded here in M7 (docs/evidence/README.md).
+on:
+  schedule:
+    # 02:17 UTC: off the hour (scheduled runs on the hour are delayed), before the founder's morning.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Model profile of this run: smoke (cap $1, the nightly) or staging (cap $3, the biweekly fidelity run)"
+        type: choice
+        options:
+          - smoke
+          - staging
+        default: smoke
+
+jobs:
+  journey:
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    # One staging, one run at a time: shared with acceptance.yml; a run in progress is never cancelled.
+    concurrency:
+      group: staging-journey
+      cancel-in-progress: false
+    defaults:
+      run:
+        # bash with `-e -o pipefail`.
+        shell: bash
+    steps:
+      # A schedule runs the default branch; a manual dispatch runs the branch it was started on.
+      - uses: actions/checkout@v4
+
+      # A missing value is named here, before anything is deployed or spent. Without it an unset
+      # STAGING_WEB_URL would make the journey a dry run that passes without touching staging.
+      - name: Configuration is complete
+        id: config
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_ANON_KEY: ${{ secrets.STAGING_ANON_KEY }}
+          STAGING_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          E2E_RESEND_KEY: ${{ secrets.E2E_RESEND_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          NORTH_PRODUCTION_SUPABASE_REF: ${{ secrets.NORTH_PRODUCTION_SUPABASE_REF }}
+          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
+          STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
+          E2E_MAIL_DOMAIN: ${{ vars.E2E_MAIL_DOMAIN }}
+        run: |
+          missing=""
+          for name in FLY_API_TOKEN VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID SUPABASE_ACCESS_TOKEN STAGING_DB_URL STAGING_SUPABASE_URL STAGING_ANON_KEY STAGING_SERVICE_ROLE_KEY E2E_RESEND_KEY VERCEL_AUTOMATION_BYPASS_SECRET NORTH_PRODUCTION_SUPABASE_REF STAGING_WEB_URL STAGING_WORKER_URL E2E_MAIL_DOMAIN; do
+            if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not set in the GitHub environment 'staging' (names only):$missing. See docs/evidence/README.md."
+            exit 1
+          fi
+          case "$STAGING_WEB_URL" in https://*) ;; *) echo "::error::STAGING_WEB_URL must be an https URL (the bypass cookie is primed for https only)"; exit 1 ;; esac
+          case "$E2E_MAIL_DOMAIN" in staging.*) ;; *) echo "::error::E2E_MAIL_DOMAIN must be staging.<domain> (the purge matches only that host)"; exit 1 ;; esac
+
+      - name: Resolve the profile and the day
+        id: plan
+        env:
+          INPUT_PROFILE: ${{ inputs.profile }}
+        run: |
+          profile="${INPUT_PROFILE:-smoke}"
+          case "$profile" in
+            smoke) cap=1 ;;
+            staging) cap=3 ;;
+            *) echo "::error::profile must be smoke or staging"; exit 1 ;;
+          esac
+          { echo "profile=$profile"; echo "cap=$cap"; echo "day=$(date -u +%F)"; } >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        id: install
+        run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Database first: a failed migration stops the run with the old web and worker still matching the old schema.
+      # STAGING_DB_URL is the full, percent-encoded Postgres URI of north-staging (the Supavisor session-pooler URI:
+      # runners have no IPv6, the direct host is IPv6-only on the free plan), not the bare password of the brief.
+      - name: Apply the migrations (supabase db push)
+        id: migrate
+        timeout-minutes: 10
+        working-directory: packages/db
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
+        run: npx supabase db push --db-url "$STAGING_DB_URL" --yes
+
+      # The CLI is pinned (62.0.0, released 2026-09-30; `--target`, `--token` and `--yes` read from its `deploy --help`).
+      # VERCEL_ORG_ID and VERCEL_PROJECT_ID stand in for `vercel link`; the project's Root Directory is apps/web.
+      # stdout is the deployment URL only. The journey uses the staging domain (vars.STAGING_WEB_URL), which Vercel
+      # points at the environment's latest deployment.
+      - name: Deploy the web (Vercel staging environment)
+        id: vercel
+        timeout-minutes: 20
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url="$(npx --yes vercel@62.0.0 deploy --target=staging --token "$VERCEL_TOKEN" --yes)"
+          if ! [[ "$url" =~ ^https://[A-Za-z0-9.-]+$ ]]; then
+            echo "::error::vercel deploy did not print a single deployment URL"
+            exit 1
+          fi
+          echo "deployment=$url" >> "$GITHUB_OUTPUT"
+          echo "deployed $url"
+
+      # A secret overrides [env] in fly.staging.toml. Staged, so the deploy below applies both in one restart.
+      - name: Stage the model profile and the daily cap
+        id: fly_profile
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          PROFILE: ${{ steps.plan.outputs.profile }}
+          CAP: ${{ steps.plan.outputs.cap }}
+        run: flyctl secrets set "NORTH_MODEL_PROFILE=$PROFILE" "NORTH_DAILY_CAP_USD=$CAP" --config apps/worker/fly.staging.toml --stage
+      - name: Deploy the worker (Fly, remote build)
+        id: fly_deploy
+        timeout-minutes: 25
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
+
+      # auto_stop_machines: the next request waits for the boot.
+      - name: Wait for the worker's health line
+        env:
+          STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
+        run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 20 "$STAGING_WORKER_URL/health" > /dev/null
+
+      # `pnpm staging:check` already passes `--env staging`; -s keeps pnpm's banner out of the JSON.
+      # NORTH_USAGE_READ_KEY is optional: without it `usage-ratios` is a skip, not a failure.
+      - name: Staging check (read-only)
+        id: check
+        env:
+          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
+          STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_ANON_KEY: ${{ secrets.STAGING_ANON_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          NORTH_USAGE_READ_KEY: ${{ secrets.NORTH_USAGE_READ_KEY }}
+        run: |
+          status=0
+          pnpm -s staging:check -- --web "$STAGING_WEB_URL" --worker "$STAGING_WORKER_URL" --supabase "$STAGING_SUPABASE_URL" --anon-key "$STAGING_ANON_KEY" --json > staging-check.json || status=$?
+          jq -r '.results[]? | "\(.status | ascii_upcase)  \(.id)  \(.detail)"' staging-check.json || true
+          exit "$status"
+
+      # `pnpm e2e:staging` runs Playwright (config playwright.staging.config.ts, no `@live` tests) and then the evidence
+      # guard, keeping Playwright's exit code. The journey writes its screenshots and journey-<project>.json to
+      # docs/evidence/M7/acceptance/<date>/ (Task 20); the next step copies them under nightly/.
+      - name: Live journey on staging
+        id: journey
+        timeout-minutes: 75
+        env:
+          E2E_BASE_URL: ${{ vars.STAGING_WEB_URL }}
+          E2E_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          E2E_MAIL_PROVIDER: resend
+          E2E_RESEND_KEY: ${{ secrets.E2E_RESEND_KEY }}
+          E2E_MAIL_DOMAIN: ${{ vars.E2E_MAIL_DOMAIN }}
+          E2E_MAIL_FROM_DOMAIN: ${{ vars.E2E_MAIL_FROM_DOMAIN }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          E2E_EVIDENCE_DATE: ${{ steps.plan.outputs.day }}
+        run: pnpm e2e:staging
+
+      # Also after a failed journey: the notes name the company, costs are read from agent_runs, never from the UI.
+      # One run.json per viewport (each viewport signs up its own company).
+      - name: Cost evidence per company
+        id: costs
+        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+          EVIDENCE_ALLOW_REMOTE_DB: "1"
+          EVIDENCE_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
+          E2E_EVIDENCE_DATE: ${{ steps.plan.outputs.day }}
+          JOURNEY_OUTCOME: ${{ steps.journey.outcome }}
+        run: |
+          src="docs/evidence/M7/acceptance/$E2E_EVIDENCE_DATE"
+          out="docs/evidence/M7/nightly/$E2E_EVIDENCE_DATE"
+          mkdir -p "$out"
+          if [ -d "$src" ]; then cp -R "$src/." "$out/"; fi
+          status=0
+          for project in mobile desktop; do
+            notes="$src/journey-$project.json"
+            if [ ! -f "$notes" ]; then
+              echo "::warning::no journey-$project.json: that journey wrote no notes (it did not get as far as creating its company)"
+              if [ "$JOURNEY_OUTCOME" = "success" ]; then status=1; fi
+              continue
+            fi
+            slug="$(jq -r '.slug' "$notes")"
+            pnpm -s evidence:costs -- --slug "$slug" --out "$out/$project" || status=1
+          done
+          exit "$status"
+
+      # The gate of the upload: the report, the results, the log and the evidence hold neither the bypass secret nor the Resend key.
+      - name: Evidence guard
+        id: guard
+        if: ${{ !cancelled() }}
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          E2E_RESEND_KEY: ${{ secrets.E2E_RESEND_KEY }}
+        run: bash scripts/evidence-guard.sh docs/evidence/M7/nightly staging-check.json
+
+      - name: Upload the evidence (7 days)
+        id: upload
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-staging-evidence
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            apps/web/playwright-report-staging
+            staging-check.json
+            docs/evidence/M7/nightly
+
+      # After a `staging` profile run only: a smoke run already ends on smoke / $1. Runs when the profile was staged,
+      # whatever happened since.
+      - name: Reset the worker to smoke and $1
+        id: reset
+        if: ${{ always() && steps.plan.outputs.profile == 'staging' && steps.fly_profile.outcome != 'skipped' }}
+        timeout-minutes: 25
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl secrets set NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=1 --config apps/worker/fly.staging.toml --stage
+          flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
+
+      # RET-1: every e2e- user of the run goes through the one delete path. --older-than-minutes 0: nothing else runs
+      # now (the concurrency group), so even the youngest user is this run's. The script refuses unless NORTH_ENV is
+      # staging, E2E_MAIL_DOMAIN is staging.<domain> and the Supabase host is not the production project's.
+      - name: Purge the e2e users
+        id: purge
+        if: ${{ always() && steps.install.outcome == 'success' }}
+        env:
+          NORTH_ENV: staging
+          NORTH_PRODUCTION_SUPABASE_REF: ${{ secrets.NORTH_PRODUCTION_SUPABASE_REF }}
+          E2E_MAIL_DOMAIN: ${{ vars.E2E_MAIL_DOMAIN }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
+        run: pnpm -s staging:purge-e2e -- --yes --older-than-minutes 0
+
+      # Last, so it also reports a failed reset or purge. One issue per day: a second red run of the day comments on it.
+      # Step ids come from the `steps` context (steps without an id are not listed). Links and ids only, never a value.
+      - name: Open or update the failure issue
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEPS_JSON: ${{ toJSON(steps) }}
+          DAY: ${{ steps.plan.outputs.day }}
+          PROFILE: ${{ steps.plan.outputs.profile }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          day="${DAY:-$(date -u +%F)}"
+          title="nightly staging failed $day"
+          failed="$(printf '%s' "$STEPS_JSON" | jq -r '[to_entries[] | select(.value.outcome == "failure") | .key] | join(", ")')"
+          body="$(printf '%s\n' \
+            "The nightly staging journey failed (profile: ${PROFILE:-unknown})." \
+            "" \
+            "- Failed step id(s): ${failed:-none recorded (a step without an id)}" \
+            "- Run: $RUN_URL" \
+            "- Artifacts (7 days): ${ARTIFACT_URL:-none uploaded}" \
+            "- Commit: $GITHUB_SHA" \
+            "" \
+            "The ids are the \`id:\` keys in .github/workflows/nightly-staging.yml. Links only; the logs are in the run.")"
+          number="$(gh issue list --state open --search "\"$title\" in:title" --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

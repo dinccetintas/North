@@ -229,11 +229,11 @@ jobs:
           HAS_CASSETTES: ${{ hashFiles('cassettes/*.json') != '' }}
         run: |
           echo "present=$HAS_CASSETTES" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_CASSETTES" != "true" ]; then echo "::notice::e2e-replay skipped: no cassettes/*.json is committed yet (the nightly job records them, M7 Task 21); the mock e2e job stays the gate"; fi
+          if [ "$HAS_CASSETTES" != "true" ]; then echo "::notice::e2e-replay skipped: no cassettes/*.json is committed yet (record them by hand, cassettes/README.md; the nightly does not record in M7); the mock e2e job stays the gate"; fi
 
   # TST-2 (M7 Task 18): the Playwright specs on the SDK runtime with replayed responses: no key, no network to the model
-  # API, no spend. Skipped until the nightly job (Task 21) has committed a full set of cassettes; the mock `e2e` job
-  # is the gate until then. The cassette check runs first, so a bad file fails before anything starts.
+  # API, no spend. Skipped until a full set of cassettes is recorded by hand and committed (the nightly does not record
+  # in M7); the mock `e2e` job is the gate until then. The cassette check runs first, so a bad file fails before anything starts.
   e2e-replay:
     needs: [validate, cassettes]
     if: needs.cassettes.outputs.present == 'true'

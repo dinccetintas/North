@@ -18,9 +18,12 @@ back by it. They are committed.
   a secret, a renamed file, a request that no longer hashes to its name or a
   recording from another Agent SDK than the one pinned. It is a `pnpm validate`
   step and a CI step (job `validate`, and job `e2e-replay` before it replays).
-- **Re-recorded by the nightly job** (M7 Task 21) when a prompt or a model
-  alias changes a key, or the Agent SDK pin moves; a stale cassette is deleted
-  and recorded again, not patched.
+- **Re-recorded by hand** (see Re-recording) when a prompt or a model alias
+  changes a key, or the Agent SDK pin moves; a stale cassette is deleted and
+  recorded again, not patched. The nightly staging job does not record
+  cassettes in M7, because the staging worker runs `NORTH_CASSETTE_MODE=off`
+  and recording there would need `record` mode and a way to fetch the files
+  from the Fly volume (an M8 follow-up, `docs/evidence/README.md`).
 - **Never edited by hand.** A hand edit breaks the key check or hides what the
   agent really received; if `pnpm cassette:check` fails, fix the flow and
   record again.
@@ -196,9 +199,9 @@ four variables and no key, `pnpm cassette:check`, a step that asserts the same
 `/health` fields, then `pnpm e2e:replay`; the Playwright report is uploaded
 when it fails. It runs only when `cassettes/*.json` exist: GitHub does not
 allow `hashFiles` in a job-level `if`, so the small job `cassettes` reads the
-directory and `e2e-replay` is skipped unless it reports a file. Until the
-nightly job (Task 21) has recorded a full set, no cassette is committed,
-`e2e-replay` is skipped, and the mock `e2e` job stays the gate. A cassette is
+directory and `e2e-replay` is skipped unless it reports a file. Until a
+full set is recorded by hand and committed, `e2e-replay` is skipped and the
+mock `e2e` job stays the gate. A cassette is
 committed with the set that covers every call the specs make: a miss is a
 `502 north_cassette_miss` naming the file it looked for, and fails the spec.
 

@@ -62,7 +62,7 @@ primary_region = "ams"
   NORTH_DAILY_CAP_USD = "1"
   AGENT_RUNTIME = "claude-agent-sdk"
   INTEGRATIONS_MODE = "live"
-  # TST-2: forward to the model API and store nothing; the nightly records cassettes in CI, not here.
+  # TST-2: forward to the model API and store nothing; cassettes are recorded by hand on a worker with a key, never on staging (cassettes/README.md).
   NORTH_CASSETTE_MODE = "off"
   # CMP-1: every request reaches the machine through Fly's proxy, which sets Fly-Client-IP; the /u/{token} rate limit counts that client.
   NORTH_TRUST_PROXY = "1"
