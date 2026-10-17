@@ -1,18 +1,21 @@
-/** TST-2: the pure parts of the real-Claude smoke (`smoke-llm.ts`): the plan, the markdown check, the run summary, the health gate and the verdict; no stack, no network, no key. */
+/** TST-2: the pure parts of the real-Claude smoke (`smoke-llm.ts`): the plan, the markdown check, the run summary, the gates, the verdict and the evidence; no stack, no network, no key. */
 import { describe, expect, it } from "vitest";
-import { checkHealth, gatewaySpendLine } from "./smoke-llm-health";
+import { checkHealth, spentUsdOf } from "./smoke-llm-health";
 import {
   assertMarkdownHeadings,
+  attempt,
   buildReport,
+  databaseRefusal,
+  evidencePathFor,
   formatTable,
   okLine,
+  pickPreview,
   planFor,
-  smokeProblems,
   summariseRuns,
-  type SmokeFacts,
   type SmokeRun,
   type SmokeTaskState,
 } from "./smoke-llm-helpers";
+import { gatewayDeltaUsd, smokeProblems, type SmokeFacts } from "./smoke-llm-verdict";
 
 const REPORT = ["# Market report: Acme", "", "## 1. Market definition", "text", "## 2. Size", "text", "### 2.1 detail", "## 3. Demand", "text"].join("\n");
 
@@ -83,9 +86,9 @@ describe("TST-2 summariseRuns", () => {
 });
 
 describe("TST-2 planFor", () => {
-  it("defaults: 420 s, the evidence path, the local worker and Inngest, $0.50, the two smoke tasks, runtime from /health", () => {
+  it("defaults: 420 s, the evidence path by runtime, the local worker and Inngest, $0.50, the two smoke tasks, runtime from /health", () => {
     const plan = planFor({});
-    expect(plan).toMatchObject({ dryRun: false, runtime: null, timeoutMs: 420_000, outPath: "docs/evidence/M7/smoke-llm.json", workerUrl: "http://localhost:3101", inngestUrl: "http://localhost:8288", maxCostUsd: 0.5, sha: null });
+    expect(plan).toMatchObject({ dryRun: false, runtime: null, timeoutMs: 420_000, outPath: null, workerUrl: "http://localhost:3101", inngestUrl: "http://localhost:8288", maxCostUsd: 0.5, sha: null, allowRemoteDb: false });
     expect(plan.tasks.map((t) => [t.role, t.taskType])).toEqual([
       ["research", "market_report"],
       ["engineering", "build_site"],
@@ -93,10 +96,16 @@ describe("TST-2 planFor", () => {
     expect(plan.tasks[0]?.input).toMatch(/at most 3 web searches/);
   });
 
-  it("reads SMOKE_LLM_TIMEOUT_MS, SMOKE_LLM_OUT, NORTH_WORKER_URL, INNGEST_BASE_URL and GITHUB_SHA; a blank value is unset", () => {
+  it("reads SMOKE_LLM_TIMEOUT_MS, SMOKE_LLM_OUT, NORTH_WORKER_URL, INNGEST_BASE_URL and the sha; a blank value is unset", () => {
     const plan = planFor({ SMOKE_LLM_TIMEOUT_MS: "90000", SMOKE_LLM_OUT: "/tmp/run/smoke-llm.json", NORTH_WORKER_URL: "http://127.0.0.1:3101/", INNGEST_BASE_URL: "http://127.0.0.1:8288", GITHUB_SHA: "c074558" });
     expect(plan).toMatchObject({ timeoutMs: 90_000, outPath: "/tmp/run/smoke-llm.json", workerUrl: "http://127.0.0.1:3101", inngestUrl: "http://127.0.0.1:8288", sha: "c074558" });
-    expect(planFor({ SMOKE_LLM_TIMEOUT_MS: " ", SMOKE_LLM_OUT: "" })).toMatchObject({ timeoutMs: 420_000, outPath: "docs/evidence/M7/smoke-llm.json" });
+    expect(planFor({ SMOKE_LLM_TIMEOUT_MS: " ", SMOKE_LLM_OUT: "" })).toMatchObject({ timeoutMs: 420_000, outPath: null });
+  });
+
+  it("SMOKE_LLM_SHA (the pull request's head in CI) wins over GITHUB_SHA (the merge commit)", () => {
+    expect(planFor({ SMOKE_LLM_SHA: "ccb8c9e9", GITHUB_SHA: "c074558" }).sha).toBe("ccb8c9e9");
+    expect(planFor({ SMOKE_LLM_SHA: " ", GITHUB_SHA: "c074558" }).sha).toBe("c074558");
+    expect(() => planFor({ SMOKE_LLM_SHA: "not a sha" })).toThrow(/SMOKE_LLM_SHA/);
   });
 
   it("a timeout that is not a positive whole number of milliseconds is a usage error naming the variable", () => {
@@ -117,6 +126,14 @@ describe("TST-2 planFor", () => {
     expect(planFor({ NORTH_ENV: "staging", INTEGRATIONS_MODE: "sandbox" }).dryRun).toBe(false);
   });
 
+  it("refuses a remote database in the environment unless SMOKE_LLM_ALLOW_REMOTE_DB=1", () => {
+    expect(() => planFor({ SUPABASE_URL: "https://abcd.supabase.co" })).toThrow(/abcd\.supabase\.co.*SMOKE_LLM_ALLOW_REMOTE_DB=1/);
+    expect(() => planFor({ NEXT_PUBLIC_SUPABASE_URL: "https://abcd.supabase.co" })).toThrow(/SMOKE_LLM_ALLOW_REMOTE_DB/);
+    expect(planFor({ SUPABASE_URL: "https://abcd.supabase.co", SMOKE_LLM_ALLOW_REMOTE_DB: "1" }).allowRemoteDb).toBe(true);
+    expect(planFor({ SUPABASE_URL: "http://127.0.0.1:54321" }).allowRemoteDb).toBe(false);
+    expect(() => planFor({ SMOKE_LLM_ALLOW_REMOTE_DB: "yes" })).toThrow(/SMOKE_LLM_ALLOW_REMOTE_DB/);
+  });
+
   it("never carries the model key, whatever the environment holds", () => {
     const key = "fake-model-key-not-real-0123456789";
     const plan = planFor({ ANTHROPIC_API_KEY: key, ANTHROPIC_TEST_API_KEY: key });
@@ -124,14 +141,59 @@ describe("TST-2 planFor", () => {
   });
 });
 
-const sdkHealth = { ok: true, app: "north-worker", mode: "sandbox", runtime: "claude-agent-sdk", profile: "smoke", env: "staging", gateway: "record", budget: { capUsd: 0.5, spentUsd: 0, unpriced: 0, exhausted: false } };
+describe("TST-2 database and evidence targets", () => {
+  it("a loopback database passes; any other host is refused unless allowed, and a malformed URL is refused", () => {
+    for (const url of ["http://127.0.0.1:54321", "http://localhost:54321/", "http://[::1]:54321"]) expect(databaseRefusal(url, false)).toBeNull();
+    expect(databaseRefusal("https://abcd.supabase.co", false)).toMatch(/abcd\.supabase\.co.*SMOKE_LLM_ALLOW_REMOTE_DB=1/);
+    expect(databaseRefusal("http://10.0.0.5:54321", false)).toMatch(/10\.0\.0\.5/);
+    expect(databaseRefusal("https://abcd.supabase.co", true)).toBeNull();
+    expect(databaseRefusal("not a url", true)).toMatch(/not a URL/);
+  });
+
+  it("a mock run never writes the proof path: its default is smoke-llm.mock.json; SMOKE_LLM_OUT wins for both", () => {
+    expect(evidencePathFor(null, "claude-agent-sdk")).toBe("docs/evidence/M7/smoke-llm.json");
+    expect(evidencePathFor(null, "mock")).toBe("docs/evidence/M7/smoke-llm.mock.json");
+    expect(evidencePathFor("/tmp/out.json", "mock")).toBe("/tmp/out.json");
+  });
+});
+
+describe("TST-2 attempt (an exception after dispatch)", () => {
+  it("a throw becomes a problem naming the step and the message, and the fallback's value", async () => {
+    const failed = await attempt("reading the market report", () => Promise.reject(new Error("storage 503")), () => null);
+    expect(failed).toEqual({ value: null, problem: "reading the market report: storage 503" });
+    expect(await attempt("waiting for the tasks", () => Promise.reject("reload failed"), async () => ["as dispatched"])).toEqual({ value: ["as dispatched"], problem: "waiting for the tasks: reload failed" });
+  });
+
+  it("a step that works has no problem", async () => {
+    expect(await attempt("reading agent_runs", async () => [1, 2], () => [])).toEqual({ value: [1, 2], problem: null });
+  });
+});
+
+describe("TST-2 pickPreview", () => {
+  const preview = (createdAt: string, externalRef: string | null, status = "notified") => ({ kind: "deploy.preview", status, externalRef, createdAt });
+  const older = preview("2026-10-17T10:00:00Z", "http://localhost:3101/sandbox/sites/a-v1/");
+  const newer = preview("2026-10-17T10:05:00Z", "http://localhost:3101/sandbox/sites/a-v2/");
+  const push = { kind: "repo.push", status: "notified", externalRef: "http://x/", createdAt: "2026-10-17T10:06:00Z" };
+
+  it("takes the preview whose URL is the build's evidence", () => {
+    expect(pickPreview([older, newer, push], older.externalRef)).toBe(older);
+  });
+
+  it("otherwise the newest preview, whatever order the actions come in; none without a preview", () => {
+    expect(pickPreview([newer, older, push], null)).toBe(newer);
+    expect(pickPreview([older, newer], "http://elsewhere/")).toBe(newer);
+    expect(pickPreview([push], null)).toBeNull();
+  });
+});
+
+const sdkHealth = { ok: true, app: "north-worker", mode: "sandbox", runtime: "claude-agent-sdk", profile: "smoke", env: "staging", gateway: "record", budget: { capUsd: 0.5, spentUsd: 0.04, unpriced: 0, exhausted: false } };
 const mockHealth = { ...sdkHealth, runtime: "mock", gateway: "off", budget: null };
 const gate = { runtime: null, maxCostUsd: 0.5 } as const;
 
 describe("TST-2 health gate", () => {
-  it("a staging sandbox worker on the smoke profile with a $0.50 gateway cap passes; the runtime under test comes from /health", () => {
-    expect(checkHealth(sdkHealth, gate)).toEqual({ ok: true, runtime: "claude-agent-sdk", profile: "smoke", problems: [] });
-    expect(checkHealth(mockHealth, gate)).toEqual({ ok: true, runtime: "mock", profile: "smoke", problems: [] });
+  it("a staging sandbox worker on the smoke profile with a $0.50 gateway cap passes; the runtime under test comes from /health; the gateway's spend so far is kept", () => {
+    expect(checkHealth(sdkHealth, gate)).toEqual({ ok: true, runtime: "claude-agent-sdk", profile: "smoke", spentUsd: 0.04, problems: [] });
+    expect(checkHealth(mockHealth, gate)).toEqual({ ok: true, runtime: "mock", profile: "smoke", spentUsd: null, problems: [] });
   });
 
   it("a profile that is not smoke fails, naming what it found and what to set", () => {
@@ -160,11 +222,11 @@ describe("TST-2 health gate", () => {
     expect(capped({ capUsd: 0.5, spentUsd: 0.1, unpriced: 1, exhausted: true })).toMatch(/closed/);
   });
 
-  it("the log line of the gateway's spend reads only a well-formed budget", () => {
-    expect(gatewaySpendLine({ ...sdkHealth, budget: { capUsd: 0.5, spentUsd: 0.12345, unpriced: 0, exhausted: false } })).toBe("gateway spent today: $0.1235 of $0.5");
-    expect(gatewaySpendLine(mockHealth)).toBeNull();
-    expect(gatewaySpendLine({ budget: { capUsd: "0.5", spentUsd: "x" } })).toBeNull();
-    expect(gatewaySpendLine(null)).toBeNull();
+  it("the gateway's spend is read from a well-formed budget only", () => {
+    expect(spentUsdOf(sdkHealth)).toBe(0.04);
+    expect(spentUsdOf(mockHealth)).toBeNull();
+    expect(spentUsdOf({ budget: { capUsd: "0.5", spentUsd: "x" } })).toBeNull();
+    expect(spentUsdOf(null)).toBeNull();
   });
 
   it("a body that is not a worker health line, or one older than M7, fails saying so; every problem is listed at once", () => {
@@ -185,8 +247,10 @@ const goodFacts = (patch: Partial<SmokeFacts> = {}): SmokeFacts => ({
   summary: summariseRuns([run(MARKET, "claude-haiku-5-5", 0.05, 1), run(BUILD, "claude-haiku-5-5", 0.2, 1)], tasks),
   marketReport: { kind: "market_report", markdown: REPORT },
   preview: { status: "notified", url: "http://localhost:3101/sandbox/sites/acme/", httpStatus: 200 },
+  gateway: { beforeUsd: 0.04, afterUsd: 0.31 },
   ...patch,
 });
+const mockSummary = summariseRuns([{ ...run(MARKET, "mock", 0, 1), runtime: "mock" }, { ...run(BUILD, "mock", 0, 1), runtime: "mock" }], tasks);
 
 describe("TST-2 verdict", () => {
   it("the run the brief describes has no problem", () => {
@@ -212,37 +276,69 @@ describe("TST-2 verdict", () => {
     expect(smokeProblems(goodFacts({ preview: { status: null, url: null, httpStatus: null } })).join("\n")).toMatch(/no deploy.preview action/);
   });
 
-  it("over $0.50 fails with the total", () => {
+  it("a ledger over $0.50 fails with the total", () => {
     const pricey = goodFacts({ summary: summariseRuns([run(MARKET, "m", 0.3, 1), run(BUILD, "m", 0.21, 1)], tasks) });
-    expect(smokeProblems(pricey)).toEqual([expect.stringMatching(/\$0\.51.*\$0\.50/)]);
+    expect(smokeProblems(pricey)).toEqual([expect.stringMatching(/agent runs cost \$0\.51.*\$0\.50/)]);
   });
 
   it("on the SDK runtime every smoke task ran on it with real tokens; the mock runtime is held to what it can produce", () => {
-    const mocked = summariseRuns([{ ...run(MARKET, "mock", 0, 1, 0), runtime: "mock" }, { ...run(BUILD, "mock", 0, 1, 0), runtime: "mock" }], tasks);
-    expect(smokeProblems(goodFacts({ summary: mocked })).join("\n")).toMatch(/runtime.*mock/);
-    expect(smokeProblems(goodFacts({ summary: mocked, runtime: "mock" }))).toEqual([]);
+    expect(smokeProblems(goodFacts({ summary: mockSummary })).join("\n")).toMatch(/runtime.*mock/);
+    expect(smokeProblems(goodFacts({ summary: mockSummary, runtime: "mock", gateway: null }))).toEqual([]);
     const silent = summariseRuns([run(MARKET, "claude-haiku-5-5", 0, 1, 0), run(BUILD, "claude-haiku-5-5", 0.1, 1)], tasks);
     expect(smokeProblems(goodFacts({ summary: silent })).join("\n")).toMatch(/market_report.*no tokens/);
   });
 });
 
-describe("TST-2 report", () => {
-  it("the JSON has exactly the evidence shape", () => {
-    const summary = summariseRuns([run(MARKET, "claude-haiku-5-5", 0.05, 10), run(BUILD, "claude-haiku-5-5", 0.2, 20)], tasks);
-    const report = buildReport({ sha: "abc", profile: "smoke", summary });
-    expect(Object.keys(report)).toEqual(["sha", "profile", "tasks", "totalCostUsd"]);
-    expect(Object.keys(report.tasks[0] ?? {})).toEqual(["taskType", "status", "model", "inputTokens", "outputTokens", "costUsd", "durationMs", "evidenceKind"]);
-    expect(report.totalCostUsd).toBe(0.25);
+describe("TST-2 the gateway is the spend truth on the SDK runtime", () => {
+  it("the spend during the run is the gateway's day spend after minus before", () => {
+    expect(gatewayDeltaUsd({ beforeUsd: 0.04, afterUsd: 0.31 })).toBe(0.27);
+    expect(gatewayDeltaUsd({ beforeUsd: 0.04, afterUsd: null })).toBeNull();
+    expect(gatewayDeltaUsd({ beforeUsd: 0.3, afterUsd: 0.01 })).toBeNull();
+    expect(gatewayDeltaUsd(null)).toBeNull();
   });
 
-  it("the table names each task with its cost, and the OK line rounds to cents", () => {
-    const summary = summariseRuns([run(MARKET, "claude-haiku-5-5", 0.0512, 12_300)], tasks);
-    const table = formatTable(summary);
-    expect(table).toContain("market_report");
-    expect(table).toContain("build_site");
-    expect(table).toContain("$0.0512");
-    expect(table).toContain("12.3 s");
-    expect(okLine(0.123)).toBe("smoke LLM: OK ($0.12)");
-    expect(okLine(0)).toBe("smoke LLM: OK ($0.00)");
+  it("a ledger of $0 while the tasks used tokens fails, even when the gateway priced the run", () => {
+    const zeroLedger = summariseRuns([run(MARKET, "claude-haiku-5-5", 0, 1), run(BUILD, "claude-haiku-5-5", 0, 1)], tasks);
+    expect(smokeProblems(goodFacts({ summary: zeroLedger }))).toEqual([expect.stringMatching(/agent_runs recorded \$0.*tokens.*gateway priced \$0\.2700/)]);
+  });
+
+  it("the gateway must have priced some spend, at most the cap", () => {
+    expect(smokeProblems(goodFacts({ gateway: { beforeUsd: 0.04, afterUsd: 0.04 } }))).toEqual([expect.stringMatching(/gateway priced no spend/)]);
+    expect(smokeProblems(goodFacts({ gateway: { beforeUsd: 0, afterUsd: 0.51 } }))).toEqual([expect.stringMatching(/gateway priced \$0\.5100.*over the \$0\.50 cap/)]);
+  });
+
+  it("a spend that cannot be read after the run, a day that rolled over, or a missing gateway fails", () => {
+    expect(smokeProblems(goodFacts({ gateway: { beforeUsd: 0.04, afterUsd: null } })).join("\n")).toMatch(/could not read the gateway's spend/);
+    expect(smokeProblems(goodFacts({ gateway: { beforeUsd: 0.3, afterUsd: 0.01 } })).join("\n")).toMatch(/rolled over/);
+    expect(smokeProblems(goodFacts({ gateway: null })).join("\n")).toMatch(/no gateway/);
+  });
+
+  it("the mock runtime has no gateway and is not asked for one", () => {
+    expect(smokeProblems(goodFacts({ summary: mockSummary, runtime: "mock", gateway: null }))).toEqual([]);
+  });
+});
+
+describe("TST-2 report", () => {
+  const summary = summariseRuns([run(MARKET, "claude-haiku-5-5", 0.05, 10), run(BUILD, "claude-haiku-5-5", 0.2, 20)], tasks);
+
+  it("the JSON has exactly the evidence shape: the runtime, the ledger's total and the gateway's spend", () => {
+    const report = buildReport({ sha: "abc", profile: "smoke", runtime: "claude-agent-sdk", summary, gatewaySpentUsd: 0.27 });
+    expect(Object.keys(report)).toEqual(["sha", "profile", "runtime", "tasks", "totalCostUsd", "gatewaySpentUsd"]);
+    expect(Object.keys(report.tasks[0] ?? {})).toEqual(["taskType", "status", "model", "inputTokens", "outputTokens", "costUsd", "durationMs", "evidenceKind"]);
+    expect(report).toMatchObject({ runtime: "claude-agent-sdk", totalCostUsd: 0.25, gatewaySpentUsd: 0.27 });
+    expect(buildReport({ sha: "abc", profile: "smoke", runtime: "mock", summary: mockSummary, gatewaySpentUsd: null })).toMatchObject({ runtime: "mock", gatewaySpentUsd: null });
+  });
+
+  it("the table names each task with its cost and both totals", () => {
+    const one = summariseRuns([run(MARKET, "claude-haiku-5-5", 0.0512, 12_300)], tasks);
+    const table = formatTable(one, { runtime: "claude-agent-sdk", gatewayUsd: 0.0613 });
+    for (const part of ["market_report", "build_site", "$0.0512", "12.3 s", "ledger $0.0512", "gateway $0.0613"]) expect(table).toContain(part);
+    expect(formatTable(mockSummary, { runtime: "mock", gatewayUsd: null })).toContain("gateway none (mock runtime)");
+    expect(formatTable(one, { runtime: "claude-agent-sdk", gatewayUsd: null })).toContain("gateway unread");
+  });
+
+  it("the OK line carries the runtime, the ledger and the gateway, rounded to cents", () => {
+    expect(okLine({ runtime: "claude-agent-sdk", ledgerUsd: 0.123, gatewayUsd: 0.1351 })).toBe("smoke LLM: OK (ledger $0.12, gateway $0.14), runtime claude-agent-sdk");
+    expect(okLine({ runtime: "mock", ledgerUsd: 0, gatewayUsd: null })).toBe("smoke LLM: OK (mock runtime: ledger $0.00, no gateway)");
   });
 });

@@ -195,6 +195,9 @@ jobs:
           done
       - name: Real-Claude smoke (market report + build, smoke profile, $0.50 cap)
         if: steps.key.outputs.present == 'true'
+        env:
+          # The pull request's head commit (GITHUB_SHA is the merge commit), recorded in smoke-llm.json.
+          SMOKE_LLM_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: SMOKE_LLM_OUT="$RUNNER_TEMP/smoke-llm.json" pnpm smoke:llm -- --runtime claude-agent-sdk
       - name: Dev server log on failure
         if: failure() && steps.key.outputs.present == 'true'

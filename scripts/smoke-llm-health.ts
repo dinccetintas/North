@@ -4,17 +4,20 @@
  * worker that is not production (`env` staging), runs sandbox integrations,
  * resolves models on the `smoke` profile, runs the runtime asked for and, on
  * the SDK runtime, has the gateway's day cap on at most $0.50 with money left
- * today. The body is untrusted JSON: Zod reads it, every problem is listed at
- * once, and each one names what it found and what to set.
+ * today. It keeps the gateway's day spend at the gate, so the run's spend is
+ * measured from there. The body is untrusted JSON: Zod reads it, every
+ * problem is listed at once, and each one names what it found and what to set.
  */
 import { z } from "zod";
 import { SMOKE_RUNTIMES, type SmokePlan, type SmokeRuntime } from "./smoke-llm-helpers";
 
-/** What the gate decided: the runtime under test (the flag, else the worker's), the worker's profile, and every problem. */
+/** What the gate decided: the runtime under test (the flag, else the worker's), the worker's profile, the gateway's day spend so far (null without a gateway), and every problem. */
 export interface HealthVerdict {
   readonly ok: boolean;
   readonly runtime: SmokeRuntime | null;
   readonly profile: string | null;
+  /** `budget.spentUsd` at the gate, before anything is created: the run's spend is measured from here. */
+  readonly spentUsd: number | null;
   readonly problems: readonly string[];
 }
 
@@ -32,7 +35,8 @@ type Health = z.infer<typeof HealthSchema>;
 const isRuntime = (value: string): value is SmokeRuntime => (SMOKE_RUNTIMES as readonly string[]).includes(value);
 const isWorkerLine = (body: unknown): boolean => body !== null && typeof body === "object" && !Array.isArray(body) && (body as Record<string, unknown>).app === "north-worker";
 
-const verdict = (runtime: SmokeRuntime | null, profile: string | null, problems: readonly string[]): HealthVerdict => Object.freeze({ ok: problems.length === 0, runtime, profile, problems: Object.freeze([...problems]) });
+const verdict = (runtime: SmokeRuntime | null, profile: string | null, spentUsd: number | null, problems: readonly string[]): HealthVerdict =>
+  Object.freeze({ ok: problems.length === 0, runtime, profile, spentUsd, problems: Object.freeze([...problems]) });
 
 function deploymentProblems(h: Health): string[] {
   return [
@@ -60,22 +64,21 @@ function budgetProblems(h: Health, maxCostUsd: number): string[] {
 
 /** Runs the gate over the worker's `/health` body for this plan's `--runtime` and cost cap. */
 export function checkHealth(body: unknown, plan: Pick<SmokePlan, "runtime" | "maxCostUsd">): HealthVerdict {
-  if (!isWorkerLine(body)) return verdict(plan.runtime, null, ["the body is not the worker's health line (no app \"north-worker\"): is NORTH_WORKER_URL the worker?"]);
+  if (!isWorkerLine(body)) return verdict(plan.runtime, null, null, ["the body is not the worker's health line (no app \"north-worker\"): is NORTH_WORKER_URL the worker?"]);
   const parsed = HealthSchema.safeParse(body);
   if (!parsed.success) {
     const fields = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? "body")))].join(", ");
-    return verdict(plan.runtime, null, [`the worker is older than this smoke or its health line is malformed (${fields} missing or invalid): run the worker from this commit`]);
+    return verdict(plan.runtime, null, null, [`the worker is older than this smoke or its health line is malformed (${fields} missing or invalid): run the worker from this commit`]);
   }
   const h = parsed.data;
   const runtime = plan.runtime ?? (isRuntime(h.runtime) ? h.runtime : null);
-  return verdict(runtime, h.profile, [...deploymentProblems(h), ...runtimeProblems(h, plan.runtime), ...budgetProblems(h, plan.maxCostUsd)]);
+  return verdict(runtime, h.profile, h.budget?.spentUsd ?? null, [...deploymentProblems(h), ...runtimeProblems(h, plan.runtime), ...budgetProblems(h, plan.maxCostUsd)]);
 }
 
 const SpendSchema = z.object({ budget: BudgetSchema.nullable() });
 
-/** `gateway spent today: $0.1234 of $0.5`, read from a `/health` body for the log; null without a gateway or a readable budget. */
-export function gatewaySpendLine(body: unknown): string | null {
+/** The gateway's day spend (`budget.spentUsd`) from a `/health` body read with Zod; null without a gateway or a well-formed budget. */
+export function spentUsdOf(body: unknown): number | null {
   const parsed = SpendSchema.safeParse(body);
-  const budget = parsed.success ? parsed.data.budget : null;
-  return budget ? `gateway spent today: $${budget.spentUsd.toFixed(4)} of $${budget.capUsd}` : null;
+  return parsed.success ? (parsed.data.budget?.spentUsd ?? null) : null;
 }

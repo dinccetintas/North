@@ -22,7 +22,7 @@ stack_reachable() {
 stack_env() {
   if [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
     local status
-    status="$(cd packages/db && npx supabase status -o env 2>/dev/null || true)"
+    status="$( (cd packages/db && npx supabase status -o env 2>/dev/null) || true)"
     SUPABASE_URL="$(printf '%s\n' "$status" | sed -n 's/^API_URL="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' | head -1)"
     SUPABASE_SERVICE_ROLE_KEY="$(printf '%s\n' "$status" | sed -n 's/^\(SERVICE_ROLE_KEY\|SECRET_KEY\)="\{0,1\}\([^"]*\)"\{0,1\}$/\2/p' | head -1)"
     export SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY
@@ -39,18 +39,30 @@ fi
 
 step "smoke (domain)"; pnpm smoke
 
+LLM_SKIP="skip: smoke LLM runs only against a worker on AGENT_RUNTIME=claude-agent-sdk with ANTHROPIC_API_KEY set"
+# The smokes branch on the worker's runtime (TST-2): M1-M6 are mock-runtime smokes (they send company/onboarded and assume
+# fixtures), so they never run against a worker on real Claude; the LLM smoke runs only there, and only with a key.
 if up http://localhost:3101/health && up http://localhost:8288; then
-  step "smoke M1 (worker + inngest + supabase)"; pnpm smoke:m1
-  step "smoke M2 (decision layer)"; pnpm smoke:m2
-  step "smoke M3 (build pipeline)"; pnpm smoke:m3
-  step "smoke M4 (growth, sales, ledger)"; pnpm smoke:m4
-  step "smoke M5 (proactive layer, seven simulated days)"; pnpm smoke:m5
-  step "smoke M6 (subscription and launch, ten phases)"; pnpm smoke:m6
-  # TST-2: real Claude on the smoke profile, only with a key and the SDK runtime (the worker's gateway caps the day at NORTH_DAILY_CAP_USD); never a failure when absent.
-  if [ -n "${ANTHROPIC_API_KEY:-}" ] && worker_runtime_is claude-agent-sdk; then
-    step "smoke LLM (real Claude, smoke profile)"; pnpm smoke:llm -- --runtime claude-agent-sdk
+  if worker_runtime_is mock; then
+    step "smoke M1 (worker + inngest + supabase)"; pnpm smoke:m1
+    step "smoke M2 (decision layer)"; pnpm smoke:m2
+    step "smoke M3 (build pipeline)"; pnpm smoke:m3
+    step "smoke M4 (growth, sales, ledger)"; pnpm smoke:m4
+    step "smoke M5 (proactive layer, seven simulated days)"; pnpm smoke:m5
+    step "smoke M6 (subscription and launch, ten phases)"; pnpm smoke:m6
+    echo "$LLM_SKIP" >&2
+  elif worker_runtime_is claude-agent-sdk; then
+    echo "skip: smoke M1–M6 are mock-runtime smokes; the worker is on claude-agent-sdk" >&2
+    if [ "${REQUIRE_SMOKE_M1:-0}" = "1" ]; then exit 1; fi
+    # Real Claude on the smoke profile; smoke-llm.ts refuses a worker whose gateway does not cap the day at <= $0.50.
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+      step "smoke LLM (real Claude, smoke profile)"; pnpm smoke:llm -- --runtime claude-agent-sdk
+    else
+      echo "$LLM_SKIP" >&2
+    fi
   else
-    echo "skip: smoke LLM needs ANTHROPIC_API_KEY and AGENT_RUNTIME=claude-agent-sdk" >&2
+    echo "skip: smoke M1–M6 and smoke LLM: the worker's /health names no known runtime" >&2
+    if [ "${REQUIRE_SMOKE_M1:-0}" = "1" ]; then exit 1; fi
   fi
 else
   echo "skip: smoke M1 needs the worker (:3101) and the Inngest Dev Server (:8288); run 'pnpm dev'" >&2

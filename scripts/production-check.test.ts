@@ -1,9 +1,8 @@
+/** OPS-1 (ADR 0015): every check of the read-only production check against a fake fetch; no network, no write. The env-dependent rules (STG-1, TST-5) are in `production-check-env.test.ts`. */
 import { describe, expect, it } from "vitest";
 import { BILLING_EVENT_TYPES } from "@north/core";
 import { configFrom, report, runChecks, type CheckResult, type FetchLike } from "./production-check";
 import { ANON, byId, check, config, endpoint, fake, goodManifest, green, healthyWorker, introspection, NOW, STRIPE_KEY, SUPABASE, USAGE_KEY, WEB, WORKER } from "./production-check-fixtures";
-
-/** OPS-1 (ADR 0015): every check of the read-only production check against a fake fetch; no network, no write. The env-dependent rules (STG-1, TST-5) are in `production-check-env.test.ts`. */
 
 describe("production check (OPS-1)", () => {
   it("is green against the deployment the runbook describes, with every check named", async () => {

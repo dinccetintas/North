@@ -12,8 +12,10 @@ import type { AgentRole, MetricKey, TaskType } from "@north/core";
 
 /** The most the two smoke tasks may cost together (the gateway's `NORTH_DAILY_CAP_USD=0.50` is the hard stop; this checks `agent_runs`). */
 export const SMOKE_LLM_MAX_COST_USD = 0.5;
-/** Where the evidence file lands when `SMOKE_LLM_OUT` is unset (read from the repo root). */
+/** Where a real (SDK runtime) run's evidence file lands when `SMOKE_LLM_OUT` is unset (read from the repo root): the proof path. */
 export const DEFAULT_SMOKE_LLM_OUT = "docs/evidence/M7/smoke-llm.json";
+/** Where a mock run's file lands when `SMOKE_LLM_OUT` is unset: never the proof path. */
+export const MOCK_SMOKE_LLM_OUT = "docs/evidence/M7/smoke-llm.mock.json";
 /** The fewest `##` sections a market report must have. */
 export const MIN_REPORT_HEADINGS = 3;
 const DEFAULT_TIMEOUT_MS = 420_000;
@@ -62,18 +64,21 @@ export interface SmokePlan {
   /** `--runtime`; null means the runtime the worker's `/health` reports. */
   readonly runtime: SmokeRuntime | null;
   readonly timeoutMs: number;
-  /** Absolute, or relative to the repo root. */
-  readonly outPath: string;
+  /** `SMOKE_LLM_OUT` (absolute, or relative to the repo root); null means the default for the runtime ({@link evidencePathFor}). */
+  readonly outPath: string | null;
   readonly workerUrl: string;
   readonly inngestUrl: string;
   readonly maxCostUsd: number;
-  /** `GITHUB_SHA` in CI; null locally (the script asks git). */
+  /** `SMOKE_LLM_SHA` (CI: the pull request's head), else `GITHUB_SHA`; null locally (the script asks git). */
   readonly sha: string | null;
+  /** `SMOKE_LLM_ALLOW_REMOTE_DB=1`: the database may be another machine (default: loopback only). */
+  readonly allowRemoteDb: boolean;
   readonly tasks: readonly SmokeTaskSpec[];
 }
 
 /** Trimmed; a blank value counts as unset. */
 const optional = <T extends z.ZodType>(schema: T) => z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : typeof v === "string" ? v.trim() : v), schema.optional());
+const SHA = /^[0-9a-f]{7,64}$/i;
 const url = optional(z.url({ protocol: /^https?$/ }).transform((u) => u.replace(/\/+$/, "")));
 
 const EnvSchema = z.object({
@@ -81,7 +86,11 @@ const EnvSchema = z.object({
   SMOKE_LLM_OUT: optional(z.string()),
   NORTH_WORKER_URL: url,
   INNGEST_BASE_URL: url,
-  GITHUB_SHA: optional(z.string().regex(/^[0-9a-f]{7,64}$/i)),
+  SMOKE_LLM_SHA: optional(z.string().regex(SHA)),
+  GITHUB_SHA: optional(z.string().regex(SHA)),
+  SMOKE_LLM_ALLOW_REMOTE_DB: optional(z.enum(["0", "1"], { error: "must be 0 or 1" })),
+  SUPABASE_URL: optional(z.string()),
+  NEXT_PUBLIC_SUPABASE_URL: optional(z.string()),
   NORTH_ENV: optional(z.string()),
   INTEGRATIONS_MODE: optional(z.string()),
 });
@@ -105,12 +114,38 @@ function flagsFrom(argv: readonly string[]): z.infer<typeof FlagsSchema> {
   return flags.data;
 }
 
+const IPV4_LOOPBACK = /^127(\.\d{1,3}){3}$/;
+const LOOPBACK_HOSTS = new Set(["localhost", "[::1]"]);
+
+/**
+ * Null when the smoke may create its user and company in the database at
+ * `url`: a loopback host, or any host with `allowRemote`
+ * (`SMOKE_LLM_ALLOW_REMOTE_DB=1`). Otherwise the refusal, naming the host.
+ */
+export function databaseRefusal(url: string, allowRemote: boolean): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "the database URL is not a URL: smoke LLM creates a user and a company there and refuses to guess";
+  }
+  if (allowRemote || LOOPBACK_HOSTS.has(host) || IPV4_LOOPBACK.test(host)) return null;
+  return `the database ${host} is not this machine: smoke LLM creates a user and a company there; set SMOKE_LLM_ALLOW_REMOTE_DB=1 to allow it`;
+}
+
+/** The evidence file for a run on `runtime`: `SMOKE_LLM_OUT` when set, else the proof path for the SDK runtime and `smoke-llm.mock.json` for the mock. */
+export function evidencePathFor(outPath: string | null, runtime: SmokeRuntime): string {
+  return outPath ?? (runtime === "mock" ? MOCK_SMOKE_LLM_OUT : DEFAULT_SMOKE_LLM_OUT);
+}
+
 /**
  * The plan for one run, from the environment and the flags (`--dry-run`,
  * `--runtime mock|claude-agent-sdk`; a lone `--` is dropped). Refuses an
- * environment that names production (`NORTH_ENV=production`) or live
- * integrations (`INTEGRATIONS_MODE=live`); the health gate refuses the same on
- * the worker's own line. Reads no key: the worker holds `ANTHROPIC_API_KEY`.
+ * environment that names production (`NORTH_ENV=production`), live
+ * integrations (`INTEGRATIONS_MODE=live`) or a database that is not this
+ * machine (`SUPABASE_URL`, unless `SMOKE_LLM_ALLOW_REMOTE_DB=1`); the health
+ * gate refuses the same on the worker's own line. Reads no key: the worker
+ * holds `ANTHROPIC_API_KEY`.
  */
 export function planFor(env: Readonly<Record<string, string | undefined>>, argv: readonly string[] = []): SmokePlan {
   const parsed = EnvSchema.safeParse(env);
@@ -118,16 +153,21 @@ export function planFor(env: Readonly<Record<string, string | undefined>>, argv:
   const e = parsed.data;
   if (e.NORTH_ENV === "production") throw new Error("smoke LLM refuses NORTH_ENV=production: it creates a user and a company and spends model money; run it against the local or a staging stack");
   if (e.INTEGRATIONS_MODE === "live") throw new Error("smoke LLM refuses INTEGRATIONS_MODE=live: it runs on sandbox integrations only");
+  const allowRemoteDb = e.SMOKE_LLM_ALLOW_REMOTE_DB === "1";
+  const dbUrl = e.SUPABASE_URL ?? e.NEXT_PUBLIC_SUPABASE_URL;
+  const refusal = dbUrl === undefined ? null : databaseRefusal(dbUrl, allowRemoteDb);
+  if (refusal) throw new Error(`smoke LLM refuses: ${refusal}`);
   const flags = flagsFrom(argv);
   return Object.freeze({
     dryRun: flags["dry-run"] === true,
     runtime: flags.runtime ?? null,
     timeoutMs: e.SMOKE_LLM_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS,
-    outPath: e.SMOKE_LLM_OUT ?? DEFAULT_SMOKE_LLM_OUT,
+    outPath: e.SMOKE_LLM_OUT ?? null,
     workerUrl: e.NORTH_WORKER_URL ?? DEFAULT_WORKER_URL,
     inngestUrl: e.INNGEST_BASE_URL ?? DEFAULT_INNGEST_URL,
     maxCostUsd: SMOKE_LLM_MAX_COST_USD,
-    sha: e.GITHUB_SHA ?? null,
+    sha: e.SMOKE_LLM_SHA ?? e.GITHUB_SHA ?? null,
+    allowRemoteDb,
     tasks: SMOKE_TASKS,
   });
 }
@@ -199,7 +239,7 @@ export interface SmokeSummary {
 }
 
 /** Dollar sums rounded to a millionth, so `0.1 + 0.2` reads 0.3. */
-const usd = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
+export const usd = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
 const distinct = (values: readonly string[]): readonly string[] => Object.freeze([...new Set(values)]);
 
 function rowFor(task: SmokeTaskState, runs: readonly SmokeRun[]): SmokeTaskRow {
@@ -228,102 +268,76 @@ export function summariseRuns(runs: readonly SmokeRun[], tasks: readonly SmokeTa
   });
 }
 
-/** How a smoke task ended. */
-export interface SmokeTaskOutcome {
-  readonly taskType: string;
-  readonly status: string;
-  readonly evidence: { readonly kind: string; readonly verified: boolean } | null;
-  readonly lastError: string | null;
-}
+/** An error's message (or the thrown value as text). */
+export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** Everything the verdict reads, gathered by the script after the tasks settle. */
-export interface SmokeFacts {
-  readonly runtime: SmokeRuntime;
-  readonly maxCostUsd: number;
-  readonly tasks: readonly SmokeTaskOutcome[];
-  readonly summary: SmokeSummary;
-  /** The artifact the market report task's evidence names; null when it names none. */
-  readonly marketReport: { readonly kind: string; readonly markdown: string } | null;
-  /** The build task's head `deploy.preview` action and what its URL answered. */
-  readonly preview: { readonly status: string | null; readonly url: string | null; readonly httpStatus: number | null };
-}
-
-/** K1 completes an executed action as `notified` (executed, the CEO told); K0 as `executed`. Either means it ran. */
-const RAN = new Set(["executed", "notified"]);
-
-function taskProblems(tasks: readonly SmokeTaskOutcome[]): string[] {
-  return tasks.flatMap((t) => {
-    if (t.status !== "done") return [`${t.taskType} is ${t.status}${t.lastError ? `: ${t.lastError}` : ""}`];
-    return t.evidence?.verified ? [] : [`${t.taskType} is done without verified evidence`];
-  });
-}
-
-function reportProblems(report: SmokeFacts["marketReport"]): string[] {
-  if (!report) return ["no market report artifact: the market_report task's evidence names none"];
-  if (report.kind !== "market_report") return [`the market report's evidence is an artifact of kind "${report.kind}"`];
+/** Runs `work`; a throw becomes a problem line (`label: message`) and the fallback's value, so the table and the evidence file still come out. */
+export async function attempt<T>(label: string, work: () => Promise<T>, fallback: () => Promise<T> | T): Promise<{ readonly value: T; readonly problem: string | null }> {
   try {
-    assertMarkdownHeadings(report.markdown, MIN_REPORT_HEADINGS);
-    return [];
+    return Object.freeze({ value: await work(), problem: null });
   } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
+    return Object.freeze({ value: await fallback(), problem: `${label}: ${messageOf(error)}` });
   }
 }
 
-function previewProblems(preview: SmokeFacts["preview"]): string[] {
-  if (preview.status === null) return ["the build task has no deploy.preview action"];
-  if (!RAN.has(preview.status)) return [`deploy.preview is ${preview.status}, not executed`];
-  if (preview.url === null) return ["deploy.preview ran but recorded no URL"];
-  return preview.httpStatus === 200 ? [] : [`the preview ${preview.url} answered ${preview.httpStatus ?? "nothing"}, not 200`];
+/** One action of the build task as the preview pick reads it. */
+export interface PreviewAction {
+  readonly kind: string;
+  readonly status: string;
+  readonly externalRef: string | null;
+  readonly createdAt: string;
 }
 
-function runProblems(facts: SmokeFacts): string[] {
-  const { summary, runtime, maxCostUsd } = facts;
-  const cost = summary.totalCostUsd > maxCostUsd ? [`agent runs cost $${summary.totalCostUsd.toFixed(4)}, over the $${maxCostUsd.toFixed(2)} cap`] : [];
-  const others = summary.runtimes.filter((r) => r !== runtime);
-  const foreign = others.length > 0 ? [`smoke tasks ran on runtime ${others.join(", ")}, not ${runtime}`] : [];
-  const silent = runtime === "claude-agent-sdk" ? summary.tasks.filter((t) => t.inputTokens + t.outputTokens === 0).map((t) => `${t.taskType} recorded no tokens on the SDK runtime`) : [];
-  return [...cost, ...foreign, ...silent];
+/** The build's `deploy.preview`: the one whose URL is the task's evidence, else the newest; null without one. */
+export function pickPreview<T extends PreviewAction>(actions: readonly T[], evidenceRef: string | null): T | null {
+  const previews = actions.filter((a) => a.kind === "deploy.preview");
+  const evidenced = evidenceRef === null ? undefined : previews.find((a) => a.externalRef === evidenceRef);
+  return evidenced ?? previews.reduce<T | null>((newest, a) => (newest === null || a.createdAt > newest.createdAt ? a : newest), null);
 }
 
-/**
- * Every problem with the run at once (empty when it passed): both tasks done
- * with verified evidence (a gateway 402 shows up as a failed task with its
- * reason), the market report a `market_report` artifact with at least three
- * `##` headings, the build's `deploy.preview` ran and answers 200, the
- * company's `agent_runs` cost at most the cap, and on the SDK runtime every
- * smoke task ran on it with real tokens.
- */
-export function smokeProblems(facts: SmokeFacts): readonly string[] {
-  return Object.freeze([...taskProblems(facts.tasks), ...reportProblems(facts.marketReport), ...previewProblems(facts.preview), ...runProblems(facts)]);
-}
-
-/** The evidence file `smoke-llm.json`. */
+/** The evidence file `smoke-llm.json` (or `smoke-llm.mock.json`). */
 export interface SmokeReport {
   readonly sha: string;
   readonly profile: string;
+  readonly runtime: SmokeRuntime;
   readonly tasks: readonly SmokeTaskRow[];
+  /** The ledger: every `agent_runs.cost_usd` of the company. */
   readonly totalCostUsd: number;
+  /** The gateway's priced spend during the run (the spend truth); null on the mock runtime or when it could not be read. */
+  readonly gatewaySpentUsd: number | null;
 }
 
-/** `smoke-llm.json`: `{ sha, profile, tasks, totalCostUsd }`, each task row with exactly the evidence fields. */
-export function buildReport(input: { readonly sha: string; readonly profile: string; readonly summary: SmokeSummary }): SmokeReport {
+/** What {@link buildReport} is made from. */
+export interface ReportInput {
+  readonly sha: string;
+  readonly profile: string;
+  readonly runtime: SmokeRuntime;
+  readonly summary: SmokeSummary;
+  readonly gatewaySpentUsd: number | null;
+}
+
+/** The evidence file: `{ sha, profile, runtime, tasks, totalCostUsd, gatewaySpentUsd }`, each task row with exactly the evidence fields. */
+export function buildReport(input: ReportInput): SmokeReport {
   const tasks = input.summary.tasks.map((t) =>
     Object.freeze({ taskType: t.taskType, status: t.status, model: t.model, inputTokens: t.inputTokens, outputTokens: t.outputTokens, costUsd: t.costUsd, durationMs: t.durationMs, evidenceKind: t.evidenceKind }),
   );
-  return Object.freeze({ sha: input.sha, profile: input.profile, tasks: Object.freeze(tasks), totalCostUsd: input.summary.totalCostUsd });
+  return Object.freeze({ sha: input.sha, profile: input.profile, runtime: input.runtime, tasks: Object.freeze(tasks), totalCostUsd: input.summary.totalCostUsd, gatewaySpentUsd: input.gatewaySpentUsd });
 }
 
 const COLUMNS = [16, 18, 30, 9, 8, 10, 9] as const;
 const line = (cells: readonly string[]): string => cells.map((c, i) => c.padEnd(COLUMNS[i] ?? 0)).join("").trimEnd();
 
-/** The per-task table the script prints on success and on failure. */
-export function formatTable(summary: SmokeSummary): string {
+/** The per-task table the script prints on success and on failure, with the ledger's total and the gateway's spend during the run. */
+export function formatTable(summary: SmokeSummary, spend: { readonly runtime: SmokeRuntime; readonly gatewayUsd: number | null }): string {
   const head = line(["task", "status", "model", "in", "out", "cost", "time", "evidence"]);
   const rows = summary.tasks.map((t) => line([t.taskType, t.status, t.model, String(t.inputTokens), String(t.outputTokens), `$${t.costUsd.toFixed(4)}`, `${(t.durationMs / 1000).toFixed(1)} s`, t.evidenceKind ?? "none"]));
-  return [head, ...rows, `total (every run of the company): $${summary.totalCostUsd.toFixed(4)}`].join("\n");
+  const gateway = spend.runtime === "mock" ? "gateway none (mock runtime)" : spend.gatewayUsd === null ? "gateway unread" : `gateway $${spend.gatewayUsd.toFixed(4)} (priced during the run)`;
+  return [head, ...rows, `total: ledger $${summary.totalCostUsd.toFixed(4)} (every run of the company), ${gateway}`].join("\n");
 }
 
-/** `smoke LLM: OK ($0.12)`. */
-export function okLine(totalCostUsd: number): string {
-  return `smoke LLM: OK ($${totalCostUsd.toFixed(2)})`;
+/** `smoke LLM: OK (ledger $0.12, gateway $0.14), runtime claude-agent-sdk`, or `smoke LLM: OK (mock runtime: ledger $0.00, no gateway)`. */
+export function okLine(input: { readonly runtime: SmokeRuntime; readonly ledgerUsd: number; readonly gatewayUsd: number | null }): string {
+  const ledger = `ledger $${input.ledgerUsd.toFixed(2)}`;
+  if (input.gatewayUsd === null) return `smoke LLM: OK (${input.runtime} runtime: ${ledger}, no gateway)`;
+  return `smoke LLM: OK (${ledger}, gateway $${input.gatewayUsd.toFixed(2)}), runtime ${input.runtime}`;
 }

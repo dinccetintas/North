@@ -1,20 +1,28 @@
 /**
  * TST-2: the real-Claude smoke, run on every pull request (CI job `llm-smoke`)
- * and by `pnpm validate` when a key and the SDK runtime are present. It reads
- * the worker's `/health` first and refuses anything but a staging, sandbox
- * worker on the `smoke` profile (smoke-llm-health.ts), then creates a user and
- * a company, dispatches through `task/dispatch` one `market_report` (its
- * instructions cap web searches at 3) and one `build_site`, declines the
- * go-live card the build opens (the preview stays its evidence), polls the
- * tasks until both are `done` or `failed` within `SMOKE_LLM_TIMEOUT_MS`
- * (default 420 s) and asserts: both done with verified evidence; the market
- * report is a `market_report` artifact with at least three `##` headings; the
- * build's `deploy.preview` ran and its URL answers 200; the company's
- * `agent_runs.cost_usd` sum is at most $0.50; the worker reports the `smoke`
- * profile and the runtime under test. It writes `smoke-llm.json`
- * (`{ sha, profile, tasks, totalCostUsd }`) to `docs/evidence/M7/` or to
- * `SMOKE_LLM_OUT`, then prints the per-task table and `smoke LLM: OK ($x.xx)`;
- * any failure exits 1 with every failing assertion and the table.
+ * and by `pnpm validate` when the worker is on the SDK runtime and a key is
+ * set. It reads the worker's `/health` first and refuses anything but a
+ * staging, sandbox worker on the `smoke` profile (smoke-llm-health.ts), and a
+ * database that is not this machine unless `SMOKE_LLM_ALLOW_REMOTE_DB=1`. Then
+ * it creates a user and a company, dispatches through `task/dispatch` one
+ * `market_report` (its instructions cap web searches at 3) and one
+ * `build_site`, declines the go-live card the build opens (the preview stays
+ * its evidence), polls the tasks until both are `done` or `failed` within
+ * `SMOKE_LLM_TIMEOUT_MS` (default 420 s) and asserts (smoke-llm-verdict.ts):
+ * both done with verified evidence; the market report is a `market_report`
+ * artifact with at least three `##` headings; the build's `deploy.preview` ran
+ * and its URL answers 200; the company's `agent_runs.cost_usd` sum (the
+ * ledger) is at most $0.50; on the SDK runtime every smoke task ran on it with
+ * tokens, and the gateway priced more than $0 and at most $0.50 during the run
+ * (its `/health` `budget.spentUsd` at the gate and after: the spend truth, as
+ * a run can store `cost_usd` 0), with no $0 ledger next to used tokens. It
+ * writes `{ sha, profile, runtime, tasks, totalCostUsd, gatewaySpentUsd }` to
+ * `SMOKE_LLM_OUT`, else `docs/evidence/M7/smoke-llm.json` on the SDK runtime
+ * and `smoke-llm.mock.json` on the mock (a mock run never writes the proof
+ * path), prints the per-task table and `smoke LLM: OK (ledger $x.xx, gateway
+ * $y.yy), runtime …`. Any failure, an exception after dispatch included,
+ * exits 1 with every problem and the table, and presses the company's kill
+ * switch so a local run spends nothing more.
  *
  * Economics: the role YAML's `max_turns` and `max_budget_usd` stay. The hard
  * stop is the worker's gateway, `NORTH_DAILY_CAP_USD=0.50` per UTC day, which
@@ -26,14 +34,15 @@
  *
  * Keys: this script reads no model key and prints none. The worker holds
  * `ANTHROPIC_API_KEY` (in CI from the `ANTHROPIC_TEST_API_KEY` secret, which
- * the founder adds); without it the SDK runtime does not start and the job is
- * skipped. `--runtime mock` runs the same orchestration on the mock runtime
- * (no key, no spend) to prove the plumbing.
+ * the founder adds); without the secret the CI job skips every step.
+ * `--runtime mock` runs the same orchestration on the mock runtime (no key,
+ * no spend, no gateway) to prove the plumbing.
  *
  * Usage: pnpm smoke:llm [-- [--dry-run] [--runtime mock|claude-agent-sdk]]   (CI and validate pass --runtime claude-agent-sdk)
  *   (requires the stack and `pnpm dev`; worker env: AGENT_RUNTIME, NORTH_ENV=staging,
  *   NORTH_MODEL_PROFILE=smoke, NORTH_DAILY_CAP_USD=0.50, ANTHROPIC_API_KEY)
- *   env: SMOKE_LLM_TIMEOUT_MS, SMOKE_LLM_OUT, NORTH_WORKER_URL, INNGEST_BASE_URL, GITHUB_SHA
+ *   env: SMOKE_LLM_TIMEOUT_MS, SMOKE_LLM_OUT, SMOKE_LLM_SHA (else GITHUB_SHA, else git),
+ *   SMOKE_LLM_ALLOW_REMOTE_DB=1 (a non-loopback SUPABASE_URL), NORTH_WORKER_URL, INNGEST_BASE_URL
  */
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -53,14 +62,17 @@ import {
   headActionsForTask,
   listPendingCardsForTask,
   listRecentRuns,
+  setKillSwitch,
   setOnboardingStep,
   upsertBudgets,
+  type AgentRunRecord,
   type DbClient,
   type TaskRecord,
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
-import { checkHealth, gatewaySpendLine } from "./smoke-llm-health";
-import { buildReport, formatTable, okLine, planFor, smokeProblems, summariseRuns, type SmokeFacts, type SmokePlan, type SmokeRuntime, type SmokeSummary } from "./smoke-llm-helpers";
+import { checkHealth, spentUsdOf } from "./smoke-llm-health";
+import { attempt, buildReport, databaseRefusal, evidencePathFor, formatTable, messageOf, okLine, pickPreview, planFor, summariseRuns, type SmokePlan, type SmokeRuntime, type SmokeSummary } from "./smoke-llm-helpers";
+import { gatewayDeltaUsd, smokeProblems, type SmokeFacts } from "./smoke-llm-verdict";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_MS = 3000;
@@ -164,29 +176,45 @@ async function readMarketReport(db: DbClient, task: TaskRecord | undefined): Pro
   return artifact && markdown !== null ? { kind: artifact.kind, markdown } : null;
 }
 
+const NO_PREVIEW: SmokeFacts["preview"] = { status: null, url: null, httpStatus: null };
+
+/** The build's preview (the one its evidence names, else the newest) and what its URL answers. */
 async function readPreview(db: DbClient, task: TaskRecord | undefined): Promise<SmokeFacts["preview"]> {
-  const action = task ? (await headActionsForTask(db, task.id)).find((a) => a.kind === "deploy.preview") : undefined;
-  if (!action) return { status: null, url: null, httpStatus: null };
+  if (!task) return NO_PREVIEW;
+  const action = pickPreview(await headActionsForTask(db, task.id), task.evidence?.kind === "url" ? task.evidence.ref : null);
+  if (!action) return NO_PREVIEW;
   const url = action.externalRef?.startsWith("http") ? action.externalRef : null;
   const httpStatus = url ? await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).then((r) => r.status, () => null) : null;
   return { status: action.status, url, httpStatus };
 }
 
-/** What the verdict reads: the tasks' outcomes, the company's runs, the market report and the preview. */
-async function gatherFacts(ctx: Ctx, tasks: readonly TaskRecord[], runtime: SmokeRuntime): Promise<SmokeFacts> {
-  const runs = await listRecentRuns(ctx.db, ctx.companyId, 1000);
+/** What the gate found: the runtime under test, the worker's profile and the gateway's day spend before anything was created. */
+interface Gate {
+  readonly runtime: SmokeRuntime;
+  readonly profile: string;
+  readonly spentUsd: number | null;
+}
+
+/** What the verdict reads: the tasks' outcomes, the company's runs, the market report, the preview and the gateway's spend; a read that throws becomes a problem. */
+async function gatherFacts(ctx: Ctx, tasks: readonly TaskRecord[], gate: Gate): Promise<{ readonly facts: SmokeFacts; readonly problems: readonly string[] }> {
+  const runs = await attempt<readonly AgentRunRecord[]>("reading agent_runs", () => listRecentRuns(ctx.db, ctx.companyId, 1000), () => []);
+  const report = await attempt("reading the market report", () => readMarketReport(ctx.db, tasks.find((t) => t.taskType === "market_report")), () => null);
+  const preview = await attempt("reading the preview", () => readPreview(ctx.db, tasks.find((t) => t.taskType === "build_site")), () => NO_PREVIEW);
+  const gateway = gate.runtime === "claude-agent-sdk" ? { beforeUsd: gate.spentUsd, afterUsd: spentUsdOf(await readHealth(ctx.plan.workerUrl).catch(() => null)) } : null;
   const summary = summariseRuns(
-    runs.map((r) => ({ taskId: r.taskId, model: r.model, runtime: r.runtime, inputTokens: r.inputTokens, outputTokens: r.outputTokens, costUsd: r.costUsd, durationMs: r.durationMs })),
+    runs.value.map((r) => ({ taskId: r.taskId, model: r.model, runtime: r.runtime, inputTokens: r.inputTokens, outputTokens: r.outputTokens, costUsd: r.costUsd, durationMs: r.durationMs })),
     tasks.map((t) => ({ id: t.id, taskType: t.taskType, status: t.status, evidenceKind: t.evidence?.kind ?? null })),
   );
-  return {
-    runtime,
+  const facts: SmokeFacts = {
+    runtime: gate.runtime,
     maxCostUsd: ctx.plan.maxCostUsd,
     tasks: tasks.map((t) => ({ taskType: t.taskType, status: t.status, evidence: t.evidence ? { kind: t.evidence.kind, verified: t.evidence.verified } : null, lastError: t.lastError })),
     summary,
-    marketReport: await readMarketReport(ctx.db, tasks.find((t) => t.taskType === "market_report")),
-    preview: await readPreview(ctx.db, tasks.find((t) => t.taskType === "build_site")),
+    marketReport: report.value,
+    preview: preview.value,
+    gateway,
   };
+  return { facts, problems: [runs.problem, report.problem, preview.problem].filter((p): p is string => p !== null) };
 }
 
 function commitSha(plan: SmokePlan): string {
@@ -198,39 +226,49 @@ function commitSha(plan: SmokePlan): string {
   }
 }
 
-/** Writes `smoke-llm.json` (also on a failed run: the evidence of what happened); returns its path. */
-async function writeEvidence(plan: SmokePlan, profile: string, summary: SmokeSummary): Promise<string> {
-  const path = resolve(REPO_ROOT, plan.outPath);
+/** Writes the evidence file (also on a failed run: the evidence of what happened); a mock run never writes the proof path. Returns its path. */
+async function writeEvidence(plan: SmokePlan, gate: Gate, summary: SmokeSummary, gatewaySpentUsd: number | null): Promise<string> {
+  const path = resolve(REPO_ROOT, evidencePathFor(plan.outPath, gate.runtime));
+  const report = buildReport({ sha: commitSha(plan), profile: gate.profile, runtime: gate.runtime, summary, gatewaySpentUsd });
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(buildReport({ sha: commitSha(plan), profile, summary }), null, 2)}\n`);
+  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
   return path;
 }
 
-/** The gateway's spend today as the worker reports it, for the log; null without a gateway or an answer. */
-async function gatewaySpend(workerUrl: string): Promise<string | null> {
-  return gatewaySpendLine(await readHealth(workerUrl).catch(() => null));
+/** Presses the company's kill switch the way the web does (`setKillSwitch` + `company/killswitch`), so a failed or timed-out run spends nothing more. */
+async function stopCompany(ctx: Ctx): Promise<string> {
+  try {
+    await setKillSwitch(ctx.db, ctx.companyId, true);
+    await ctx.inngest.send({ name: EVENT.companyKillSwitch, data: { companyId: ctx.companyId } });
+    return `kill switch pressed for company ${ctx.companyId}: its agents stop and spend nothing more (the company is kept for inspection)`;
+  } catch (error) {
+    return `could not press the kill switch for company ${ctx.companyId} (${messageOf(error)}): stop the worker to stop its spend`;
+  }
 }
 
 /** One full run against a worker that passed the gate; returns the exit code. */
-async function run(plan: SmokePlan, runtime: SmokeRuntime, profile: string): Promise<number> {
+async function run(plan: SmokePlan, gate: Gate): Promise<number> {
   const env = localSupabaseEnv();
+  const refusal = databaseRefusal(env.url, plan.allowRemoteDb);
+  if (refusal) throw new Error(`${refusal} (nothing created)`);
   const db = createServiceClient({ url: env.url, serviceRoleKey: env.serviceRoleKey });
   const { ownerId, companyId } = await setUp(db);
   const ctx: Ctx = { plan, db, inngest: new Inngest({ id: "north-smoke-llm", isDev: true, baseUrl: plan.inngestUrl }), companyId };
-  const tasks = await settle(ctx, await dispatch(ctx));
-  const facts = await gatherFacts(ctx, tasks, runtime);
-  const timedOut = tasks.every(isSettled) ? [] : [`timed out after ${Math.round(plan.timeoutMs / 1000)} s waiting for both tasks to be done or failed`];
-  const problems = [...timedOut, ...smokeProblems(facts)];
-  console.log(`\n${formatTable(facts.summary)}`);
-  console.log(`evidence: ${await writeEvidence(plan, profile, facts.summary)}`);
-  const spend = await gatewaySpend(plan.workerUrl);
-  if (spend) console.log(spend);
+  const dispatched = await dispatch(ctx);
+  const settled = await attempt("waiting for the tasks", () => settle(ctx, dispatched), () => reload(ctx.db, dispatched).catch(() => dispatched));
+  const { facts, problems: readProblems } = await gatherFacts(ctx, settled.value, gate);
+  const timedOut = settled.value.every(isSettled) ? [] : [`timed out after ${Math.round(plan.timeoutMs / 1000)} s waiting for both tasks to be done or failed`];
+  const problems = [...(settled.problem ? [settled.problem] : []), ...readProblems, ...timedOut, ...smokeProblems(facts)];
+  const gatewayUsd = gatewayDeltaUsd(facts.gateway);
+  console.log(`\n${formatTable(facts.summary, { runtime: gate.runtime, gatewayUsd })}`);
+  console.log(`evidence: ${await writeEvidence(plan, gate, facts.summary, gatewayUsd)}`);
   if (problems.length > 0) {
-    console.error(`\nsmoke LLM: FAIL (company ${companyId} kept for inspection)\n- ${problems.join("\n- ")}`);
+    console.error(`\nsmoke LLM: FAIL\n- ${problems.join("\n- ")}\n${await stopCompany(ctx)}`);
     return 1;
   }
-  await db.auth.admin.deleteUser(ownerId);
-  console.log(okLine(facts.summary.totalCostUsd));
+  const deleted = await db.auth.admin.deleteUser(ownerId);
+  if (deleted.error) console.warn(`could not delete the smoke user ${ownerId} (${deleted.error.message}); its company stays in the database`);
+  console.log(okLine({ runtime: gate.runtime, ledgerUsd: facts.summary.totalCostUsd, gatewayUsd }));
   return 0;
 }
 
@@ -238,15 +276,16 @@ async function main(): Promise<number> {
   const plan = planFor(process.env, process.argv.slice(2));
   if (plan.dryRun) return dryRun(plan);
   const body = await readHealth(plan.workerUrl).catch((error: unknown) => {
-    throw new Error(`the worker does not answer at ${plan.workerUrl}/health (${error instanceof Error ? error.message : String(error)}): run 'pnpm dev'`);
+    throw new Error(`the worker does not answer at ${plan.workerUrl}/health (${messageOf(error)}): run 'pnpm dev'`);
   });
   const verdict = checkHealth(body, plan);
   if (!verdict.ok || verdict.runtime === null || verdict.profile === null) {
     console.error(`smoke LLM: FAIL (health gate, nothing created)\n- ${verdict.problems.join("\n- ")}`);
     return 1;
   }
-  console.log(`smoke LLM on runtime ${verdict.runtime}, profile ${verdict.profile}, cap $${plan.maxCostUsd.toFixed(2)}, timeout ${plan.timeoutMs / 1000} s`);
-  return run(plan, verdict.runtime, verdict.profile);
+  const gatewayNow = verdict.spentUsd === null ? "" : `, gateway spent $${verdict.spentUsd.toFixed(4)} today so far`;
+  console.log(`smoke LLM on runtime ${verdict.runtime}, profile ${verdict.profile}, cap $${plan.maxCostUsd.toFixed(2)}, timeout ${plan.timeoutMs / 1000} s${gatewayNow}`);
+  return run(plan, { runtime: verdict.runtime, profile: verdict.profile, spentUsd: verdict.spentUsd });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -255,7 +294,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exitCode = code;
     },
     (error: unknown) => {
-      console.error(`smoke LLM: FAIL\n- ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`smoke LLM: FAIL\n- ${messageOf(error)}`);
       process.exitCode = 1;
     },
   );

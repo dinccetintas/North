@@ -51,3 +51,6 @@ update-check/
 
 # sandbox repos and sites written by the sandbox adapters (worker)
 .sandbox/
+
+# TST-2: a mock run of `pnpm smoke:llm` is never evidence (the proof is smoke-llm.json from the SDK runtime)
+docs/evidence/M7/smoke-llm.mock.json
