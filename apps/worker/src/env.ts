@@ -24,6 +24,9 @@ const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const MAIL_DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const VERCEL_PREFIX = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 
+/** The secret the sandbox signs unsubscribe tokens with when no real one is configured (sandbox on a loopback host only). Public: live mode refuses it. */
+export const SANDBOX_UNSUBSCRIBE_SECRET = "sandbox-unsubscribe-secret";
+
 /** M7 (SEC-1, TST-1, TST-2, TST-5, STG-1, CMP-1, LRN-7): the gateway, the model profile, the fence and the query embedder. */
 const M7Keys = {
   /** STG-1: which deployment this is. Only `staging` may run the fence, cassettes or a cheaper model profile under NODE_ENV=production. */
@@ -50,7 +53,7 @@ const M7Keys = {
   NORTH_WORKER_PUBLIC_URL: blankAsUnset(z.url().optional()),
   /** CMP-1: the key unsubscribe tokens are signed with; see `unsubscribeSecretFor`. */
   UNSUBSCRIBE_SECRET: blankAsUnset(z.string().min(16).optional()),
-  /** CMP-1: `1` when the worker sits behind Fly's proxy: the `/u/{token}` rate limit then reads `Fly-Client-IP` (then the first `X-Forwarded-For` entry); `0` (default) uses the socket's address and ignores both headers. */
+  /** CMP-1: `1` only behind Fly's edge, which sets `Fly-Client-IP`: the `/u/{token}` rate limit then reads that header (else the socket's address); `0` (default) uses the socket's address. `X-Forwarded-For` is never read. */
   NORTH_TRUST_PROXY: z.enum(["0", "1"]).default("0"),
   /** LRN-7: `1` embeds memory queries through the `embed` Edge Function in sandbox mode too (live mode always does). */
   NORTH_EMBED_QUERIES: z.enum(["0", "1"]).default("0"),
@@ -142,6 +145,10 @@ const EnvSchema = z
     message: "NORTH_WORKER_PUBLIC_URL is required when INTEGRATIONS_MODE=live in production (unsubscribe links point at it)",
     path: ["NORTH_WORKER_PUBLIC_URL"],
   })
+  .refine((env) => env.INTEGRATIONS_MODE !== "live" || env.UNSUBSCRIBE_SECRET !== SANDBOX_UNSUBSCRIBE_SECRET, {
+    message: `UNSUBSCRIBE_SECRET must not be the public sandbox value "${SANDBOX_UNSUBSCRIBE_SECRET}" in live mode (anyone could forge opt-outs)`,
+    path: ["UNSUBSCRIBE_SECRET"],
+  })
   .transform((env) => ({
     ...env,
     NORTH_CASSETTE_DIR: resolve(env.AGENTS_DIR, "..", env.NORTH_CASSETTE_DIR ?? "cassettes"),
@@ -183,9 +190,6 @@ export function stripeSecretFor(env: StripeEnv): string | null {
 }
 
 export const stripeWebhookLabel = (env: StripeEnv): string => (stripeSecretFor(env) ? "webhook on" : "webhook off (no secret)");
-
-/** The secret the sandbox signs unsubscribe tokens with when no real one is configured (sandbox on a loopback host only). */
-export const SANDBOX_UNSUBSCRIBE_SECRET = "sandbox-unsubscribe-secret";
 
 export type UnsubscribeEnv = Pick<WorkerEnv, "UNSUBSCRIBE_SECRET" | "INTEGRATIONS_MODE" | "WORKER_HOST">;
 

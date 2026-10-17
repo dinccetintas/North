@@ -144,10 +144,10 @@ async function sendMail(deps: WorkerDeps, action: ActionSpec, payload: Payload, 
   const inReplyTo = first ? {} : { inReplyTo: threadOf(lead) };
   const copies = copiesOf(action);
   const basis = await complianceBasisFor(deps, action);
-  const auth = await providerAuthFor(deps, action.companyId, action.kind);
-  const compliance = wireCompliance(basis, action.companyId, lead.email, mailboxOf(auth, deps.integrations.mode, action.kind));
+  const outreach = deps.integrations.outreach(await providerAuthFor(deps, action.companyId, action.kind));
+  const compliance = wireCompliance(basis, action.companyId, lead.email, await mailboxOf(outreach, action.kind));
   if (claimant) await claimLead(deps, action, lead, claimant);
-  const sent = await deps.integrations.outreach(auth).send({
+  const sent = await outreach.send({
     companyId: action.companyId,
     to: lead.email,
     subject: str(payload, "subject", action.description),

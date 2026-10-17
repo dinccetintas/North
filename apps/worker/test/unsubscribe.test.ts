@@ -10,7 +10,7 @@ const state: FakeState = emptyState();
 const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
-const { clientIpOf, OPTED_OUT_TEXT, TokenBucket, UNSUBSCRIBE_BODY_MAX_BYTES, unsubscribeApp } = await import("../src/webhooks/unsubscribe");
+const { clientIpOf, OPTED_OUT_TEXT, rateKeyOf, TokenBucket, UNSUBSCRIBE_BODY_MAX_BYTES, unsubscribeApp } = await import("../src/webhooks/unsubscribe");
 
 const COMPANY = "6b3f4f0e-5d0c-4b6a-9d55-3c1f2a7e8b90";
 const OTHER_COMPANY = "0f9e8d7c-6b5a-4c3d-8e2f-1a0b9c8d7e6f";
@@ -122,18 +122,33 @@ describe("unsubscribe route (CMP-1)", () => {
     expect((await call(app, `/u/${t}`, { method: "POST", body: "x".repeat(UNSUBSCRIBE_BODY_MAX_BYTES) })).status).toBe(200);
   });
 
-  it("Review Focus 2: the 61st request in a minute from one IP answers 429; another IP is unaffected", async () => {
-    const t = token();
-    for (let i = 0; i < 60; i += 1) expect((await call(app, `/u/${t}`, {}, "198.51.100.1")).status).toBe(200);
-    const limited = await call(app, `/u/${t}`, {}, "198.51.100.1");
+  it("Review Focus 2: failures (404, 413) are charged: the 61st failure in a minute from one IP answers 429; another IP is unaffected", async () => {
+    for (let i = 0; i < 59; i += 1) expect((await call(app, "/u/garbage", {}, "198.51.100.1")).status).toBe(404);
+    expect((await call(app, `/u/${token()}`, { method: "POST", body: "x".repeat(2048) }, "198.51.100.1")).status).toBe(413);
+    const limited = await call(app, "/u/garbage", {}, "198.51.100.1");
     expect(limited.status).toBe(429);
     expect(limited.headers.get("cache-control")).toBe("no-store");
-    expect(await limited.text()).not.toContain(t);
-    expect((await call(app, "/u/garbage", {}, "198.51.100.1")).status).toBe(429);
-    expect((await call(app, `/u/${t}`, {}, "198.51.100.2")).status).toBe(200);
+    expect(await limited.text()).toBe("Too many requests");
+    expect((await call(app, "/u/garbage", {}, "198.51.100.2")).status).toBe(404);
   });
 
-  it("Review Focus 2: forwarded client-IP headers are ignored unless NORTH_TRUST_PROXY=1", async () => {
+  it("ruling 3: a verified opt-out is never rate-limited, even from an IP whose failures are spent (one-click POSTs from a mailbox provider are never lost)", async () => {
+    for (let i = 0; i < 61; i += 1) await call(app, "/u/garbage", {}, "198.51.100.4");
+    expect((await call(app, "/u/garbage", {}, "198.51.100.4")).status).toBe(429);
+    for (let i = 0; i < 100; i += 1) expect((await call(app, `/u/${token(`user${i % 7}@example.test`)}`, oneClick, "198.51.100.4")).status).toBe(200);
+    expect(state.suppressions).toHaveLength(7);
+    const fresh = unsubscribeApp({ db: {} as never }, SANDBOX_ENV, { now: () => NOW });
+    for (let i = 0; i < 100; i += 1) expect((await call(fresh, `/u/${token()}`, {}, "198.51.100.5")).status).toBe(200);
+    expect((await call(fresh, "/u/garbage", {}, "198.51.100.5")).status).toBe(404);
+  });
+
+  it("ruling 3: IPv6 clients share one bucket per /64", async () => {
+    for (let i = 0; i < 60; i += 1) await call(app, "/u/garbage", {}, `2001:db8:1:2::${(i + 1).toString(16)}`);
+    expect((await call(app, "/u/garbage", {}, "2001:db8:1:2:ffff:ffff:ffff:ffff")).status).toBe(429);
+    expect((await call(app, "/u/garbage", {}, "2001:db8:1:3::1")).status).toBe(404);
+  });
+
+  it("IMPORTANT 2: with NORTH_TRUST_PROXY=1 only Fly-Client-IP names the client (X-Forwarded-For is never read); without it neither header is", async () => {
     const spoof = (i: number) => ({ headers: { "fly-client-ip": `192.0.2.${i}`, "x-forwarded-for": `192.0.2.${i}` } });
     for (let i = 0; i < 60; i += 1) await call(app, "/u/garbage", spoof(i), "198.51.100.3");
     expect((await call(app, "/u/garbage", spoof(99), "198.51.100.3")).status).toBe(429);
@@ -141,6 +156,10 @@ describe("unsubscribe route (CMP-1)", () => {
     for (let i = 0; i < 61; i += 1) expect((await call(trusting, "/u/garbage", spoof(i), "10.0.0.1")).status).toBe(404);
     for (let i = 0; i < 60; i += 1) await call(trusting, "/u/garbage", spoof(200), "10.0.0.1");
     expect((await call(trusting, "/u/garbage", spoof(200), "10.0.0.1")).status).toBe(429);
+    // Behind an appending proxy the first X-Forwarded-For entry is the client's own text: rotating it gains nothing.
+    const xff = (i: number) => ({ headers: { "x-forwarded-for": `203.0.113.${i}, 10.9.9.9` } });
+    for (let i = 0; i < 60; i += 1) await call(trusting, "/u/garbage", xff(i), "10.0.0.2");
+    expect((await call(trusting, "/u/garbage", xff(250), "10.0.0.2")).status).toBe(429);
   });
 
   it("M6 review L4: with the public sandbox secret only this machine is answered (loopback Host, no cross-site POST); a configured secret answers any host", async () => {
@@ -168,13 +187,13 @@ describe("unsubscribe route (CMP-1)", () => {
   });
 
   it("Review Focus 2: a valid token for a company that no longer exists (purged: the insert's foreign key fails) is the plain 404, not a retry", async () => {
-    dbModule.addSuppression.mockRejectedValueOnce(Object.assign(new Error("Could not add suppression: violates foreign key constraint"), { cause: { code: "23503" } }));
+    dbModule.addSuppressionOnce.mockRejectedValueOnce(Object.assign(new Error("Could not add suppression: violates foreign key constraint"), { cause: { code: "23503" } }));
     const t = token();
     await expectNotFound(await call(app, `/u/${t}`), t);
   });
 
   it("CMP-1: a storage failure answers 503 text/plain without the token, never a 500, and never claims the opt-out", async () => {
-    dbModule.addSuppression.mockRejectedValueOnce(new Error("connection refused for ada@example.test"));
+    dbModule.addSuppressionOnce.mockRejectedValueOnce(new Error("connection refused for ada@example.test"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const t = token();
     const response = await call(app, `/u/${t}`);
@@ -187,19 +206,42 @@ describe("unsubscribe route (CMP-1)", () => {
     expect(body).not.toContain(OPTED_OUT_TEXT);
     expect(body).not.toContain(t);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("retry-after")).toBe("30");
+  });
+
+  it("minor 6: an error that escapes the route is a 503 with retry-after, logged by name only", async () => {
+    const failing = { take: () => { throw new TypeError("bucket broke for 198.51.100.9"); } } as unknown as InstanceType<typeof TokenBucket>;
+    const broken = unsubscribeApp({ db: {} as never }, SANDBOX_ENV, { now: () => NOW, bucket: failing });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const response = await call(broken, "/u/garbage");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual(["[unsubscribe] request failed: TypeError"]);
+    warn.mockRestore();
   });
 });
 
 describe("unsubscribe route pieces (CMP-1)", () => {
-  it("clientIpOf: the socket address unless the proxy is trusted; then Fly-Client-IP, then the first X-Forwarded-For entry; never a value that is not an IP", () => {
+  it("clientIpOf: the socket address unless the proxy is trusted; then Fly-Client-IP only (never X-Forwarded-For); never a value that is not an IP", () => {
     const headers = new Headers({ "fly-client-ip": "198.51.100.7", "x-forwarded-for": "203.0.113.9, 10.0.0.1" });
     expect(clientIpOf(headers, "10.0.0.2", false)).toBe("10.0.0.2");
     expect(clientIpOf(headers, "10.0.0.2", true)).toBe("198.51.100.7");
-    expect(clientIpOf(new Headers({ "x-forwarded-for": " 203.0.113.9 , 10.0.0.1" }), "10.0.0.2", true)).toBe("203.0.113.9");
-    expect(clientIpOf(new Headers({ "fly-client-ip": "evil", "x-forwarded-for": "also-evil" }), "10.0.0.2", true)).toBe("10.0.0.2");
+    expect(clientIpOf(new Headers({ "x-forwarded-for": "203.0.113.9, 10.0.0.1" }), "10.0.0.2", true)).toBe("10.0.0.2");
+    expect(clientIpOf(new Headers({ "fly-client-ip": "evil", "x-forwarded-for": "203.0.113.9" }), "10.0.0.2", true)).toBe("10.0.0.2");
     expect(clientIpOf(new Headers(), "::ffff:10.0.0.2", false)).toBe("10.0.0.2");
     expect(clientIpOf(new Headers(), "2001:DB8::1", false)).toBe("2001:db8::1");
     expect(clientIpOf(new Headers(), undefined, false)).toBe("unknown");
+  });
+
+  it("rateKeyOf: an IPv4 address is its own key; an IPv6 address is keyed by its /64, however it is written", () => {
+    expect(rateKeyOf("198.51.100.7")).toBe("198.51.100.7");
+    expect(rateKeyOf("2001:db8:1:2::1")).toBe("2001:db8:1:2::/64");
+    expect(rateKeyOf("2001:0db8:0001:0002:ffff:0:0:1")).toBe("2001:db8:1:2::/64");
+    expect(rateKeyOf("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(rateKeyOf("::1")).toBe("0:0:0:0::/64");
+    expect(rateKeyOf("64:ff9b::192.0.2.1")).toBe("64:ff9b:0:0::/64");
+    expect(rateKeyOf("unknown")).toBe("unknown");
   });
 
   it("TokenBucket: capacity per window per key, refilled evenly, with a bounded number of keys", () => {

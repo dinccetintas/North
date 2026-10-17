@@ -34,6 +34,22 @@ export const AddSuppressionInputSchema = z.object({
 });
 export type AddSuppressionInput = z.input<typeof AddSuppressionInputSchema>;
 
+/**
+ * Worker (service role), CMP-1 (0022): records the suppression unless the
+ * company already must not write to this address (it, or its bare domain, is
+ * listed), in one call serialised per address, so a repeat, concurrent first
+ * hits included, writes nothing. Returns the new row's id, or null when
+ * nothing was written. A company that no longer exists fails with the
+ * foreign-key violation (`DbError`, cause code 23503).
+ */
+export async function addSuppressionOnce(db: DbClient, raw: AddSuppressionInput): Promise<string | null> {
+  const input = AddSuppressionInputSchema.parse(raw);
+  const source = input.sourceActionId ? { p_source_action_id: input.sourceActionId } : {};
+  const { data, error } = await db.rpc("add_suppression_once", { p_company_id: input.companyId, p_email: input.email, p_reason: input.reason, ...source });
+  if (error) throw dbError("Could not add suppression", error);
+  return z.uuid().nullable().parse(data ?? null);
+}
+
 /** Addresses per query: with their domains the `in` list stays short enough for the request URL. */
 const ADDRESSES_PER_QUERY = 50;
 /** Any string is a recipient to look at; only a non-string is a caller error. Strings that are not plain addresses are answered, not rejected (see `listSuppressed`). */
@@ -59,7 +75,8 @@ const domainOf = (address: string): string => {
  * Worker (service role): records that the company must not write to this
  * address, or to this whole domain (an `email` without `@`). The row is
  * append-only history: a second row for the same address is fine and nothing
- * is ever lifted by editing. Returns the new row's id.
+ * is ever lifted by editing. Returns the new row's id. The opt-out and bounce
+ * paths use {@link addSuppressionOnce}, which never writes a repeat.
  */
 export async function addSuppression(db: DbClient, raw: AddSuppressionInput): Promise<string> {
   const input = AddSuppressionInputSchema.parse(raw);

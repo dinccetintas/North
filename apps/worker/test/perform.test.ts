@@ -106,9 +106,9 @@ describe("performAction: compliance on the wire (CMP-1)", () => {
     const base = fakeDeps(state, events, 200, mode, root);
     const sent: OutreachSendInput[] = [];
     const outreach = base.integrations.outreach(null);
-    const spy = { ...outreach, send: (input: OutreachSendInput) => (sent.push(input), outreach.send(input)), replies: outreach.replies.bind(outreach), status: outreach.status.bind(outreach) };
+    const spy = { send: (input: OutreachSendInput) => (sent.push(input), outreach.send(input)), replies: outreach.replies.bind(outreach), status: outreach.status.bind(outreach), mailbox: vi.fn(() => outreach.mailbox()) };
     const deps = { ...base, env: { ...base.env, NORTH_WORKER_PUBLIC_URL: PUBLIC_URL, ...env } as typeof base.env, integrations: { ...base.integrations, outreach: () => spy } };
-    return { deps, sent };
+    return { deps, sent, spy };
   }
   async function newLead(email = "ada@example.test") {
     await dbModule.importLeads(null, "company-1", [{ name: "Ada", email }], "upload");
@@ -152,6 +152,19 @@ describe("performAction: compliance on the wire (CMP-1)", () => {
     expect(sent).toEqual([]);
     expect(events).toEqual([]);
     expect(state.leads.get(lead.id)).toMatchObject({ status: "new", contactActionId: null });
+  });
+
+  it("minor 9: the mailto target is the adapter's mailbox() (the Gmail profile when the account label is no address); a mailbox that cannot be named refuses before the claim", async () => {
+    const { deps, sent, spy } = wired();
+    spy.mailbox.mockResolvedValueOnce("founder@acme.example");
+    const lead = await newLead();
+    await performAction(deps, firstContact(lead.id));
+    expect(sent[0]?.unsubscribe?.mailto).toBe("founder@acme.example?subject=unsubscribe");
+    const other = await newLead("bob@example.test");
+    spy.mailbox.mockRejectedValueOnce(new Error("gmail: profile has no email address"));
+    await expect(performAction(deps, { ...firstContact(other.id), payload: { ...firstContact(other.id).payload, to: "bob@example.test" } })).rejects.toThrow(/mailbox/);
+    expect(sent).toHaveLength(1);
+    expect(state.leads.get(other.id)).toMatchObject({ status: "new", contactActionId: null });
   });
 
   it("CMP-1: cc and bcc reach the adapter only as arrays of plain addresses read from those keys; other payload keys never do", async () => {

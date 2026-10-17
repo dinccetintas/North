@@ -1,7 +1,7 @@
 // CMP-1: what every outreach email carries on the wire: the sender's footer, a signed List-Unsubscribe, and copies only as plain addresses.
 import { complianceFooter, recipientsOf, signUnsubscribeToken, singleAddress, UNREADABLE_RECIPIENT, type ActionSpec, type SenderIdentity } from "@north/core";
 import { getSenderIdentity } from "@north/db";
-import { MAX_COPIES, SANDBOX_OUTREACH_MAILBOX, type ListUnsubscribe, type ProviderAuth } from "@north/integrations";
+import { MAX_COPIES, type ListUnsubscribe, type OutreachMailProvider } from "@north/integrations";
 import type { DepsEnv, WorkerDeps } from "../deps";
 import { unsubscribeSecretFor } from "../env";
 
@@ -51,10 +51,19 @@ export async function complianceBasisFor(deps: WorkerDeps, action: ActionSpec): 
   return Object.freeze({ identity, ...config });
 }
 
-/** The mailbox the email leaves from, as a plain address: the Gmail connection's account in live mode, the sandbox mailbox in sandbox mode. */
-export function mailboxOf(auth: ProviderAuth | null, mode: WorkerDeps["integrations"]["mode"], kind: string): string {
-  if (mode === "sandbox") return SANDBOX_OUTREACH_MAILBOX;
-  const address = auth?.account ? singleAddress(auth.account) : null;
+/**
+ * The mailbox the email leaves from, as a plain address, asked of the adapter
+ * that will send it (`mailbox()`): the sandbox mailbox, or the Gmail account
+ * label when it is one address, else the Gmail profile's address. Refused only
+ * when none of them names one.
+ */
+export async function mailboxOf(outreach: OutreachMailProvider, kind: string): Promise<string> {
+  let address: string | null = null;
+  try {
+    address = singleAddress(await outreach.mailbox());
+  } catch {
+    address = null;
+  }
   if (!address) throw new Error(`${kind} refused: the connected mailbox has no readable address for List-Unsubscribe (reconnect Gmail)`);
   return address;
 }

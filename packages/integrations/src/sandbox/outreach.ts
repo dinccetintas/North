@@ -155,6 +155,11 @@ export class SandboxOutreach implements OutreachMailProvider {
     return Object.freeze(counts);
   }
 
+  /** CMP-1: the sandbox mailbox (there is no connected account to name). */
+  async mailbox(): Promise<string> {
+    return SANDBOX_OUTREACH_MAILBOX;
+  }
+
   async status(messageId: string): Promise<MessageStatus> {
     return (await this.readMessage(messageId)) ? "sent" : "unknown";
   }

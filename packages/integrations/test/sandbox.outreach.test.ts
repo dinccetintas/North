@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SandboxOutreach } from "../src/sandbox/outreach";
+import { SANDBOX_OUTREACH_MAILBOX, SandboxOutreach } from "../src/sandbox/outreach";
 import type { SandboxEvent } from "../src/types";
 
 const recorder = () => {
@@ -139,5 +139,11 @@ describe("SandboxOutreach compliance (CMP-1)", () => {
       await expect(outreach.send({ ...input, ...patch } as typeof input), JSON.stringify(patch)).rejects.toThrow();
     }
     await expect(readdir(join(dir, "mail"))).rejects.toThrow();
+  });
+});
+
+describe("SandboxOutreach mailbox (CMP-1)", () => {
+  it("CMP-1: mailbox() is the sandbox mailbox, the List-Unsubscribe mailto target in sandbox mode", async () => {
+    expect(await new SandboxOutreach(undefined, await root()).mailbox()).toBe(SANDBOX_OUTREACH_MAILBOX);
   });
 });

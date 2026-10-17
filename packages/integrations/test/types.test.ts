@@ -102,7 +102,7 @@ describe("B4-1 ProviderAuth scopes (BUD-2: user connections, never platform keys
       pauseMany: async () => ({ paused: [], failed: [] }),
       status: async () => "unknown",
     };
-    const outreach: OutreachMailProvider = { send: async () => ({ messageId: "m", sandbox: true }), replies: async () => [], status: async () => "unknown" };
+    const outreach: OutreachMailProvider = { send: async () => ({ messageId: "m", sandbox: true }), mailbox: async () => "founder@example.test", replies: async () => [], status: async () => "unknown" };
     const analytics: AnalyticsProvider = { read: async () => null };
     const payments: PaymentsProvider = { read: async () => null };
     const integrations: Pick<Integrations, "ads" | "outreach" | "analytics" | "payments"> = { ads: () => ads, outreach: () => outreach, analytics: () => analytics, payments: () => payments };

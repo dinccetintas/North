@@ -52,6 +52,14 @@ export function fakeDbM7(state: M7State) {
       state.suppressions.push({ companyId: input.companyId, email: input.email.trim().toLowerCase(), reason: input.reason, sourceActionId: input.sourceActionId ?? null });
       return `suppression-${state.suppressions.length}`;
     }),
+    /** `addSuppressionOnce` (0022): nothing when the address or its domain is already listed (null), else one row and its id. */
+    addSuppressionOnce: vi.fn(async (_db: unknown, input: { companyId: string; email: string; reason: string; sourceActionId?: string | null }): Promise<string | null> => {
+      const email = input.email.trim().toLowerCase();
+      const named = new Set(state.suppressions.filter((s) => s.companyId === input.companyId).map((s) => s.email));
+      if (named.has(email) || named.has(domainOf(email))) return null;
+      state.suppressions.push({ companyId: input.companyId, email, reason: input.reason, sourceActionId: input.sourceActionId ?? null });
+      return `suppression-${state.suppressions.length}`;
+    }),
     getSenderIdentity: vi.fn(async (_db: unknown, companyId: string): Promise<SenderIdentity | null> => (state.senderIdentities.has(companyId) ? (state.senderIdentities.get(companyId) ?? null) : FAKE_SENDER_IDENTITY)),
   };
 }

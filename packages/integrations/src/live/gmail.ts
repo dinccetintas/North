@@ -1,4 +1,5 @@
 // SLS-K2 / CMP-1: the user's own Gmail: outreach leaves through it with its footer and List-Unsubscribe, replies, bounces and opt-outs come back from it.
+import { singleAddress } from "@north/core";
 import { NotConfiguredError, ProviderError, redactSecret as redact } from "../errors";
 import { RepliesInputSchema, type InReplyTo, type MessageStatus, type OutreachMailProvider, type OutreachSendInput, type RepliesInput, type ReplyCount, type SendOutreachResult } from "../growth-types";
 import { OutreachSendInputSchema, type ParsedOutreachSendInput } from "../outreach-input";
@@ -78,12 +79,19 @@ export class GmailOutreach implements OutreachMailProvider {
     return { status: response.status, data };
   }
 
-  private async connected(): Promise<string> {
-    if (this.connectedAddress) return this.connectedAddress;
-    const { data } = await this.api<{ emailAddress?: string }>("GET", "/profile");
-    if (!data?.emailAddress) throw new ProviderError("gmail", "profile has no email address");
-    this.connectedAddress = normaliseAddress(data.emailAddress);
-    return this.connectedAddress;
+  /**
+   * The connected mailbox's address (CMP-1: the `List-Unsubscribe` mailto
+   * target, and who "us" is when counting replies): the account label when it
+   * is one address, else the profile's `emailAddress`, read once per adapter.
+   */
+  async mailbox(): Promise<string> {
+    const known = this.connectedAddress ? singleAddress(this.connectedAddress) : null;
+    if (known) return known;
+    const { data } = await this.api<{ emailAddress?: unknown }>("GET", "/profile");
+    const address = typeof data?.emailAddress === "string" ? singleAddress(data.emailAddress) : null;
+    if (!address) throw new ProviderError("gmail", "profile has no email address");
+    this.connectedAddress = address;
+    return address;
   }
 
   /** The RFC 2822 `Message-ID` of a sent message (what a reply's `In-Reply-To` must name); the API id as a best effort when the header is unavailable. */
@@ -123,7 +131,7 @@ export class GmailOutreach implements OutreachMailProvider {
    */
   async replies(raw: RepliesInput): Promise<readonly ReplyCount[]> {
     const input = RepliesInputSchema.parse(raw);
-    const connected = await this.connected();
+    const connected = await this.mailbox();
     const counts: ReplyCount[] = [];
     for (const messageId of input.messageIds) counts.push(await this.countFor(messageId, connected));
     return Object.freeze(counts);
@@ -139,11 +147,16 @@ export class GmailOutreach implements OutreachMailProvider {
     return Object.freeze({ messageId, ...counted, optedOut });
   }
 
-  /** CMP-1: reads the snippets of the first replies one by one and stops at the first that asks to stop; a 404 is no snippet. */
+  /**
+   * CMP-1: the snippets of the first replies, stopping at the first that asks
+   * to stop. The thread read's own `snippet` is used when Gmail sent one (the
+   * API reference does not promise it for `format=metadata`); a reply without
+   * one is read with `messages.get?format=minimal`, where a 404 is no snippet.
+   */
   private async anyAsksToStop(replies: readonly GmailThreadMessage[]): Promise<boolean> {
     for (const reply of replies.slice(0, MAX_SNIPPETS_PER_THREAD)) {
-      const { data } = await this.api<{ snippet?: unknown }>("GET", `/messages/${encodeURIComponent(reply.id)}?format=minimal`, undefined, [200, 404]);
-      if (asksToStop(data?.snippet)) return true;
+      const snippet = typeof reply.snippet === "string" ? reply.snippet : (await this.api<{ snippet?: unknown }>("GET", `/messages/${encodeURIComponent(reply.id)}?format=minimal`, undefined, [200, 404])).data?.snippet;
+      if (asksToStop(snippet)) return true;
     }
     return false;
   }

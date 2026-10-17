@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { recordAction } from "../src/actions";
 import { getSenderIdentity, setSenderIdentity } from "../src/companies";
 import { DbError } from "../src/errors";
-import { addSuppression, countSuppressions, listSuppressed } from "../src/suppressions";
+import { addSuppression, addSuppressionOnce, countSuppressions, listSuppressed } from "../src/suppressions";
 import { createOwnerWithCompany, createTestUser, deleteTestUser, raw, service, type OwnedCompany, type TestUser } from "./fixtures";
 import { maxRowsServiceClient, POSTGREST_MAX_ROWS } from "./max-rows";
 
@@ -135,6 +135,47 @@ describe("CMP-1 suppressions read past PostgREST's row cap", () => {
     expect(capped.cut).toEqual([]);
     expect(Math.max(...capped.limits)).toBeLessThanOrEqual(POSTGREST_MAX_ROWS);
     expect(await countSuppressions(capped.client, bulk.companyId)).toBe(POSTGREST_MAX_ROWS + 2);
+  });
+});
+
+describe("CMP-1 addSuppressionOnce (0022)", () => {
+  let owned: OwnedCompany;
+
+  beforeAll(async () => {
+    owned = await createOwnerWithCompany("suppression-once");
+  });
+
+  afterAll(async () => {
+    await deleteTestUser(owned.owner);
+  });
+
+  const rowsFor = async (email: string) => ((await raw.from("suppressions").select("email, reason").eq("company_id", owned.companyId).eq("email", email)).data ?? []) as { email: string; reason: string }[];
+
+  it("CMP-1 addSuppressionOnce writes one row (normalised), then nothing for the same address under any reason or for an address at a suppressed domain", async () => {
+    const id = await addSuppressionOnce(service, { companyId: owned.companyId, email: "  Once@Example.COM ", reason: "opt_out" });
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await addSuppressionOnce(service, { companyId: owned.companyId, email: "once@example.com", reason: "opt_out" })).toBeNull();
+    expect(await addSuppressionOnce(service, { companyId: owned.companyId, email: "once@example.com", reason: "bounce" })).toBeNull();
+    expect(await rowsFor("once@example.com")).toEqual([{ email: "once@example.com", reason: "opt_out" }]);
+    await addSuppression(service, { companyId: owned.companyId, email: "blocked-once.test", reason: "legal_block" });
+    expect(await addSuppressionOnce(service, { companyId: owned.companyId, email: "ada@blocked-once.test", reason: "opt_out" })).toBeNull();
+    expect(await rowsFor("ada@blocked-once.test")).toEqual([]);
+  });
+
+  it("CMP-1 addSuppressionOnce: eight concurrent first hits for one address leave exactly one row", async () => {
+    const hits = await Promise.all(Array.from({ length: 8 }, () => addSuppressionOnce(service, { companyId: owned.companyId, email: "race@example.com", reason: "opt_out" })));
+    expect(hits.filter((id) => id !== null)).toHaveLength(1);
+    expect(await rowsFor("race@example.com")).toHaveLength(1);
+  });
+
+  it("CMP-1 addSuppressionOnce: a company that does not exist is a DbError carrying the foreign-key code; an owner cannot call it; bad input is refused", async () => {
+    const gone = addSuppressionOnce(service, { companyId: "00000000-0000-4000-8000-000000000000", email: "x@example.com", reason: "opt_out" });
+    await expect(gone).rejects.toBeInstanceOf(DbError);
+    await expect(gone.catch((error: unknown) => (error as { cause?: { code?: string } }).cause?.code)).resolves.toBe("23503");
+    await expect(addSuppressionOnce(owned.owner.client, { companyId: owned.companyId, email: "owner@example.com", reason: "opt_out" })).rejects.toBeInstanceOf(DbError);
+    await expect(addSuppressionOnce(service, { companyId: owned.companyId, email: "two words@x.test", reason: "opt_out" })).rejects.toThrow();
+    await expect(addSuppressionOnce(service, { companyId: owned.companyId, email: "ok@example.com", reason: "because" as never })).rejects.toThrow();
+    expect(await rowsFor("owner@example.com")).toEqual([]);
   });
 });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { NotConfiguredError, ProviderError } from "../src/errors";
 import type { FetchLike } from "../src/live/github";
 import { FOOTER_MARKER } from "@north/core";
-import { GMAIL_API, GmailOutreach, OPT_OUT_PATTERN, REPLY_METADATA_HEADERS, buildRawMessage, countReplies, normaliseAddress, parseGmailRef } from "../src/live/gmail";
+import { GMAIL_API, GmailOutreach, OPT_OUT_PATTERN, REPLY_METADATA_HEADERS, asksToStop, buildRawMessage, countReplies, isAutomated, isBounce, normaliseAddress, parseGmailRef } from "../src/live/gmail";
 
 interface Call {
   readonly method: string;
@@ -278,5 +278,56 @@ describe("GmailOutreach compliance on the wire (CMP-1)", () => {
   it("CMP-1: OPT_OUT_PATTERN matches the ways people ask to stop, and not ordinary interest", () => {
     for (const yes of ["Unsubscribe", "please opt me out — opt out", "opt-out", "optout", "Stop emailing me", "stop contacting us", "Remove me", "Not interested, thanks", "No thanks."]) expect(OPT_OUT_PATTERN.test(yes), yes).toBe(true);
     for (const no of ["I'm interested", "stopping by next week", "removed the blocker", "thanks!"]) expect(OPT_OUT_PATTERN.test(no), no).toBe(false);
+  });
+});
+
+describe("GmailOutreach compliance, fix round 1 (CMP-1)", () => {
+  it("CMP-1: a reply that starts with the footer's own instruction (\"no\", \"nope\") or says no thank you asks to stop; quoted text and ordinary words never do", () => {
+    for (const yes of ["no", "No.", "No, thanks", "No thank you", "&quot;no&quot;", "\u201cNo\u201d", "  NO", "Nope", "nope, not for us", "Appreciate it, but no thank you.", "Thanks but no, thanks"]) expect(asksToStop(yes), yes).toBe(true);
+    const quoted = "Thanks! Tuesday works. On Fri, Oct 17, 2026 at 10:00 AM Founder &lt;founder@acme.example&gt; wrote: &gt; Reply &quot;no&quot; and I won&#39;t write again, or unsubscribe: https://w.example/u/x";
+    for (const no of ["Not now but ask me in March", "I know what you mean", quoted, "No problem, Tuesday works", "No worries, talk soon", "Nobody here handles that", "Sounds good -- see you then", ""]) expect(asksToStop(no), no).toBe(false);
+    expect(asksToStop(undefined)).toBe(false);
+    expect(asksToStop(42)).toBe(false);
+  });
+
+  it("CMP-1: a delivery report is a bounce with or without Auto-Submitted; a read receipt (disposition-notification) is neither a bounce nor a reply", () => {
+    const msg = (from: string, headers: { name: string; value: string }[]) => ({ id: "m2", internalDate: "2", payload: { headers: [{ name: "From", value: from }, ...headers] } });
+    const dsn = msg("mail@relay.example.test", [{ name: "Content-Type", value: 'multipart/report; report-type="delivery-status"; boundary="b"' }]);
+    expect(isBounce(dsn)).toBe(true);
+    const receipt = msg("mara@example.test", [{ name: "Content-Type", value: "multipart/report; report-type=disposition-notification; boundary=b" }]);
+    expect(isBounce(receipt)).toBe(false);
+    expect(isBounce(msg("mara@example.test", [{ name: "Auto-Submitted", value: "auto-replied" }, { name: "Content-Type", value: "multipart/report; report-type=disposition-notification" }]))).toBe(false);
+    expect(isAutomated(receipt)).toBe(true);
+    expect(isBounce(msg("MAILER-DAEMON@x.example", []))).toBe(true);
+    const sent = { id: "m1", internalDate: "1", payload: { headers: [{ name: "From", value: "founder@acme.example" }] } };
+    expect(countReplies([sent, receipt], "m1", "founder@acme.example")).toEqual({ replies: 0, lastReplyAt: null, bounced: false });
+    expect(countReplies([sent, dsn], "m1", "founder@acme.example")).toEqual({ replies: 0, lastReplyAt: null, bounced: true });
+  });
+
+  it("CMP-1: a snippet the thread read already carries is used as is (no per-reply read); only a reply without one is read with format=minimal", async () => {
+    const sentMsg = { id: "m1", internalDate: "1", payload: { headers: [{ name: "From", value: "founder@acme.example" }] } };
+    const reply = (id: string, snippet?: string) => ({ id, internalDate: "5", ...(snippet === undefined ? {} : { snippet }), payload: { headers: [{ name: "From", value: "mara@example.test" }] } });
+    const { calls, fetchImpl } = scripted({
+      "GET /gmail/v1/users/me/threads/t1": () => ({ status: 200, json: { id: "t1", messages: [sentMsg, reply("r1", "Interesting"), reply("r2", "No.")] } }),
+      "GET /gmail/v1/users/me/threads/t2": () => ({ status: 200, json: { id: "t2", messages: [sentMsg, reply("r3")] } }),
+      "GET /gmail/v1/users/me/messages/r3": () => ({ status: 200, json: { id: "r3", snippet: "Please remove me" } }),
+    });
+    const counts = await new GmailOutreach(auth, fetchImpl).replies({ companyId: "c1", messageIds: ["gmail:m1:t1", "gmail:m1:t2"] });
+    expect(counts.map((c) => [c.messageId, c.optedOut])).toEqual([["gmail:m1:t1", true], ["gmail:m1:t2", true]]);
+    expect(calls.filter((c) => c.path.includes("/messages/")).map((c) => c.path)).toEqual(["/gmail/v1/users/me/messages/r3"]);
+    expect(JSON.stringify(counts)).not.toMatch(/remove me|Interesting/);
+  });
+
+  it("CMP-1: mailbox() is the account label when it is one address, else the profile's address (read once); no address anywhere is a ProviderError", async () => {
+    const { calls, fetchImpl } = scripted({ "GET /gmail/v1/users/me/profile": () => ({ status: 200, json: { emailAddress: "Founder@Acme.example" } }) });
+    expect(await new GmailOutreach({ token: "t", account: "Founder <founder@acme.example>" }, fetchImpl).mailbox()).toBe("founder@acme.example");
+    expect(calls).toEqual([]);
+    const labelled = new GmailOutreach({ token: "t", account: "Founder" }, fetchImpl);
+    expect(await labelled.mailbox()).toBe("founder@acme.example");
+    expect(await labelled.mailbox()).toBe("founder@acme.example");
+    expect(calls.filter((c) => c.path.endsWith("/profile"))).toHaveLength(1);
+    const { fetchImpl: blank } = scripted({ "GET /gmail/v1/users/me/profile": () => ({ status: 200, json: {} }) });
+    await expect(new GmailOutreach({ token: "t" }, blank).mailbox()).rejects.toBeInstanceOf(ProviderError);
+    await expect(new GmailOutreach(null).mailbox()).rejects.toBeInstanceOf(NotConfiguredError);
   });
 });

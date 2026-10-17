@@ -119,6 +119,8 @@ export interface SendOutreachResult {
 /** The user's own mailbox for outreach (SLS-K2). The platform mail provider stays for notifications only. */
 export interface OutreachMailProvider {
   send(input: OutreachSendInput): Promise<SendOutreachResult>;
+  /** CMP-1: the address mail leaves from (the `List-Unsubscribe` mailto target), as one plain address; throws when it cannot be named. */
+  mailbox(): Promise<string>;
   replies(input: RepliesInput): Promise<readonly ReplyCount[]>;
   status(messageId: string): Promise<MessageStatus>;
 }

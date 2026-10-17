@@ -1946,6 +1946,15 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      add_suppression_once: {
+        Args: {
+          p_company_id: string;
+          p_email: string;
+          p_reason: string;
+          p_source_action_id?: string;
+        };
+        Returns: string;
+      };
       apply_budget_spend: {
         Args: {
           p_amount: number;

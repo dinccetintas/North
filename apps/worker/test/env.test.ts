@@ -182,6 +182,12 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     expect(unsubscribeSecretFor(parse({ WORKER_HOST: "0.0.0.0", UNSUBSCRIBE_SECRET: secret }))).toBe(secret);
   });
 
+  it("ruling 4: live mode refuses the public sandbox literal as UNSUBSCRIBE_SECRET (anyone could forge opt-outs); sandbox may name it", () => {
+    expect(() => workerEnv({ ...live, UNSUBSCRIBE_SECRET: SANDBOX_UNSUBSCRIBE_SECRET } as NodeJS.ProcessEnv)).toThrow(/UNSUBSCRIBE_SECRET: .*sandbox/);
+    expect(unsubscribeSecretFor(parse({ UNSUBSCRIBE_SECRET: SANDBOX_UNSUBSCRIBE_SECRET }))).toBe(SANDBOX_UNSUBSCRIBE_SECRET);
+    expect(unsubscribeSecretFor(workerEnv({ ...live, UNSUBSCRIBE_SECRET: "a-real-unsubscribe-secret-0123" } as NodeJS.ProcessEnv))).toBe("a-real-unsubscribe-secret-0123");
+  });
+
   it("CMP-1 NORTH_TRUST_PROXY is exactly 0 (default: forwarded client-IP headers are ignored) or 1", () => {
     expect(parse({}).NORTH_TRUST_PROXY).toBe("0");
     expect(parse({ NORTH_TRUST_PROXY: "1" }).NORTH_TRUST_PROXY).toBe("1");

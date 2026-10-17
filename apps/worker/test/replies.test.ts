@@ -117,6 +117,15 @@ describe("collectReplies (SLS-K2, OUT-2)", () => {
     expect(await collectReplies(deps, "company-1")).toEqual({ batches: 1, entries: 0, totalReplies: 1 });
     expect(state.suppressions).toHaveLength(2);
     expect(state.ledger).toHaveLength(1);
+
+    // Minor 8: sends whose lead is already bounced or opted out are not read again (no thread, no snippet).
+    const asked = vi.spyOn(outreach, "replies");
+    await collectReplies(deps, "company-1");
+    const read = asked.mock.calls.flatMap((c) => c[0].messageIds);
+    expect(read).toHaveLength(3);
+    expect(read).not.toContain(messageIds[0]);
+    expect(read).not.toContain(messageIds[1]);
+    asked.mockRestore();
   });
 
   it("CMP-1: a lead that replied and later asks to stop is opted out, and the batch's count never moves backwards into a negative window", async () => {

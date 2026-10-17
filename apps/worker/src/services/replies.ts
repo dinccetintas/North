@@ -1,5 +1,5 @@
 import { batchPayload, windowDelta } from "@north/core";
-import { getLead, latestChannelSample, latestMetric, listActionsByKind, markLeads, recordAttributionWindow, recordMetric, type DbClient } from "@north/db";
+import { getLead, latestChannelSample, latestMetric, listActionsByKind, listLeads, markLeads, recordAttributionWindow, recordMetric, type DbClient } from "@north/db";
 import type { ReplyCount } from "@north/integrations";
 import type { WorkerDeps } from "../deps";
 import { specsByHead } from "./action-specs";
@@ -52,12 +52,35 @@ export async function outreachBatches(db: DbClient, companyId: string): Promise<
 /** CMP-1: neither a bounce nor a reply asking to stop counts as a reply. */
 const isPlainReply = (count: ReplyCount): boolean => !count.bounced && !count.optedOut;
 
+/** Lead statuses whose outcome is final: their sends are not read again (no thread, no snippet). */
+const SETTLED_STATUSES = ["bounced", "opted_out"] as const;
+const LEAD_PAGE = 1000;
+
+/** The ids of the company's leads already bounced or opted out, paged past PostgREST's 1000 rows. */
+async function settledLeads(db: DbClient, companyId: string): Promise<ReadonlySet<string>> {
+  const ids = new Set<string>();
+  for (let offset = 0; ; offset += LEAD_PAGE) {
+    const page = await listLeads(db, companyId, { status: [...SETTLED_STATUSES], limit: LEAD_PAGE, offset });
+    for (const lead of page) ids.add(lead.id);
+    if (page.length < LEAD_PAGE) return ids;
+  }
+}
+
+/** What every batch of one collection shares: the window's end, the mode, and the leads whose outcome is already known. */
+interface CollectionContext {
+  readonly windowEnd: string;
+  readonly sandbox: boolean;
+  readonly settled: ReadonlySet<string>;
+}
+
 /**
  * CMP-1: a send that bounced marks its lead `bounced` and suppresses the
  * address (`bounce`); a lead that asked to stop is marked `opted_out` and
- * suppressed (`opt_out`). Idempotent: a lead already marked is not marked
- * again, an address already suppressed gets no second row. Returns how many
- * sends bounced and how many leads opted out.
+ * suppressed (`opt_out`). The suppression is written first, so a crash in
+ * between leaves a lead that is read again next time, never one marked but
+ * not suppressed. Idempotent: a lead already marked is not marked again, an
+ * address already suppressed gets no second row. Returns how many sends
+ * bounced and how many leads opted out.
  */
 async function applyOutcomes(deps: WorkerDeps, companyId: string, batch: OutreachBatch, counts: readonly ReplyCount[]): Promise<{ readonly bounced: number; readonly optedOut: number }> {
   for (const count of counts) {
@@ -65,8 +88,8 @@ async function applyOutcomes(deps: WorkerDeps, companyId: string, batch: Outreac
     const leadId = batch.leadIdByMessage[count.messageId];
     const lead = status && leadId ? await getLead(deps.db, companyId, leadId) : null;
     if (!status || !lead) continue;
-    if (lead.status !== status) await markLeads(deps.db, companyId, [lead.id], status);
     await suppressOnce(deps.db, { companyId, email: lead.email, reason: status === "bounced" ? "bounce" : "opt_out", sourceActionId: batch.actionIdByMessage[count.messageId] ?? null });
+    if (lead.status !== status) await markLeads(deps.db, companyId, [lead.id], status);
   }
   return { bounced: counts.filter((c) => c.bounced).length, optedOut: counts.filter((c) => !c.bounced && c.optedOut).length };
 }
@@ -74,13 +97,16 @@ async function applyOutcomes(deps: WorkerDeps, companyId: string, batch: Outreac
 /**
  * One batch's replies as a cumulative channel sample and a ledger window;
  * replied leads are marked. CMP-1: bounces and opt-outs are applied first
- * (whatever the count does) and are not replies. A count that did not grow (or
- * a first window with no reply yet) writes nothing: a reply later withdrawn by
+ * (whatever the count does) and are not replies; sends whose lead is already
+ * bounced or opted out are not read at all. A count that did not grow (or a
+ * first window with no reply yet) writes nothing: a reply later withdrawn by
  * an opt-out never makes a negative window.
  */
-async function collectBatch(deps: WorkerDeps, companyId: string, batch: OutreachBatch, windowEnd: string, sandbox: boolean): Promise<{ readonly replies: number; readonly newEntry: boolean }> {
+async function collectBatch(deps: WorkerDeps, companyId: string, batch: OutreachBatch, ctx: CollectionContext): Promise<{ readonly replies: number; readonly newEntry: boolean }> {
+  const { windowEnd, sandbox } = ctx;
+  const open = batch.messageIds.filter((messageId) => !ctx.settled.has(batch.leadIdByMessage[messageId] ?? ""));
   const auth = await providerAuthFor(deps, companyId, "email.send.first_contact");
-  const counts = await deps.integrations.outreach(auth).replies({ companyId, messageIds: [...batch.messageIds] });
+  const counts = open.length > 0 ? await deps.integrations.outreach(auth).replies({ companyId, messageIds: open }) : [];
   const outcomes = await applyOutcomes(deps, companyId, batch, counts);
   const plain = counts.filter(isPlainReply);
   const replies = plain.reduce((sum, c) => sum + c.replies, 0);
@@ -113,12 +139,11 @@ async function collectBatch(deps: WorkerDeps, companyId: string, batch: Outreach
 export async function collectReplies(deps: WorkerDeps, companyId: string, now: Date = new Date()): Promise<RepliesResult> {
   const batches = await outreachBatches(deps.db, companyId);
   if (batches.length === 0) return { batches: 0, entries: 0, totalReplies: 0 };
-  const windowEnd = now.toISOString();
-  const sandbox = deps.integrations.mode === "sandbox";
+  const ctx: CollectionContext = { windowEnd: now.toISOString(), sandbox: deps.integrations.mode === "sandbox", settled: await settledLeads(deps.db, companyId) };
   let entries = 0;
   let totalReplies = 0;
   for (const batch of batches) {
-    const collected = await collectBatch(deps, companyId, batch, windowEnd, sandbox);
+    const collected = await collectBatch(deps, companyId, batch, ctx);
     totalReplies += collected.replies;
     if (collected.newEntry) entries += 1;
   }
