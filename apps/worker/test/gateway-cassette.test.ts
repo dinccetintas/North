@@ -142,6 +142,26 @@ describe("TST-2 scrubCassette", () => {
     expect(scrubCassette(once)).toBe(once);
     expect(scrubCassette("nothing to see here")).toBe("nothing to see here");
   });
+
+  it("keeps the exact matches of the address pattern: any case of domain, no empty local part, no reach into an address already redacted", () => {
+    expect(scrubCassette("Bob@NORTH.TEST")).toBe("redacted@north.test");
+    expect(scrubCassette("@north.test alone")).toBe("@north.test alone");
+    expect(scrubCassette("x@north.test.com")).toBe("redacted@north.test.com");
+    expect(scrubCassette("x@north.testing")).toBe("x@north.testing");
+    expect(scrubCassette("a@north.test@north.test")).toBe("redacted@north.test@north.test");
+    expect(scrubCassette("a@north.testx@north.test")).toBe("a@redacted@north.test");
+  });
+
+  it("reads a long run of local-part characters once, so a megabyte of base64 in a request body does not stall the gateway", () => {
+    const run = "a".repeat(1_000_000);
+    const started = performance.now();
+    const plain = scrubCassette(run);
+    const address = scrubCassette(`${run}@north.test`);
+    const elapsed = performance.now() - started;
+    expect(plain).toBe(run);
+    expect(address).toBe("redacted@north.test");
+    expect(elapsed).toBeLessThan(1000);
+  });
 });
 
 describe("TST-2 writeCassette and readCassette", () => {

@@ -76,18 +76,58 @@ export function cassetteKey(input: CassetteKeyInput): string {
 const ANTHROPIC_KEY = /sk-ant-[A-Za-z0-9_-]+/g;
 // The scheme is spelled `Bearer`, followed by a long token: plain English ("the bearer of this note") stays.
 const BEARER_TOKEN = /Bearer [A-Za-z0-9._~+/-]{16,}=*/g;
-const NORTH_TEST_EMAIL = /[A-Za-z0-9._%+-]+@north\.test\b/gi;
+// An address is one or more LOCAL_PART_CHAR and then the domain. It is found from the domain backwards,
+// never as `<local>@north.test` in one pattern: with the local part first, a long unbroken run of
+// local-part characters (a base64 body, a minified blob) is re-read from every position and the scrub
+// is quadratic. LOCAL_PART_CHAR has no `g` flag, so `test` keeps no state.
+const NORTH_TEST_DOMAIN = /@north\.test\b/gi;
+const LOCAL_PART_CHAR = /[A-Za-z0-9._%+-]/;
+const REDACTED_ADDRESS = "redacted@north.test";
 
 /** Matches one Anthropic key (no `g` flag, so `test` keeps no state). */
 const ANTHROPIC_KEY_ONCE = /sk-ant-[A-Za-z0-9_-]+/;
 
 /**
+ * Where the local part of the address whose `@` sits at `at` begins: the start
+ * of the run of local-part characters right before it, but never before
+ * `floor`, the end of the address redacted last (a local part cannot reach into
+ * it). Returns `at` itself when no local-part character precedes the `@`: a
+ * bare domain is no address.
+ */
+function localPartStart(text: string, at: number, floor: number): number {
+  let start = at;
+  while (start > floor && LOCAL_PART_CHAR.test(text.charAt(start - 1))) start -= 1;
+  return start;
+}
+
+/**
+ * Every `<local>@north.test` replaced by `redacted@north.test`: exactly the
+ * matches of `/[A-Za-z0-9._%+-]+@north\.test\b/gi` (left to right, the local
+ * part as long as it can be, never reaching into an earlier match), found in
+ * one pass over the text: each domain first, then its local part walked
+ * backwards once. Returns `text` itself when there is nothing to redact.
+ */
+function redactNorthTestAddresses(text: string): string {
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(NORTH_TEST_DOMAIN)) {
+    const start = localPartStart(text, match.index, cursor);
+    if (start === match.index) continue;
+    pieces.push(text.slice(cursor, start), REDACTED_ADDRESS);
+    cursor = match.index + match[0].length;
+  }
+  return pieces.length === 0 ? text : `${pieces.join("")}${text.slice(cursor)}`;
+}
+
+/**
  * Removes what must never be committed from a request: Anthropic keys, bearer
  * tokens (`Bearer` and a token of 16 or more characters) and email addresses
  * under `@north.test`. Idempotent; the replacements keep JSON strings valid.
+ * Linear in the length of `text`, so a multi-megabyte body never stalls the
+ * gateway's event loop while it records.
  */
 export function scrubCassette(text: string): string {
-  return text.replace(ANTHROPIC_KEY, "sk-ant-REDACTED").replace(BEARER_TOKEN, "Bearer REDACTED").replace(NORTH_TEST_EMAIL, "redacted@north.test");
+  return redactNorthTestAddresses(text.replace(ANTHROPIC_KEY, "sk-ant-REDACTED").replace(BEARER_TOKEN, "Bearer REDACTED"));
 }
 
 /** latin1 maps bytes 1:1 to characters, so scrubbing never alters the other bytes of a request body. */
