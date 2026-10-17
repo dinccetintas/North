@@ -11,26 +11,28 @@ const entry = (n: number) => ({ type: "user", uuid: `u${n}`, timestamp: "2026-10
 /** Fake callbacks over arrays, recording every append's `fromSeq`. */
 function fakeEntries(owners: Record<string, string> = {}) {
   const rows = new Map<string, unknown[]>();
-  const calls: Array<{ sessionId: string; subpath: string; fromSeq: number; count: number }> = [];
+  const calls: Array<{ companyId: string; sessionId: string; subpath: string; fromSeq: number; count: number }> = [];
+  const reads: Array<{ companyId: string; sessionId: string; subpath: string }> = [];
   const owner = new Map(Object.entries(owners));
   const at = (sessionId: string, subpath: string) => `${sessionId}\u0000${subpath}`;
   const entries: Entries = {
-    async append(sessionId, subpath, batch, fromSeq) {
-      calls.push({ sessionId, subpath, fromSeq, count: batch.length });
+    async append(companyId, sessionId, subpath, batch, fromSeq) {
+      calls.push({ companyId, sessionId, subpath, fromSeq, count: batch.length });
       const list = rows.get(at(sessionId, subpath)) ?? [];
       if (fromSeq !== list.length) throw new Error(`seq ${fromSeq} already stored`);
       rows.set(at(sessionId, subpath), [...list, ...batch]);
-      if (!owner.has(sessionId)) owner.set(sessionId, COMPANY);
+      if (!owner.has(sessionId)) owner.set(sessionId, companyId);
       return fromSeq + batch.length;
     },
-    async read(sessionId, subpath) {
+    async read(companyId, sessionId, subpath) {
+      reads.push({ companyId, sessionId, subpath });
       return rows.get(at(sessionId, subpath)) ?? [];
     },
     async companyOf(sessionId) {
       return owner.get(sessionId) ?? null;
     },
   };
-  return { entries, rows, calls, stored: (sessionId: string, subpath = "") => rows.get(at(sessionId, subpath)) ?? [] };
+  return { entries, rows, calls, reads, stored: (sessionId: string, subpath = "") => rows.get(at(sessionId, subpath)) ?? [] };
 }
 
 describe("SEC-2 createNorthSessionStore", () => {
@@ -44,6 +46,17 @@ describe("SEC-2 createNorthSessionStore", () => {
     expect(fake.stored("s1")).toHaveLength(5);
   });
 
+  it("SEC-2 hands the run's company id to every append and read, so the host can bind each write to its company", async () => {
+    const fake = fakeEntries();
+    const store = createNorthSessionStore({ companyId: COMPANY, entries: fake.entries });
+    await store.append(key("s1"), [entry(1)]);
+    await store.append(key("s1", "subagents/a"), [entry(2)]);
+    await store.load(key("s1"));
+    expect(fake.calls.map((c) => c.companyId)).toEqual([COMPANY, COMPANY]);
+    expect(fake.reads.length).toBeGreaterThan(0);
+    expect(fake.reads.every((r) => r.companyId === COMPANY)).toBe(true);
+  });
+
   it("loads the entries in order and returns null for a session that was never written", async () => {
     const fake = fakeEntries();
     const store = createNorthSessionStore({ companyId: COMPANY, entries: fake.entries });
@@ -55,7 +68,7 @@ describe("SEC-2 createNorthSessionStore", () => {
 
   it("continues after the rows already stored when a resumed session is appended to", async () => {
     const fake = fakeEntries({ s1: COMPANY });
-    await fake.entries.append("s1", "", [entry(1), entry(2), entry(3)], 0);
+    await fake.entries.append(COMPANY, "s1", "", [entry(1), entry(2), entry(3)], 0);
     const store = createNorthSessionStore({ companyId: COMPANY, entries: fake.entries });
     await store.append(key("s1"), [entry(4)]);
     expect(fake.calls.at(-1)).toMatchObject({ fromSeq: 3, count: 1 });
@@ -85,8 +98,8 @@ describe("SEC-2 createNorthSessionStore", () => {
     let landedThenTimedOut = true;
     const flaky: Entries = {
       ...fake.entries,
-      append: async (sessionId, subpath, batch, fromSeq) => {
-        const next = await fake.entries.append(sessionId, subpath, batch, fromSeq);
+      append: async (companyId, sessionId, subpath, batch, fromSeq) => {
+        const next = await fake.entries.append(companyId, sessionId, subpath, batch, fromSeq);
         if (landedThenTimedOut) {
           landedThenTimedOut = false;
           throw new Error("timeout");
@@ -110,7 +123,7 @@ describe("SEC-2 createNorthSessionStore", () => {
 
   it("fails loudly on a stored row that is not a transcript entry", async () => {
     const fake = fakeEntries({ s1: COMPANY });
-    await fake.entries.append("s1", "", [{ nope: true }], 0);
+    await fake.entries.append(COMPANY, "s1", "", [{ nope: true }], 0);
     const store = createNorthSessionStore({ companyId: COMPANY, entries: fake.entries });
     await expect(store.load(key("s1"))).rejects.toThrow("session s1 holds a malformed entry");
   });

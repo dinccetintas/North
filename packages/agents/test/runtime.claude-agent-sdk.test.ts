@@ -299,9 +299,9 @@ describe("SEC-1 / TST-1 query options", () => {
     expect(buildQueryOptions(makeInput(), research, makeDeps(roles))).not.toHaveProperty("sessionStore");
     expect(buildQueryOptions(makeInput(), research, makeDeps(roles))).not.toHaveProperty("sessionStoreFlush");
 
-    const appended: Array<{ sessionId: string; fromSeq: number }> = [];
+    const appended: Array<{ companyId: string; sessionId: string; fromSeq: number }> = [];
     const sessionEntries: NonNullable<ClaudeAgentSdkDeps["sessionEntries"]> = {
-      append: async (sessionId, _subpath, entries, fromSeq) => (appended.push({ sessionId, fromSeq }), fromSeq + entries.length),
+      append: async (companyId, sessionId, _subpath, entries, fromSeq) => (appended.push({ companyId, sessionId, fromSeq }), fromSeq + entries.length),
       read: async () => [],
       companyOf: async (sessionId) => (sessionId === "foreign" ? "company-2" : null),
     };
@@ -310,13 +310,13 @@ describe("SEC-1 / TST-1 query options", () => {
     const store = options.sessionStore;
     expect(store).toBeDefined();
     await store?.append({ projectKey: "p", sessionId: "s1" }, [{ type: "user", uuid: "u1" }]);
-    expect(appended).toEqual([{ sessionId: "s1", fromSeq: 0 }]);
+    expect(appended).toEqual([{ companyId: "company-1", sessionId: "s1", fromSeq: 0 }]);
     await expect(store?.load({ projectKey: "p", sessionId: "foreign" })).rejects.toThrow("belongs to another company");
   });
 
   it("routes the session store's warnings to deps.warn", async () => {
     const warn = vi.fn();
-    const sessionEntries: NonNullable<ClaudeAgentSdkDeps["sessionEntries"]> = { append: async (_s, _p, e, from) => from + e.length, read: async () => [], companyOf: async () => null };
+    const sessionEntries: NonNullable<ClaudeAgentSdkDeps["sessionEntries"]> = { append: async (_c, _s, _p, e, from) => from + e.length, read: async () => [], companyOf: async () => null };
     const options = buildQueryOptions(makeInput(), requireRole(roles, "research"), { ...makeDeps(roles), sessionEntries, warn });
     await options.sessionStore?.append({ projectKey: "p", sessionId: "s1" }, [{ type: "user", text: "a\u0000" }]);
     expect(warn).toHaveBeenCalledWith("session s1: replaced 1 unencodable characters");

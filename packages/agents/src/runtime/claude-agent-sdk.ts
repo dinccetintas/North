@@ -54,6 +54,8 @@ export interface ClaudeAgentSdkDeps {
   readonly configRoot?: string;
   /** SEC-2: where session transcripts are mirrored (the worker wires `@north/db`); absent: transcripts stay in the company's config dir only. */
   readonly sessionEntries?: SessionEntriesPort;
+  /** SEC-1: more paths the engineering sandbox may not read (the worker's cwd and repo root, where `.env` lives), added to its `denyRead`. */
+  readonly sandboxDenyRead?: readonly string[];
   /** Operational warnings (an exposed key, replaced characters); defaults to `console.warn`. */
   readonly warn?: (message: string) => void;
   /**
@@ -151,7 +153,12 @@ export interface EngineeringSandboxPaths {
   readonly workspace: string;
   /** This run's company config dir, `<configRoot>/<companyId>`. */
   readonly companyDir: string;
+  /** Further unreadable paths (the host's own directories); the task workspace and company dir stay readable through `allowRead`. */
+  readonly denyRead?: readonly string[];
 }
+
+/** Paths made absolute, in order, each once. */
+const absoluteUnique = (paths: readonly string[]): string[] => [...new Set(paths.map((path) => resolve(path)))];
 
 /**
  * SEC-1: engineering is the only role with a shell, so its commands run in the
@@ -168,8 +175,9 @@ export interface EngineeringSandboxPaths {
  * `<companyDir>/.claude/settings.json` is the subprocess's user settings, and
  * the SDK honours sandbox-loosening keys from user settings, so a command that
  * could write there could switch the sandbox off for the next run. Paths are
- * made absolute so the rules do not depend on the worker's cwd. Returns a fresh
- * object, with fresh lists, on every call.
+ * made absolute so the rules do not depend on the worker's cwd; `denyRead`
+ * paths are added after the two roots, each once. Returns a fresh object, with
+ * fresh lists, on every call.
  */
 export function engineeringSandbox(paths: EngineeringSandboxPaths): NonNullable<Options["sandbox"]> {
   const companyDir = resolve(paths.companyDir);
@@ -180,7 +188,7 @@ export function engineeringSandbox(paths: EngineeringSandboxPaths): NonNullable<
     autoAllowBashIfSandboxed: false,
     network: { allowedDomains: ["registry.npmjs.org"] },
     filesystem: {
-      denyRead: [resolve(paths.configRoot), resolve(paths.workspaceRoot)],
+      denyRead: absoluteUnique([paths.configRoot, paths.workspaceRoot, ...(paths.denyRead ?? [])]),
       allowRead: [resolve(paths.workspace), companyDir],
       allowWrite: [npmCacheDir(companyDir)],
     },
@@ -195,6 +203,7 @@ function sandboxFor(input: AgentRunInput, deps: ClaudeAgentSdkDeps): NonNullable
     workspaceRoot: deps.workspaceRoot,
     workspace: taskWorkspace(deps.workspaceRoot, input.taskId),
     companyDir: companyConfigDir(configRoot, input.companyId),
+    ...(deps.sandboxDenyRead ? { denyRead: deps.sandboxDenyRead } : {}),
   });
 }
 

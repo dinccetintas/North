@@ -26,7 +26,7 @@ export interface GatewayOptions {
   readonly maxRequestBytes?: number;
   /** How much of a reply is kept for recording (default 8 MB); a larger reply is served and priced but not recorded. */
   readonly maxCaptureBytes?: number;
-  /** How long the upstream may stay silent, before its headers or between chunks, before the exchange is cut (default 10 minutes). */
+  /** How long the upstream may stay silent, before its headers or between chunks, before the exchange is cut (default 10 minutes; at most 2^31 - 1 ms). */
   readonly upstreamTimeoutMs?: number;
   /** Where one-line warnings go (default `console.warn`). */
   readonly log?: (message: string) => void;
@@ -64,6 +64,9 @@ const UpstreamSchema = z.url().superRefine((value, ctx) => {
 });
 
 const Bytes = z.number().int().positive();
+/** The longest delay a Node timer holds (2^31 - 1 ms, about 24.8 days); a longer one fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+const TimeoutMs = z.number().int().positive().max(MAX_TIMER_MS);
 
 const OptionsSchema = z.object({
   apiKey: z.string().nullable(),
@@ -75,7 +78,7 @@ const OptionsSchema = z.object({
   port: z.number().int().min(0).max(65535).optional(),
   maxRequestBytes: Bytes.optional(),
   maxCaptureBytes: Bytes.optional(),
-  upstreamTimeoutMs: Bytes.optional(),
+  upstreamTimeoutMs: TimeoutMs.optional(),
   log: z.custom<(message: string) => void>((value) => typeof value === "function").optional(),
 });
 

@@ -7,7 +7,8 @@
 #   required        SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY  INNGEST_EVENT_KEY  INNGEST_SIGNING_KEY
 #                   NEXT_PUBLIC_APP_URL (the Vercel URL: links in cards, briefs and checkout returns)
 #   billing         STRIPE_SECRET_KEY  STRIPE_WEBHOOK_SECRET   (both or neither; `pnpm stripe:setup` registers the endpoint)
-#   agents          ANTHROPIC_API_KEY                          (read only when AGENT_RUNTIME=claude-agent-sdk)
+#   agents          ANTHROPIC_API_KEY                          (read only when AGENT_RUNTIME=claude-agent-sdk, by the model gateway alone)
+#   compliance      NORTH_WORKER_PUBLIC_URL (required when INTEGRATIONS_MODE=live)  UNSUBSCRIBE_SECRET (without it /u/{token} stays off in live mode)
 #   connections     CONNECTIONS_ENCRYPTION_KEY                 (required when INTEGRATIONS_MODE=live)
 #                   GITHUB_CLIENT_ID  GITHUB_CLIENT_SECRET  VERCEL_CLIENT_ID  VERCEL_CLIENT_SECRET
 #                   META_APP_ID  META_APP_SECRET  GOOGLE_CLIENT_ID  GOOGLE_CLIENT_SECRET
@@ -36,6 +37,7 @@ primary_region = "ams"
   WORKER_PORT = "3101"
   WORKSPACE_ROOT = "/data/workspaces"
   SANDBOX_ROOT = "/data/sandbox"
+  AGENT_CONFIG_ROOT = "/data/agent-config"
 
 [http_service]
   internal_port = 3101

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod";
-import { EFFORT_BY_ALIAS, resolveModel, type ModelAlias } from "@north/core";
+import { DEFAULT_PROFILE, isModelProfile, resolveEffort, resolveModel, type ModelAlias, type ModelProfile } from "@north/core";
 
 /** Default output budget for one structured call (clarifying questions, classifications). */
 export const STRUCTURED_MAX_TOKENS = 4096;
@@ -70,21 +70,57 @@ export function parseStructured<T>(schema: z.ZodType<T>, text: string): T {
   return parsed.data;
 }
 
-/** Live client over `@anthropic-ai/sdk`; `new Anthropic()` reads ANTHROPIC_API_KEY from the environment. */
+/** Where the Anthropic client sends its calls, and with which key. Absent fields fall back to the SDK's own env defaults. */
+export interface AnthropicClientOptions {
+  readonly apiKey?: string;
+  /** The API base URL; in the worker, the loopback model gateway (SEC-1). */
+  readonly baseURL?: string;
+}
+
+/** Options of `AnthropicLlm`: the client options plus the model profile (TST-1) aliases resolve on. */
+export interface AnthropicLlmOptions extends AnthropicClientOptions {
+  /** Defaults to `DEFAULT_PROFILE` (production). */
+  readonly profile?: ModelProfile;
+}
+
+/** Builds the messages API a live client calls; a seam so tests can see the client options. */
+export type AnthropicApiFactory = (options: AnthropicClientOptions) => AnthropicMessagesApi;
+
+/** The SDK's messages API with only the options that are set (so an absent one keeps the SDK's env default). */
+export const anthropicMessagesApi: AnthropicApiFactory = (options) =>
+  new Anthropic({ ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}), ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}) }).messages;
+
+/** The client options of a set of options, without the fields that are absent or undefined. */
+const clientOptionsOf = (options: { readonly apiKey?: string | undefined; readonly baseURL?: string | undefined }): AnthropicClientOptions => ({
+  ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
+  ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+});
+
+/**
+ * Live client over `@anthropic-ai/sdk`. Without `api` it builds the SDK
+ * client from `options` (`apiKey`, `baseURL`; an absent one falls back to the
+ * SDK's ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL). Model aliases resolve on
+ * `options.profile`.
+ */
 export class AnthropicLlm implements LlmClient {
   readonly name = "anthropic" as const;
+  private readonly api: AnthropicMessagesApi;
+  private readonly profile: ModelProfile;
 
-  constructor(private readonly api: AnthropicMessagesApi = new Anthropic().messages) {}
+  constructor(api?: AnthropicMessagesApi, options: AnthropicLlmOptions = {}) {
+    this.api = api ?? anthropicMessagesApi(clientOptionsOf(options));
+    this.profile = options.profile ?? DEFAULT_PROFILE;
+  }
 
   async structured<T>(args: StructuredArgs<T>): Promise<T> {
     let message: Anthropic.Message;
     try {
       message = await this.api.create({
-        model: resolveModel(args.model),
+        model: resolveModel(args.model, this.profile),
         max_tokens: STRUCTURED_MAX_TOKENS,
         system: args.system,
         messages: [{ role: "user", content: args.user }],
-        output_config: { effort: EFFORT_BY_ALIAS[args.model], format: zodOutputFormat(args.schema) },
+        output_config: { effort: resolveEffort(args.model, this.profile), format: zodOutputFormat(args.schema) },
       });
     } catch (error) {
       throw toLlmError(error);
@@ -129,8 +165,31 @@ export class MockLlm implements LlmClient {
   }
 }
 
-/** Mock unless `AGENT_RUNTIME=claude-agent-sdk` and an API key are both present. */
-export function selectLlm(env: NodeJS.ProcessEnv = process.env, mockResponses?: Record<string, unknown>): LlmClient {
+/** Options of `selectLlm`: they win over the env's `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `NORTH_MODEL_PROFILE`. */
+export interface SelectLlmOptions extends AnthropicLlmOptions {
+  /** Builds the messages API (defaults to the SDK); a seam for tests. */
+  readonly createApi?: AnthropicApiFactory;
+}
+
+/** The profile named by the option or `NORTH_MODEL_PROFILE`; the default when neither is set; throws on an unknown name. */
+function profileFrom(option: ModelProfile | undefined, raw: string | undefined): ModelProfile {
+  if (option !== undefined) return option;
+  if (raw === undefined || raw === "") return DEFAULT_PROFILE;
+  if (!isModelProfile(raw)) throw new LlmError(`NORTH_MODEL_PROFILE "${raw}" is not a model profile`);
+  return raw;
+}
+
+/**
+ * Mock unless `AGENT_RUNTIME=claude-agent-sdk` and an API key are both
+ * present. The live client is built with `options.baseURL ??
+ * env.ANTHROPIC_BASE_URL`, `options.apiKey ?? env.ANTHROPIC_API_KEY` and the
+ * profile `options.profile ?? env.NORTH_MODEL_PROFILE` (default production; an
+ * unknown name throws).
+ */
+export function selectLlm(env: NodeJS.ProcessEnv = process.env, mockResponses?: Record<string, unknown>, options: SelectLlmOptions = {}): LlmClient {
   const live = env.AGENT_RUNTIME === "claude-agent-sdk" && Boolean(env.ANTHROPIC_API_KEY);
-  return live ? new AnthropicLlm() : MockLlm.fromRecord(mockResponses ?? {});
+  if (!live) return MockLlm.fromRecord(mockResponses ?? {});
+  const profile = profileFrom(options.profile, env.NORTH_MODEL_PROFILE);
+  const client = clientOptionsOf({ baseURL: options.baseURL ?? env.ANTHROPIC_BASE_URL, apiKey: options.apiKey ?? env.ANTHROPIC_API_KEY });
+  return new AnthropicLlm((options.createApi ?? anthropicMessagesApi)(client), { profile });
 }

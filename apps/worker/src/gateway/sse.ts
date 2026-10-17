@@ -12,6 +12,7 @@ const MAX_EVENT_CHARS = 1024 * 1024;
 const UsageFields = z.record(z.string(), z.unknown());
 const MessageStartSchema = z.object({ type: z.literal("message_start"), message: z.object({ model: z.string().min(1), usage: UsageFields }) });
 const MessageDeltaSchema = z.object({ type: z.literal("message_delta"), usage: UsageFields });
+const ErrorEventSchema = z.object({ type: z.literal("error") });
 
 /** Drops null and absent fields: a later usage object only overrides with a real count. */
 const definedOnly = (fields: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== null && value !== undefined));
@@ -21,6 +22,8 @@ export interface SseUsage {
   push(chunk: Buffer): void;
   /** The usage seen so far; null without a `message_start`. Ends the stream: later chunks are ignored. */
   result(): ModelUsage | null;
+  /** True when the stream carried an `error` event and no `message_start`: the upstream failed before billing anything. Ends the stream like `result`. */
+  errorOnly(): boolean;
 }
 
 /** The reader behind `createSseUsage`. */
@@ -33,6 +36,7 @@ class SseUsageReader implements SseUsage {
   private oversize = false; // inside an event too long to be a usage event: drop it up to its blank line
   private started: { model: string; usage: Record<string, unknown> } | null = null;
   private delta: Record<string, unknown> = {};
+  private sawError = false;
   private final: ModelUsage | null | undefined;
 
   push(chunk: Buffer): void {
@@ -57,6 +61,11 @@ class SseUsageReader implements SseUsage {
     const { started } = this;
     this.final = started === null ? null : usageFromApi({ model: started.model, usage: { ...definedOnly(started.usage), ...this.delta } });
     return this.final;
+  }
+
+  errorOnly(): boolean {
+    this.result();
+    return this.sawError && this.started === null;
   }
 
   private line(raw: string): void {
@@ -92,16 +101,24 @@ class SseUsageReader implements SseUsage {
       return;
     }
     const updated = MessageDeltaSchema.safeParse(payload);
-    if (updated.success) this.delta = { ...this.delta, ...definedOnly(updated.data.usage) };
+    if (updated.success) {
+      this.delta = { ...this.delta, ...definedOnly(updated.data.usage) };
+      return;
+    }
+    if (ErrorEventSchema.safeParse(payload).success) this.sawError = true;
   }
 }
 
 /** A new reader. A stream cut short is priced from what arrived. */
 export const createSseUsage = (): SseUsage => new SseUsageReader();
 
-/** Usage of a whole SSE body held in memory (a replayed cassette). */
-export function usageFromSse(text: string): ModelUsage | null {
+/** A whole SSE body held in memory (a replayed cassette), read to its end. */
+export function readSse(text: string): SseUsage {
   const reader = createSseUsage();
   reader.push(Buffer.from(text, "utf8"));
-  return reader.result();
+  reader.result();
+  return reader;
 }
+
+/** Usage of a whole SSE body held in memory (a replayed cassette). */
+export const usageFromSse = (text: string): ModelUsage | null => readSse(text).result();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSseUsage, usageFromSse } from "../src/gateway/sse";
+import { createSseUsage, readSse, usageFromSse } from "../src/gateway/sse";
 import { sseEvent } from "./gateway-helpers";
 
 /**
@@ -69,5 +69,20 @@ describe("TST-1 SSE usage reader", () => {
     expect(reader.result()).toEqual(EXPECTED);
     reader.push(Buffer.from(sseEvent("message_delta", { delta: {}, usage: { output_tokens: 999 } })));
     expect(reader.result()).toEqual(EXPECTED);
+  });
+
+  it("TST-1 errorOnly: an error event without a message_start is an upstream error; after a message_start, or without an error, it is not", () => {
+    const error = sseEvent("error", { error: { type: "overloaded_error", message: "Overloaded" } });
+    expect(readSse(error).errorOnly()).toBe(true);
+    expect(readSse(error).result()).toBeNull();
+    expect(readSse(START + error).errorOnly()).toBe(false);
+    expect(readSse(DELTA).errorOnly()).toBe(false);
+    expect(readSse(WIRE).errorOnly()).toBe(false);
+    expect(readSse('data: {"type":"error"}').errorOnly()).toBe(true);
+    expect(readSse('data: {"type":"error"').errorOnly()).toBe(false);
+    const reader = createSseUsage();
+    reader.push(Buffer.from(error.slice(0, 10)));
+    reader.push(Buffer.from(error.slice(10)));
+    expect(reader.errorOnly()).toBe(true);
   });
 });

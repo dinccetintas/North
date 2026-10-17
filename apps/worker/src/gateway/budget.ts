@@ -10,7 +10,7 @@ const NOISE_USD = 1e-9;
 export interface GatewayBudgetStats {
   readonly capUsd: number;
   readonly spentUsd: number;
-  /** Responses whose cost could not be computed (unknown model, no usage): spend that is not capped. */
+  /** Replies priced by guess (a model with no price, charged the dearest rate) or not at all (no readable usage, which closes the day under a cap). */
   readonly unpriced: number;
   readonly day: string;
 }
@@ -46,11 +46,13 @@ export class GatewayBudget {
   /**
    * Whether `estimateUsd` still fits under the day's cap, without spending it.
    * `reserve(0)` asks whether any budget is left: false once the spend has
-   * reached the cap. An estimate that is not a non-negative number is refused.
+   * reached the cap, or once `exhaust` has closed the day. An estimate that is
+   * not a non-negative number is refused.
    */
   reserve(estimateUsd: number): boolean {
     if (!Number.isFinite(estimateUsd) || estimateUsd < 0) return false;
     const state = this.sync();
+    if (this.exhausted?.day === state.day) return false;
     if (wouldExceedTestCap(state, estimateUsd)) return false;
     return !(state.capUsd > 0 && estimateUsd === 0 && remainingTestUsd(state) <= NOISE_USD);
   }
@@ -81,9 +83,10 @@ export class GatewayBudget {
   }
 
   /**
-   * Fails closed when a reply cannot be priced at all: under a cap, the day's
-   * spend becomes the cap (never lower), so nothing more is admitted until the
-   * UTC day rolls, and `exhaustion()` reports why. Counts as unpriced. With no
+   * Fails closed when a reply cannot be priced at all: under a cap, the day is
+   * closed, so `reserve` admits nothing more until the UTC day rolls, and
+   * `exhaustion()` reports why. The spend is left as priced (the closing is
+   * its own flag, never folded into `spentUsd`). Counts as unpriced. With no
    * cap there is nothing to close and it only counts. True when this call
    * closed the day (false when it was already closed, or there is no cap).
    */
@@ -91,10 +94,9 @@ export class GatewayBudget {
     const state = this.sync();
     this.unpricedCount += 1;
     if (state.capUsd === 0) return false;
-    const alreadyClosed = this.exhausted?.day === state.day;
-    this.current = Object.freeze({ ...state, spentUsd: Math.max(state.spentUsd, state.capUsd) });
-    if (!alreadyClosed) this.exhausted = Object.freeze({ day: state.day, reason });
-    return !alreadyClosed;
+    if (this.exhausted?.day === state.day) return false;
+    this.exhausted = Object.freeze({ day: state.day, reason });
+    return true;
   }
 
   /** Why today is closed by `exhaust`, or null when it is not (a new UTC day clears it). */

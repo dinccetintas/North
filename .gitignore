@@ -29,8 +29,9 @@ playwright-report-prod/
 test-results/
 blob-report/
 
-# agent workspaces
+# agent workspaces, and the per-company agent config dirs (each run's HOME; AGENT_CONFIG_ROOT defaults to <cwd>/.agent-config)
 .workspaces/
+.agent-config/
 
 # os / editor
 .DS_Store

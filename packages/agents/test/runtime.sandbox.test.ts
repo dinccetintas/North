@@ -1,6 +1,6 @@
 // SEC-1: the engineering role's OS sandbox, its filesystem rules, and which roles get one.
 import { beforeAll, describe, expect, it } from "vitest";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { buildQueryOptions, engineeringSandbox } from "../src/runtime/claude-agent-sdk";
 import { allowedToolsFor, ENGINEERING_ROLE } from "../src/runtime/tool-policy";
 import type { RoleDefinition } from "../src/roles/schema";
@@ -37,6 +37,18 @@ describe("SEC-1 engineering sandbox filesystem rules", () => {
     expect(second.filesystem?.denyRead).toEqual(["/c", "/w"]);
     expect(second.network?.allowedDomains).toEqual(["registry.npmjs.org"]);
     expect(engineeringSandbox({ ...paths, companyDir: "/c/other" }).filesystem?.allowRead).toEqual(["/w/t", "/c/other"]);
+  });
+
+  it("SEC-1 sandboxDenyRead (the worker's cwd and the repo root, where .env lives) is appended to denyRead, made absolute and de-duplicated; the task workspace stays readable", () => {
+    const deps = { ...makeDeps(roles), sandboxDenyRead: ["/srv/north", "rel/repo", "/srv/north/", "/tmp/north-workspaces"] };
+    const filesystem = buildQueryOptions(makeInput({ role: "engineering", taskId: "t-9" }), requireRole(roles, "engineering"), deps).sandbox?.filesystem;
+    expect(filesystem?.denyRead).toEqual(["/tmp/north-agent-config", "/tmp/north-workspaces", "/srv/north", resolve("rel/repo")]);
+    expect(filesystem?.allowRead).toEqual(["/tmp/north-workspaces/t-9", "/tmp/north-agent-config/company-1"]);
+    expect(engineeringSandbox({ configRoot: "/c", workspaceRoot: "/w", workspace: "/w/t", companyDir: "/c/co" }).filesystem?.denyRead).toEqual(["/c", "/w"]);
+    const extra = ["/repo"];
+    const sandbox = engineeringSandbox({ configRoot: "/c", workspaceRoot: "/w", workspace: "/w/t", companyDir: "/c/co", denyRead: extra });
+    sandbox.filesystem?.denyRead?.push("/mutated");
+    expect(extra).toEqual(["/repo"]);
   });
 
   it("SEC-1 the sandbox rules are absolute paths, so they do not depend on the worker's cwd", () => {

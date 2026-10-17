@@ -1,7 +1,9 @@
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { AnthropicLlm, LlmError, MockLlm, parseStructured, selectLlm, type AnthropicMessagesApi } from "../src/llm/client";
+import { AnthropicLlm, LlmError, MockLlm, parseStructured, selectLlm, type AnthropicClientOptions, type AnthropicMessagesApi } from "../src/llm/client";
 
 const Answer = z.object({ answer: z.number() });
 
@@ -81,5 +83,70 @@ describe("parseStructured and selectLlm", () => {
     expect(selectLlm({ AGENT_RUNTIME: "claude-agent-sdk" }).name).toBe("mock");
     expect(selectLlm({ ANTHROPIC_API_KEY: "sk-test" }).name).toBe("mock");
     expect(selectLlm({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "sk-test" }).name).toBe("anthropic");
+  });
+});
+
+/** A `createApi` seam that records the client options and answers every call with `message({})`. */
+function recordingFactory() {
+  const options: AnthropicClientOptions[] = [];
+  const params: Anthropic.MessageCreateParamsNonStreaming[] = [];
+  const createApi = (opts: AnthropicClientOptions): AnthropicMessagesApi => {
+    options.push(opts);
+    return fakeApi(async (p) => (params.push(p), message({})));
+  };
+  return { createApi, options, params };
+}
+
+describe("TST-1 / SEC-1 selectLlm through the model gateway, on the model profile", () => {
+  it("TST-1 constructs the live client with the given base URL and key, and resolves aliases on the given profile", async () => {
+    const seam = recordingFactory();
+    const llm = selectLlm({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "north-gateway" }, {}, { baseURL: "http://127.0.0.1:4310", apiKey: "north-gateway", profile: "smoke", createApi: seam.createApi });
+    expect(llm.name).toBe("anthropic");
+    expect(seam.options).toEqual([{ baseURL: "http://127.0.0.1:4310", apiKey: "north-gateway" }]);
+    await llm.structured({ schema: Answer, system: "s", user: "u", model: "planner" });
+    expect(seam.params[0]?.model).toBe("claude-haiku-5-5");
+    expect(seam.params[0]?.output_config?.effort).toBe("low");
+  });
+
+  it("TST-1 reads ANTHROPIC_BASE_URL, the key and NORTH_MODEL_PROFILE from the env when no option names them", async () => {
+    const seam = recordingFactory();
+    const env = { AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "sk-test-key", ANTHROPIC_BASE_URL: "http://127.0.0.1:1", NORTH_MODEL_PROFILE: "staging" };
+    const llm = selectLlm(env, {}, { createApi: seam.createApi });
+    expect(seam.options).toEqual([{ baseURL: "http://127.0.0.1:1", apiKey: "sk-test-key" }]);
+    await llm.structured({ schema: Answer, system: "s", user: "u", model: "planner" });
+    expect(seam.params[0]?.model).toBe("claude-sonnet-5-5");
+    expect(seam.params[0]?.output_config?.effort).toBe("medium");
+  });
+
+  it("TST-1 defaults to the production profile and refuses a profile it does not know", async () => {
+    const seam = recordingFactory();
+    await selectLlm({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "k" }, {}, { createApi: seam.createApi }).structured({ schema: Answer, system: "s", user: "u", model: "planner" });
+    expect(seam.params[0]?.model).toBe("claude-opus-5-5");
+    expect(seam.params[0]?.output_config?.effort).toBe("high");
+    expect(() => selectLlm({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "k", NORTH_MODEL_PROFILE: "cheap" }, {}, { createApi: seam.createApi })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(selectLlm({ NORTH_MODEL_PROFILE: "cheap" }).name).toBe("mock");
+  });
+
+  it("SEC-1 AnthropicLlm sends its calls to baseURL with the key it was given (a loopback server stands in for the gateway)", async () => {
+    const seen: Array<{ url: string; headers: IncomingHttpHeaders }> = [];
+    const server = createServer((req, res) => {
+      seen.push({ url: req.url ?? "", headers: req.headers });
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(message({})));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const llm = new AnthropicLlm(undefined, { baseURL, apiKey: "north-gateway", profile: "smoke" });
+      expect(await llm.structured({ schema: Answer, system: "s", user: "u", model: "coder" })).toEqual({ answer: 4 });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.url).toBe("/v1/messages");
+      expect(seen[0]?.headers["x-api-key"]).toBe("north-gateway");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

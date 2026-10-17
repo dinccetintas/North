@@ -8,14 +8,14 @@
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type RequestOptions, type Server, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { AddressInfo } from "node:net";
-import { costAtHighestRate, costOfUsage, type ModelUsage } from "@north/core";
+import { costAtHighestRate, costOfUsage } from "@north/core";
 import { z } from "zod";
 import { createCapture } from "./capture";
 import { cassetteKey, holdsAnthropicKey, readCassette, writeCassette, type CassetteResponse } from "./cassette";
 import { betaHeaderOf, forwardedRequestHeaders, hasLoopbackHost, hasPlaceholderKey, isEncoded, isEventStream, replyHeaders, upstreamHeaders } from "./headers";
 import { resolveOptions, type GatewayOptions, type ResolvedOptions } from "./options";
 import { createSseUsage, type SseUsage } from "./sse";
-import { replyUsage, usageFromResponse } from "./usage";
+import { replyUsage, UPSTREAM_ERROR, usageFromResponse, type ReplyUsage } from "./usage";
 
 export { DEFAULT_MAX_CAPTURE_BYTES, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS } from "./options";
 export type { GatewayMode, GatewayOptions } from "./options";
@@ -30,6 +30,8 @@ export interface GatewayStats {
   /** Replies priced by guess (a model with no price entry) or not at all (no readable usage); see `GatewayBudget.exhaust`. */
   readonly unpriced: number;
   readonly capUsd: number;
+  /** Today was closed by a 2xx reply with no readable usage (`GatewayBudget.exhaust`). Its own flag: `spentUsd` stays what was priced. */
+  readonly exhausted: boolean;
 }
 
 /** A running gateway. */
@@ -127,12 +129,13 @@ const parseJson = (body: Buffer): unknown => {
 
 /**
  * Settles the budget with what a finished 2xx reply cost (an error costs
- * nothing). A model with no price is charged the dearest rate and counted as
- * unpriced; a reply with no readable usage closes the day under a cap (see
+ * nothing, and so does a 2xx stream that carried only an `error` event). A
+ * model with no price is charged the dearest rate and counted as unpriced; a
+ * reply with no readable usage closes the day under a cap (see
  * `GatewayBudget.exhaust`), so spend that cannot be seen cannot slip past it.
  */
-function settleUsage(ctx: Context, status: number, usage: ModelUsage | null): void {
-  if (status < 200 || status >= 300) return;
+function settleUsage(ctx: Context, status: number, usage: ReplyUsage): void {
+  if (status < 200 || status >= 300 || usage === UPSTREAM_ERROR) return;
   const { budget, log } = ctx.opts;
   if (usage === null) {
     if (budget.exhaust("a 2xx reply carried no readable usage")) log("gateway: a reply carried no readable usage, so the day's budget is closed until the next UTC day");
@@ -333,7 +336,7 @@ export async function startGateway(options: GatewayOptions): Promise<Gateway> {
     close: () => closeServer(server),
     stats: (): GatewayStats => {
       const { capUsd, spentUsd, unpriced } = opts.budget.stats();
-      return Object.freeze({ requests: ctx.counters.requests, spentUsd, misses: ctx.counters.misses, unpriced, capUsd });
+      return Object.freeze({ requests: ctx.counters.requests, spentUsd, misses: ctx.counters.misses, unpriced, capUsd, exhausted: opts.budget.exhaustion() !== null });
     },
   });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIT_INPUT_MAX_CHARS, auditInput, capAuditInput } from "../src/deps";
+import { AUDIT_INPUT_MAX_CHARS, auditInput, capAuditInput, depsEnvOf } from "../src/deps";
 import { workerEnv } from "../src/env";
 
 describe("capAuditInput", () => {
@@ -37,5 +37,18 @@ describe("workerEnv", () => {
   it("requires the Inngest signing key in production", () => {
     expect(() => workerEnv({ ...base, NODE_ENV: "production" } as NodeJS.ProcessEnv)).toThrow(/INNGEST_SIGNING_KEY/);
     expect(() => workerEnv({ ...base, NODE_ENV: "production", INNGEST_SIGNING_KEY: "signkey-1234567890" } as NodeJS.ProcessEnv)).not.toThrow();
+  });
+});
+
+describe("SEC-1 depsEnvOf", () => {
+  it("SEC-1 the env the deps carry has no model key; the parsed env it came from is left as it was", () => {
+    const key = "sk-ant-api03-the-real-key-for-tests";
+    const env = workerEnv({ SUPABASE_URL: "http://127.0.0.1:54321", SUPABASE_SERVICE_ROLE_KEY: "service-role-key-xyz", AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: key } as NodeJS.ProcessEnv);
+    const carried = depsEnvOf(env);
+    expect("ANTHROPIC_API_KEY" in carried).toBe(false);
+    expect(JSON.stringify(carried)).not.toContain(key);
+    expect(carried).toMatchObject({ AGENT_RUNTIME: "claude-agent-sdk", NORTH_MODEL_PROFILE: "production" });
+    expect(Object.isFrozen(carried)).toBe(true);
+    expect(env.ANTHROPIC_API_KEY).toBe(key);
   });
 });

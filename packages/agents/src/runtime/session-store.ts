@@ -5,10 +5,15 @@
 import type { SessionKey, SessionStore, SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
-/** The three callbacks a host supplies. Seqs are assigned here: `append` stores entry `i` at `fromSeq + i` and returns the next seq. */
+/**
+ * The three callbacks a host supplies. Seqs are assigned here: `append` stores
+ * entry `i` at `fromSeq + i` and returns the next seq. `append` and `read` get
+ * the run's company first, so the host stores each entry under it and can
+ * refuse to read a session another company wrote.
+ */
 export interface SessionEntriesPort {
-  append(sessionId: string, subpath: string, entries: readonly unknown[], fromSeq: number): Promise<number>;
-  read(sessionId: string, subpath: string): Promise<readonly unknown[]>;
+  append(companyId: string, sessionId: string, subpath: string, entries: readonly unknown[], fromSeq: number): Promise<number>;
+  read(companyId: string, sessionId: string, subpath: string): Promise<readonly unknown[]>;
   /** The company a session was written for; null when the session has no entries yet. */
   companyOf(sessionId: string): Promise<string | null>;
 }
@@ -98,14 +103,14 @@ function createSerialiser(): <T>(id: string, task: () => Promise<T>) => Promise<
  * after a failed write: a timed-out write may have landed, so the rows are
  * counted again next time. Callers serialise per transcript.
  */
-function createSeqAppender(port: SessionEntriesPort): (key: SessionKey, batch: readonly unknown[]) => Promise<void> {
+function createSeqAppender(port: SessionEntriesPort, companyId: string): (key: SessionKey, batch: readonly unknown[]) => Promise<void> {
   const nextSeq = new Map<string, number>();
   return async (key, batch) => {
     const id = transcriptId(key);
     const subpath = key.subpath ?? "";
-    const from = nextSeq.get(id) ?? (await port.read(key.sessionId, subpath)).length;
+    const from = nextSeq.get(id) ?? (await port.read(companyId, key.sessionId, subpath)).length;
     try {
-      nextSeq.set(id, await port.append(key.sessionId, subpath, batch, from));
+      nextSeq.set(id, await port.append(companyId, key.sessionId, subpath, batch, from));
     } catch (error) {
       nextSeq.delete(id);
       throw error;
@@ -141,7 +146,7 @@ export function createNorthSessionStore(opts: NorthSessionStoreOptions): Session
   const { entries: port } = opts;
   const warn = opts.warn ?? ((message: string) => console.warn(message));
   const serialised = createSerialiser();
-  const appendAt = createSeqAppender(port);
+  const appendAt = createSeqAppender(port, opts.companyId);
   const ownership = createOwnership(port, opts.companyId);
 
   return {
@@ -158,7 +163,7 @@ export function createNorthSessionStore(opts: NorthSessionStoreOptions): Session
     },
     async load(key: SessionKey): Promise<SessionStoreEntry[] | null> {
       await ownership.assertOwn(key.sessionId);
-      const rows = await port.read(key.sessionId, key.subpath ?? "");
+      const rows = await port.read(opts.companyId, key.sessionId, key.subpath ?? "");
       if (rows.length === 0) return null;
       const parsed = StoredEntriesSchema.safeParse(rows);
       if (!parsed.success) throw new Error(`session ${key.sessionId} holds a malformed entry`);

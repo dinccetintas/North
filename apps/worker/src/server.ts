@@ -19,7 +19,7 @@ const observed = initObservability(env);
 const deps = await buildDeps(env);
 
 const app = new Hono();
-app.get("/health", (c) => c.json(workerHealth(env, deps.clock, deps.simClock, deps.tracer.enabled)));
+app.get("/health", (c) => c.json(workerHealth(env, { clock: deps.clock, simClock: deps.simClock, tracing: deps.tracer.enabled, fence: deps.fence, gateway: deps.gateway })));
 
 // M6 review L4: while a webhook verifies with its public sandbox secret, only this machine may post to it (loopback Host, not cross-site).
 app.route("/", sandboxWebhookGuards(env));
@@ -51,12 +51,12 @@ app.on(
 );
 
 serve({ fetch: app.fetch, port: env.WORKER_PORT, hostname: env.WORKER_HOST }, (info) => {
-  console.log(`[north-worker] listening on http://${info.address}:${info.port} (inngest at /api/inngest, runtime=${env.AGENT_RUNTIME}, mode=${env.INTEGRATIONS_MODE}, sentry=${sentryWebhookLabel(env)}, stripe=${stripeWebhookLabel(env)}${observed ? ", reporting on" : ""}${deps.tracer.enabled ? ", tracing on" : ""}, clock=${deps.clock().toISOString()})`);
+  console.log(`[north-worker] listening on http://${info.address}:${info.port} (inngest at /api/inngest, runtime=${env.AGENT_RUNTIME}, mode=${env.INTEGRATIONS_MODE}, env=${env.NORTH_ENV}, profile=${env.NORTH_MODEL_PROFILE}, gateway=${deps.gateway?.mode ?? "off"}${deps.fence.enabled ? ", fence on" : ""}, sentry=${sentryWebhookLabel(env)}, stripe=${stripeWebhookLabel(env)}${observed ? ", reporting on" : ""}${deps.tracer.enabled ? ", tracing on" : ""}, clock=${deps.clock().toISOString()})`);
 });
 
-// OBS-1: queued Langfuse events are sent before the process exits.
+// OBS-1: queued Langfuse events are sent before the process exits; SEC-1: the model gateway stops and cuts what is in flight.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
-    void deps.tracer.flush().finally(() => process.exit(0));
+    void Promise.allSettled([deps.tracer.flush(), deps.gateway?.close()]).finally(() => process.exit(0));
   });
 }

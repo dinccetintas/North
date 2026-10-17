@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import { transition, type TaskEvent } from "@north/core";
+import { fencePolicyFromEnv, transition, type TaskEvent } from "@north/core";
 import { MOCK_LLM_RESPONSES, MockLlm } from "@north/agents";
 import type { WorkerDeps } from "../src/deps";
 import { SimClock } from "../src/services/clock";
@@ -333,6 +333,11 @@ export function fakeDeps(state: FakeState, events: SandboxEvent[] = [], verifySt
     simClock: clock,
     llm: MockLlm.fromRecord({ ...MOCK_LLM_RESPONSES }),
     tracer: NO_TRACER,
+    profile: "production",
+    fence: fencePolicyFromEnv({}),
+    gateway: null,
+    // inline, not `nullEmbedder`: the embedder module imports `@north/db`, which these tests mock
+    embedder: { embed: async () => null },
   };
 }
 

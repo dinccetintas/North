@@ -1,6 +1,7 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
-import { langfuseConfigured, stripeSecretFor, stripeWebhookLabel, workerEnv } from "../src/env";
+import { fencePolicyFor, langfuseConfigured, SANDBOX_UNSUBSCRIBE_SECRET, stripeSecretFor, stripeWebhookLabel, unsubscribeSecretFor, workerEnv } from "../src/env";
 
 /**
  * D6-1 (BIL-1, OBS-1): the Stripe webhook secret resolves like the Sentry one
@@ -43,5 +44,112 @@ describe("D6-1 / D6-10 optional keys", () => {
     expect(langfuseConfigured(workerEnv({ ...base, ...keys, LANGFUSE_HOST: undefined } as NodeJS.ProcessEnv))).toBe(false);
     expect(langfuseConfigured(workerEnv({ ...base, ...keys, LANGFUSE_SECRET_KEY: undefined } as NodeJS.ProcessEnv))).toBe(false);
     expect(workerEnv({ ...base, ...keys, LANGFUSE_REDACT: "0" } as NodeJS.ProcessEnv).LANGFUSE_REDACT).toBe("0");
+  });
+});
+
+const prod = { ...base, NODE_ENV: "production", INNGEST_SIGNING_KEY: "signkey-1234567890" };
+const KEY = "sk-ant-api03-a-fake-key-for-tests";
+const parse = (extra: Record<string, string | undefined>) => workerEnv({ ...base, ...extra } as NodeJS.ProcessEnv);
+const parseProd = (extra: Record<string, string | undefined>) => workerEnv({ ...prod, ...extra } as NodeJS.ProcessEnv);
+
+describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence settings", () => {
+  it("STG-1 defaults: production env and profile, fence off, cassettes off under the repo root, no cap, no query embedding", () => {
+    const env = workerEnv(base as NodeJS.ProcessEnv);
+    expect(env).toMatchObject({ NORTH_ENV: "production", NORTH_MODEL_PROFILE: "production", NORTH_TEST_FENCE: "0", NORTH_CASSETTE_MODE: "off", NORTH_DAILY_CAP_USD: 0, NORTH_EMBED_QUERIES: "0" });
+    expect(env.AGENT_CONFIG_ROOT).toBe(resolve(process.cwd(), ".agent-config"));
+    expect(env.NORTH_CASSETTE_DIR).toBe(resolve(env.AGENTS_DIR, "..", "cassettes"));
+    for (const key of ["NORTH_FENCE_META_AD_ACCOUNTS", "NORTH_FENCE_GITHUB_OWNERS", "NORTH_FENCE_RECIPIENT_DOMAINS", "NORTH_FENCE_VERCEL_PREFIX", "UNSUBSCRIBE_SECRET", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"] as const) expect(env[key], key).toBeUndefined();
+  });
+
+  it("TST-2 NORTH_CASSETTE_DIR defaults to <repo root>/cassettes (the repo root is AGENTS_DIR/..); a relative value is read from the repo root", () => {
+    expect(parse({ AGENTS_DIR: "/srv/north/agents" }).NORTH_CASSETTE_DIR).toBe("/srv/north/cassettes");
+    expect(parse({ AGENTS_DIR: "/srv/north/agents", NORTH_CASSETTE_DIR: "cassettes/smoke" }).NORTH_CASSETTE_DIR).toBe("/srv/north/cassettes/smoke");
+    expect(parse({ AGENTS_DIR: "/srv/north/agents", NORTH_CASSETTE_DIR: "/data/cassettes" }).NORTH_CASSETTE_DIR).toBe("/data/cassettes");
+  });
+
+  it("TST-5 NODE_ENV=production refuses NORTH_TEST_FENCE=1 unless NORTH_ENV=staging", () => {
+    expect(() => parseProd({ NORTH_TEST_FENCE: "1" })).toThrow(/NORTH_TEST_FENCE/);
+    expect(parseProd({ NORTH_TEST_FENCE: "1", NORTH_ENV: "staging" }).NORTH_TEST_FENCE).toBe("1");
+    expect(parse({ NORTH_TEST_FENCE: "1" }).NORTH_TEST_FENCE).toBe("1");
+  });
+
+  it("TST-5 NORTH_TEST_FENCE is 0 or 1 and nothing else, so a typo cannot leave the fence silently off", () => {
+    for (const value of ["maybe", "true", "", "2"]) expect(() => parse({ NORTH_TEST_FENCE: value }), value).toThrow(/NORTH_TEST_FENCE/);
+  });
+
+  it("TST-2 NODE_ENV=production refuses a cassette mode other than off unless NORTH_ENV=staging", () => {
+    expect(() => parseProd({ NORTH_CASSETTE_MODE: "replay" })).toThrow(/NORTH_CASSETTE_MODE/);
+    expect(() => parseProd({ NORTH_CASSETTE_MODE: "record" })).toThrow(/NORTH_CASSETTE_MODE/);
+    expect(parseProd({ NORTH_CASSETTE_MODE: "replay", NORTH_ENV: "staging" }).NORTH_CASSETTE_MODE).toBe("replay");
+    expect(() => parse({ NORTH_CASSETTE_MODE: "tape" })).toThrow(/NORTH_CASSETTE_MODE/);
+  });
+
+  it("TST-1 NORTH_ENV=production refuses a model profile other than production; staging may pick any", () => {
+    expect(() => parse({ NORTH_MODEL_PROFILE: "smoke" })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(() => parse({ NORTH_MODEL_PROFILE: "staging" })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(parse({ NORTH_MODEL_PROFILE: "smoke", NORTH_ENV: "staging" }).NORTH_MODEL_PROFILE).toBe("smoke");
+    expect(() => parse({ NORTH_MODEL_PROFILE: "cheap", NORTH_ENV: "staging" })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(() => parse({ NORTH_ENV: "dev" })).toThrow(/NORTH_ENV/);
+  });
+
+  it("SEC-1 NODE_ENV=production refuses an ANTHROPIC_BASE_URL that is not loopback, so the real key cannot be sent elsewhere", () => {
+    expect(() => parseProd({ ANTHROPIC_BASE_URL: "https://evil.example" })).toThrow(/ANTHROPIC_BASE_URL/);
+    expect(parseProd({ ANTHROPIC_BASE_URL: "http://127.0.0.1:9999" }).ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:9999");
+    expect(parseProd({ ANTHROPIC_BASE_URL: "http://[::1]:9999" }).ANTHROPIC_BASE_URL).toBe("http://[::1]:9999");
+    expect(parse({ ANTHROPIC_BASE_URL: "https://proxy.example" }).ANTHROPIC_BASE_URL).toBe("https://proxy.example");
+    expect(() => parse({ ANTHROPIC_BASE_URL: "not a url" })).toThrow(/ANTHROPIC_BASE_URL/);
+  });
+
+  it("SEC-1 the SDK runtime needs ANTHROPIC_API_KEY unless it replays cassettes; a blank key counts as none", () => {
+    expect(() => parse({ AGENT_RUNTIME: "claude-agent-sdk" })).toThrow(/ANTHROPIC_API_KEY/);
+    expect(() => parse({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: "" })).toThrow(/ANTHROPIC_API_KEY/);
+    expect(() => parse({ AGENT_RUNTIME: "claude-agent-sdk", NORTH_CASSETTE_MODE: "record" })).toThrow(/ANTHROPIC_API_KEY/);
+    expect(parse({ AGENT_RUNTIME: "claude-agent-sdk", NORTH_CASSETTE_MODE: "replay" }).ANTHROPIC_API_KEY).toBeUndefined();
+    expect(parse({ AGENT_RUNTIME: "claude-agent-sdk", ANTHROPIC_API_KEY: KEY }).ANTHROPIC_API_KEY).toBe(KEY);
+    expect(() => parse({ ANTHROPIC_API_KEY: "short" })).toThrow(/ANTHROPIC_API_KEY/);
+    expect(parse({ ANTHROPIC_API_KEY: "" }).ANTHROPIC_API_KEY).toBeUndefined();
+    expect(() => parse({ ANTHROPIC_API_KEY: "sk-ant-x" })).toThrow(/ANTHROPIC_API_KEY/);
+    expect(() => parse({ ANTHROPIC_API_KEY: "sk-ant-x" })).not.toThrow(/sk-ant-x/);
+  });
+
+  it("TST-1 NORTH_DAILY_CAP_USD is a number of USD, 0 or more", () => {
+    expect(parse({ NORTH_DAILY_CAP_USD: "0.5" }).NORTH_DAILY_CAP_USD).toBe(0.5);
+    expect(() => parse({ NORTH_DAILY_CAP_USD: "-1" })).toThrow(/NORTH_DAILY_CAP_USD/);
+    expect(() => parse({ NORTH_DAILY_CAP_USD: "ten" })).toThrow(/NORTH_DAILY_CAP_USD/);
+    expect(() => parse({ NORTH_DAILY_CAP_USD: "Infinity" })).toThrow(/NORTH_DAILY_CAP_USD/);
+  });
+
+  it("STG-1 NORTH_WORKER_PUBLIC_URL defaults to the worker's own URL in sandbox mode and is required for live mode in production", () => {
+    expect(parse({}).NORTH_WORKER_PUBLIC_URL).toBe("http://127.0.0.1:3101");
+    expect(parse({ WORKER_HOST: "::1", WORKER_PORT: "4000" }).NORTH_WORKER_PUBLIC_URL).toBe("http://[::1]:4000");
+    const liveProd = { INTEGRATIONS_MODE: "live", CONNECTIONS_ENCRYPTION_KEY: "k".repeat(44) };
+    expect(() => parseProd(liveProd)).toThrow(/NORTH_WORKER_PUBLIC_URL/);
+    expect(parseProd({ ...liveProd, NORTH_WORKER_PUBLIC_URL: "https://worker.north.example" }).NORTH_WORKER_PUBLIC_URL).toBe("https://worker.north.example");
+    expect(parse(liveProd).NORTH_WORKER_PUBLIC_URL).toBeUndefined();
+    expect(() => parse({ NORTH_WORKER_PUBLIC_URL: "worker.north.example" })).toThrow(/NORTH_WORKER_PUBLIC_URL/);
+  });
+
+  it("STG-1 UNSUBSCRIBE_SECRET is at least 16 characters; sandbox on loopback defaults it, any other bind or live mode without it gets none", () => {
+    expect(() => parse({ UNSUBSCRIBE_SECRET: "too-short" })).toThrow(/UNSUBSCRIBE_SECRET/);
+    expect(SANDBOX_UNSUBSCRIBE_SECRET).toBe("sandbox-unsubscribe-secret");
+    for (const host of ["127.0.0.1", "localhost", "::1"]) expect(unsubscribeSecretFor(parse({ WORKER_HOST: host }))).toBe(SANDBOX_UNSUBSCRIBE_SECRET);
+    expect(unsubscribeSecretFor(parse({ WORKER_HOST: "0.0.0.0" }))).toBeNull();
+    expect(unsubscribeSecretFor(workerEnv(live as NodeJS.ProcessEnv))).toBeNull();
+    const secret = "a-real-unsubscribe-secret-0123";
+    expect(unsubscribeSecretFor(workerEnv({ ...live, UNSUBSCRIBE_SECRET: secret } as NodeJS.ProcessEnv))).toBe(secret);
+    expect(unsubscribeSecretFor(parse({ WORKER_HOST: "0.0.0.0", UNSUBSCRIBE_SECRET: secret }))).toBe(secret);
+  });
+
+  it("TST-5 / LRN-7 the fence lists and NORTH_EMBED_QUERIES parse; NORTH_EMBED_QUERIES is 0 or 1", () => {
+    const env = parse({ NORTH_FENCE_META_AD_ACCOUNTS: "act_1, act_2", NORTH_FENCE_GITHUB_OWNERS: "north-e2e", NORTH_FENCE_RECIPIENT_DOMAINS: "north.test", NORTH_FENCE_VERCEL_PREFIX: "stg-", NORTH_EMBED_QUERIES: "1" });
+    expect(env).toMatchObject({ NORTH_FENCE_META_AD_ACCOUNTS: "act_1, act_2", NORTH_FENCE_GITHUB_OWNERS: "north-e2e", NORTH_FENCE_RECIPIENT_DOMAINS: "north.test", NORTH_FENCE_VERCEL_PREFIX: "stg-", NORTH_EMBED_QUERIES: "1" });
+    expect(() => parse({ NORTH_EMBED_QUERIES: "yes" })).toThrow(/NORTH_EMBED_QUERIES/);
+  });
+
+  it("TST-5 fencePolicyFor reads the fence from the parsed env: on only with NORTH_TEST_FENCE=1, the lists comma-separated, e2e- by default", () => {
+    expect(fencePolicyFor(parse({}))).toEqual({ enabled: false, metaAdAccounts: [], githubOwners: [], recipientDomains: [], vercelProjectPrefix: "e2e-", stripeKeyPrefix: "sk_test_" });
+    const fence = fencePolicyFor(parse({ NORTH_TEST_FENCE: "1", NORTH_FENCE_META_AD_ACCOUNTS: "act_1, act_2", NORTH_FENCE_GITHUB_OWNERS: "north-e2e", NORTH_FENCE_RECIPIENT_DOMAINS: "north.test,", NORTH_FENCE_VERCEL_PREFIX: "stg-" }));
+    expect(fence).toEqual({ enabled: true, metaAdAccounts: ["act_1", "act_2"], githubOwners: ["north-e2e"], recipientDomains: ["north.test"], vercelProjectPrefix: "stg-", stripeKeyPrefix: "sk_test_" });
+    expect(Object.isFrozen(fence)).toBe(true);
   });
 });

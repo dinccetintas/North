@@ -203,12 +203,13 @@ describe("D6-1 appliedPoller and the health line", () => {
 
   it("/health names mode, runtime, the mounted webhooks and whether the clock is the wall clock, and no secret", async () => {
     const { workerHealth, selfBaseUrl } = await import("../src/health");
-    const env = { INTEGRATIONS_MODE: "sandbox", AGENT_RUNTIME: "mock", WORKER_HOST: "127.0.0.1", WORKER_PORT: 3101, SENTRY_CLIENT_SECRET: undefined, STRIPE_WEBHOOK_SECRET: "fake-endpoint-secret" } as const;
+    const env = { INTEGRATIONS_MODE: "sandbox", AGENT_RUNTIME: "mock", WORKER_HOST: "127.0.0.1", WORKER_PORT: 3101, SENTRY_CLIENT_SECRET: undefined, STRIPE_WEBHOOK_SECRET: "fake-endpoint-secret", NORTH_MODEL_PROFILE: "production", NORTH_ENV: "production" } as const;
     const wall = new SimClock();
-    expect(workerHealth(env, () => wall.now(), wall, false)).toMatchObject({ ok: true, mode: "sandbox", runtime: "mock", webhooks: { sentry: true, stripe: true }, clockIsWall: true, tracing: false });
-    expect(workerHealth(env, () => clock.now(), clock, false).clockIsWall).toBe(false);
-    expect(workerHealth({ ...env, INTEGRATIONS_MODE: "live", STRIPE_WEBHOOK_SECRET: undefined }, () => new Date(), null, true)).toMatchObject({ webhooks: { sentry: false, stripe: false }, clockIsWall: true, tracing: true });
-    expect(JSON.stringify(workerHealth(env, () => wall.now(), wall, false))).not.toContain("fake-endpoint-secret");
+    const sources = (time: () => Date, sim: SimClock | null, tracing: boolean) => ({ clock: time, simClock: sim, tracing, fence: { enabled: false }, gateway: null });
+    expect(workerHealth(env, sources(() => wall.now(), wall, false))).toMatchObject({ ok: true, mode: "sandbox", runtime: "mock", webhooks: { sentry: true, stripe: true }, clockIsWall: true, tracing: false });
+    expect(workerHealth(env, sources(() => clock.now(), clock, false)).clockIsWall).toBe(false);
+    expect(workerHealth({ ...env, INTEGRATIONS_MODE: "live", STRIPE_WEBHOOK_SECRET: undefined }, sources(() => new Date(), null, true))).toMatchObject({ webhooks: { sentry: false, stripe: false }, clockIsWall: true, tracing: true });
+    expect(JSON.stringify(workerHealth(env, sources(() => wall.now(), wall, false)))).not.toContain("fake-endpoint-secret");
     expect(selfBaseUrl({ WORKER_HOST: "127.0.0.1", WORKER_PORT: 3101 })).toBe("http://127.0.0.1:3101");
     expect(selfBaseUrl({ WORKER_HOST: "::1", WORKER_PORT: 3101 })).toBe("http://[::1]:3101");
   });

@@ -67,25 +67,31 @@ cassette). The only headers left out are `set-cookie`,
 `transfer-encoding`, `connection`, `keep-alive`). A response that matches
 `sk-ant-[A-Za-z0-9_-]+` is **not recorded** at all (nothing is written, the
 gateway logs it once and still serves the reply). A reply over the capture
-limit (8 MB) or a compressed one is not recorded either; it is still served
-and priced. Read a new cassette before committing it anyway: the rules cover
-credentials, not everything an agent might echo.
+limit (8 MB) or a compressed one is not recorded either, and is still served.
+An SSE reply over the limit is priced from the stream as it goes by; a JSON
+reply over the limit, or a compressed one, cannot be read, so it is unpriced
+and, under a cap, closes the day (402 `north_budget_unpriced` until the next
+UTC day). A 2xx stream that carried only an `error` event is an upstream
+error: counted, not priced, and the day stays open. Read a new cassette before
+committing it anyway: the rules cover credentials, not everything an agent
+might echo.
 
 ## Modes
 
-(The worker starts reading these variables when it wires the gateway, M7 Task 12;
-until then `startGateway` takes `mode`, `cassetteDir` and the budget directly.)
-
-The gateway runs in one of three modes. The worker reads `NORTH_CASSETTE_MODE`
-(`off | record | replay`, default `off`); `off` is the gateway's `live` mode
-(forward to the model API, store nothing), so the env value `off` maps to
-`mode: "live"` when the worker wires the gateway.
+The worker starts the gateway when `AGENT_RUNTIME=claude-agent-sdk`
+(`apps/worker/src/services/runtime-deps.ts`); the agent subprocess and the
+single-call LLM client both call it. It runs in one of three modes. The worker
+reads `NORTH_CASSETTE_MODE` (`off | record | replay`, default `off`); `off` is
+the gateway's `live` mode (forward to the model API, store nothing), so the env
+value `off` maps to `mode: "live"`. Under `NODE_ENV=production`, `record` and
+`replay` need `NORTH_ENV=staging`.
 
 - `off` (gateway `live`): forward every call, store nothing.
 - `record`: forward every `/v1/messages` call and store the exchange, errors
   included. Needs the real key (`ANTHROPIC_API_KEY`).
 - `replay`: never contact the model API; answer from `NORTH_CASSETTE_DIR`
-  (default `cassettes`). Needs no key. Replayed answers are priced from the
+  (default `<repo root>/cassettes`; a relative path is read from the repo
+  root). Needs no key. Replayed answers are priced from the
   stored body, so the daily cap (`NORTH_DAILY_CAP_USD`) behaves as it does live.
   `count_tokens` is not recorded and cannot be replayed (`501`).
 
@@ -94,9 +100,11 @@ The gateway runs in one of three modes. The worker reads `NORTH_CASSETTE_MODE`
 Cassettes go stale when a prompt changes (the key changes with it). To refresh:
 
 ```bash
-NORTH_CASSETTE_MODE=record NORTH_CASSETTE_DIR=cassettes ANTHROPIC_API_KEY=... pnpm dev
+AGENT_RUNTIME=claude-agent-sdk NORTH_CASSETTE_MODE=record NORTH_CASSETTE_DIR=cassettes \
+  NORTH_ENV=staging NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=0.50 ANTHROPIC_API_KEY=... pnpm dev
 # run the flow once, then review and commit the new files under cassettes/
 ```
 
 Delete the stale `<key>.json` files first if you want a clean set. A recording
-spends real money against `NORTH_DAILY_CAP_USD`; use the `smoke` model profile.
+spends real money against `NORTH_DAILY_CAP_USD`; use the `smoke` model profile
+(any profile but `production` needs `NORTH_ENV=staging`).

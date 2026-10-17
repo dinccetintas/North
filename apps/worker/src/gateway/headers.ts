@@ -97,7 +97,7 @@ export const contentTypeOf = (headers: Headers): string => (first(headers["conte
 /** True when the reply is a Server-Sent Events stream. */
 export const isEventStream = (headers: Headers): boolean => contentTypeOf(headers).startsWith("text/event-stream");
 
-/** True when the body is encoded (gzip, br, ...): its bytes cannot be priced or scrubbed. */
+/** True when the body is encoded (gzip, br, ...): its usage cannot be read and it is not recorded. */
 export function isEncoded(headers: Headers): boolean {
   const encoding = first(headers["content-encoding"])?.trim().toLowerCase();
   return encoding !== undefined && encoding !== "" && encoding !== "identity";

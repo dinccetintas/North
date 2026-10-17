@@ -1,4 +1,5 @@
-// SEC-1: a bounded copy of a streamed reply, for pricing and recording. Past
+// SEC-1: a bounded copy of a reply, for recording it and for reading the usage
+// of a non-streaming one (a stream is priced as it goes by, see `sse.ts`). Past
 // the limit it stops keeping bytes (the reply itself still streams on), so one
 // huge reply cannot exhaust the worker's memory.
 

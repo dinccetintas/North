@@ -13,7 +13,7 @@ const state: FakeState = emptyState();
 const dbModule = fakeDbModule(state);
 vi.mock("@north/db", () => dbModule);
 
-const { executeTask } = await import("../src/services/execute-task");
+const { capInstructions, executeTask, INSTRUCTIONS_MAX_CHARS, INSTRUCTIONS_TRUNCATION_MARKER } = await import("../src/services/execute-task");
 const { companyContext } = await import("../src/services/company-context");
 
 let events: SandboxEvent[];
@@ -121,5 +121,39 @@ describe("M6 review L9: dispatch reserves the run's credit before the run starts
     const entries = state.credits.get("user-1") ?? [];
     expect(entries.map((e) => `${e.kind}:${e.amount}:${e.ref.split(":")[0]}`)).toEqual(["grant_plan:300:trial", "consume:-1:run", "adjust:1:release"]);
     expect(entries.reduce((s, e) => s + e.amount, 0)).toBe(300);
+  });
+});
+
+describe("SEC-1 instructions are capped before the run", () => {
+  it("SEC-1 instructions over 8,000 characters are cut with the marker; shorter ones reach the runtime whole", async () => {
+    const seen: string[] = [];
+    const runtime = {
+      name: "mock" as const,
+      run: async (input: { instructions: string }): Promise<AgentRunResult> => {
+        seen.push(input.instructions);
+        return { status: "succeeded", output: { summary: "Report.", artifacts: [{ kind: "market_report", title: "Report", markdown: "# Report" }], memory: [], actions: [], confidence: "medium" }, actions: [], sessionId: "mock-1", usage: { model: "mock", inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 } };
+      },
+    };
+    const deps = { ...fakeDeps(state, events), runtime };
+    const long = seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0, input: `${"x".repeat(9000)}TAIL` });
+    await executeTask(deps, long.id);
+    expect(INSTRUCTIONS_MAX_CHARS).toBe(8000);
+    expect(seen[0]).toHaveLength(INSTRUCTIONS_MAX_CHARS);
+    expect(seen[0]?.endsWith(INSTRUCTIONS_TRUNCATION_MARKER)).toBe(true);
+    expect(seen[0]).not.toContain("TAIL");
+
+    const short = seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0, input: "Size the market." });
+    await executeTask(deps, short.id);
+    expect(seen[1]).toContain("Size the market.");
+    expect(seen[1]).not.toContain(INSTRUCTIONS_TRUNCATION_MARKER);
+  });
+
+  it("SEC-1 capInstructions keeps text up to the cap and cuts one character more", () => {
+    expect(INSTRUCTIONS_TRUNCATION_MARKER).toBe("\n…[instructions truncated]");
+    const exact = "a".repeat(INSTRUCTIONS_MAX_CHARS);
+    expect(capInstructions(exact)).toBe(exact);
+    const over = capInstructions(`${exact}b`);
+    expect(over).toHaveLength(INSTRUCTIONS_MAX_CHARS);
+    expect(over).toBe(`${"a".repeat(INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length)}${INSTRUCTIONS_TRUNCATION_MARKER}`);
   });
 });

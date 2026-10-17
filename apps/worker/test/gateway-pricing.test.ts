@@ -115,11 +115,12 @@ describe("TST-1 a 2xx reply with no readable usage closes the day when there is 
     expect(h.logs).toHaveLength(1);
     expect(h.logs[0]).toMatch(/no readable usage/i);
     h.logs.length = 0;
-    expect(gateway.stats()).toMatchObject({ spentUsd: 5, capUsd: 5, unpriced: 1, requests: 1 });
+    // The closing is its own flag: spentUsd stays what was priced (nothing here), it is not raised to the cap.
+    expect(gateway.stats()).toMatchObject({ spentUsd: 0, capUsd: 5, unpriced: 1, requests: 1, exhausted: true });
 
     const refused = await call(gateway.baseUrl, { body: MESSAGES });
     expect(refused.status).toBe(402);
-    expect(JSON.parse(refused.body.toString())).toEqual({ error: { type: "north_budget_unpriced", cap_usd: 5, spent_usd: 5 } });
+    expect(JSON.parse(refused.body.toString())).toEqual({ error: { type: "north_budget_unpriced", cap_usd: 5, spent_usd: 0 } });
     await call(gateway.baseUrl, { body: MESSAGES });
     expect(h.upstream.seen).toHaveLength(1);
     expect(gateway.stats().requests).toBe(1);
@@ -130,6 +131,55 @@ describe("TST-1 a 2xx reply with no readable usage closes the day when there is 
     expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
     expect(gateway.stats().requests).toBe(2);
     expect(gateway.stats().spentUsd).toBeCloseTo((1000 * 0.1 + 200 * 0.5) / 1_000_000, 12);
+    expect(gateway.stats().exhausted).toBe(false);
+  });
+
+  it("TST-1 a closed day keeps the spend that was priced before it; exhausted is reported apart from spentUsd", async () => {
+    const priced = (1000 * 0.1 + 200 * 0.5) / 1_000_000;
+    h.upstream.handler = jsonHandler(completion());
+    const gateway = await h.start({ budget: new GatewayBudget(5) });
+    expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
+    h.upstream.handler = jsonHandler("not json at all");
+    expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
+    h.logs.length = 0;
+    expect(gateway.stats()).toMatchObject({ requests: 2, capUsd: 5, unpriced: 1, exhausted: true });
+    expect(gateway.stats().spentUsd).toBeCloseTo(priced, 12);
+    const refused = await call(gateway.baseUrl, { body: MESSAGES });
+    expect(refused.status).toBe(402);
+    expect(JSON.parse(refused.body.toString())).toMatchObject({ error: { type: "north_budget_unpriced", cap_usd: 5 } });
+    expect(JSON.parse(refused.body.toString()).error.spent_usd).toBeCloseTo(priced, 12);
+  });
+
+  it("TST-1 a 2xx stream that carried only an error event is an upstream error: counted, not priced, and the day stays open", async () => {
+    const overloaded = sseEvent("error", { error: { type: "overloaded_error", message: "Overloaded" } });
+    h.upstream.handler = sse(Buffer.from(overloaded));
+    const gateway = await h.start({ budget: new GatewayBudget(5) });
+    const res = await call(gateway.baseUrl, { body: { ...MESSAGES, stream: true } });
+    expect(res.status).toBe(200);
+    expect(res.body.toString()).toBe(overloaded);
+    expect(gateway.stats()).toMatchObject({ requests: 1, spentUsd: 0, unpriced: 0, exhausted: false });
+    h.upstream.handler = jsonHandler(completion());
+    expect((await call(gateway.baseUrl, { body: MESSAGES })).status).toBe(200);
+    expect(gateway.stats()).toMatchObject({ requests: 2, unpriced: 0, exhausted: false });
+    expect(h.logs).toEqual([]);
+  });
+
+  it("TST-1 a recorded error-only stream replays the same way: not priced, the day stays open", async () => {
+    h.upstream.handler = sse(Buffer.from(sseEvent("error", { error: { type: "overloaded_error", message: "Overloaded" } })));
+    const recorder = await h.start({ mode: "record", budget: new GatewayBudget(5) });
+    await call(recorder.baseUrl, { body: { ...MESSAGES, stream: true } });
+    const player = await h.start({ mode: "replay", apiKey: null, budget: new GatewayBudget(5) });
+    expect((await call(player.baseUrl, { body: { ...MESSAGES, stream: true } })).status).toBe(200);
+    expect(player.stats()).toMatchObject({ requests: 1, misses: 0, spentUsd: 0, unpriced: 0, exhausted: false });
+    expect(h.upstream.seen).toHaveLength(1);
+  });
+
+  it("TST-1 an error event after a message_start is priced from what arrived, as a cut stream is", async () => {
+    h.upstream.handler = sse(Buffer.from(sseEvent("message_start", { message: { model: "claude-haiku-5-5", usage: { input_tokens: 1000, output_tokens: 1 } } }) + sseEvent("error", { error: { type: "overloaded_error", message: "Overloaded" } })));
+    const gateway = await h.start({ budget: new GatewayBudget(5) });
+    await call(gateway.baseUrl, { body: { ...MESSAGES, stream: true } });
+    expect(gateway.stats()).toMatchObject({ requests: 1, unpriced: 0, exhausted: false });
+    expect(gateway.stats().spentUsd).toBeCloseTo((1000 * 0.1 + 1 * 0.5) / 1_000_000, 12);
   });
 
   it("an SSE stream without a message_start is the same: no readable usage", async () => {

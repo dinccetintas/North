@@ -13,6 +13,7 @@ docs
 **/.env.*
 !**/.env.example
 **/.workspaces
+**/.agent-config
 **/.sandbox
 **/.stack
 **/test

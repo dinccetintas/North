@@ -130,12 +130,18 @@ describe("TST-1 GatewayBudget", () => {
     expect(budget.stats()).toEqual({ capUsd: 5, spentUsd: 0.75, unpriced: 3, day: "2026-10-16" });
   });
 
-  it("exhaust closes the day under a cap: the spend jumps to the cap, reserve(0) is false, and the reason is kept", () => {
+  it("TST-1 exhaust closes the day under a cap without touching the spend: spentUsd stays what was priced, every reserve is false, and the reason is kept", () => {
     const budget = new GatewayBudget(5, at("2026-10-16T10:00:00Z"));
     budget.settle(1);
     expect(budget.exhaustion()).toBeNull();
     expect(budget.exhaust("no usage")).toBe(true);
-    expect(budget.state).toEqual({ capUsd: 5, spentUsd: 5, day: "2026-10-16" });
+    expect(budget.state).toEqual({ capUsd: 5, spentUsd: 1, day: "2026-10-16" });
+    expect(budget.stats()).toMatchObject({ capUsd: 5, spentUsd: 1 });
+    expect(budget.reserve(0)).toBe(false);
+    expect(budget.reserve(0.01)).toBe(false);
+    // A reply that was already in flight still settles what it cost; the day stays closed.
+    budget.settle(0.5);
+    expect(budget.stats().spentUsd).toBe(1.5);
     expect(budget.reserve(0)).toBe(false);
     expect(budget.exhaustion()).toBe("no usage");
     expect(budget.stats().unpriced).toBe(1);

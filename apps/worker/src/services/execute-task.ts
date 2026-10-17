@@ -46,6 +46,17 @@ export interface ExecuteTaskResult {
 const noActions = (status: ExecuteTaskResult["status"], taskId: string, extra: Partial<ExecuteTaskResult> = {}): ExecuteTaskResult =>
   Object.freeze({ status, taskId, artifactIds: [], costUsd: 0, summary: "", pendingActions: [], files: [], attempt: 0, ...extra });
 
+/** The most characters of instructions a run is given (the task input is untrusted and unbounded; the memory digest has its own cap). */
+export const INSTRUCTIONS_MAX_CHARS = 8000;
+/** Ends instructions that were cut, in the style of the digest's `…[memory digest truncated]`. */
+export const INSTRUCTIONS_TRUNCATION_MARKER = "\n…[instructions truncated]";
+
+/** Instructions cut to `INSTRUCTIONS_MAX_CHARS`, the marker included; shorter ones are returned as they are. */
+export function capInstructions(text: string): string {
+  if (text.length <= INSTRUCTIONS_MAX_CHARS) return text;
+  return text.slice(0, INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length) + INSTRUCTIONS_TRUNCATION_MARKER;
+}
+
 /** Task types whose run ends in the build pipeline (push, preview, go-live card). */
 const PIPELINE_TASKS: ReadonlySet<string> = new Set(["build_site", "fix_error"]);
 
@@ -149,7 +160,7 @@ async function runAgent(deps: WorkerDeps, task: TaskRecord, running: TaskRecord,
     const context = await companyContext(deps.db, task.companyId, task.taskType);
     await seedWorkspace(deps, task, workspaceDir);
     const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
-    const instructions = `${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim();
+    const instructions = capInstructions(`${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim());
     const started = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: task.role, taskType: task.taskType, instructions });
     const ran = await deps.runtime.run({
       companyId: task.companyId,

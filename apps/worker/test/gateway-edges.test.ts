@@ -76,7 +76,7 @@ describe("SEC-1 gateway failure modes", () => {
     h.logs.length = 0;
   });
 
-  it("a compressed reply cannot be priced or scrubbed: it passes through, unpriced and unrecorded", async () => {
+  it("a compressed reply cannot be read: it passes through, unpriced and unrecorded", async () => {
     const zipped = gzipSync(Buffer.from(completion()));
     h.upstream.handler = (_req, res) => {
       res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
@@ -217,6 +217,9 @@ describe("SEC-1 gateway start-up", () => {
     await expect(h.start({ cassetteDir: "" })).rejects.toThrow(/cassette/i);
     await expect(h.start({ port: 70000 })).rejects.toThrow(/port/i);
     await expect(h.start({ upstreamTimeoutMs: 0 })).rejects.toThrow(/upstreamTimeoutMs/);
+    // a Node timer holds at most 2^31 - 1 ms; a longer one fires at once
+    await expect(h.start({ upstreamTimeoutMs: 2_147_483_648 })).rejects.toThrow(/upstreamTimeoutMs/);
+    expect(await h.start({ upstreamTimeoutMs: 2_147_483_647 })).toBeDefined();
     await expect(h.start({ host: "0.0.0.0" as never })).rejects.toThrow(/host/i);
   });
 

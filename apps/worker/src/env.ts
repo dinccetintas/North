@@ -1,7 +1,45 @@
 import { resolve } from "node:path";
 import { z } from "zod";
+import { fencePolicyFromEnv, MODEL_PROFILES, type FencePolicy } from "@north/core";
 import { SANDBOX_STRIPE_WEBHOOK_SECRET } from "@north/integrations";
-import { isLoopbackHost } from "./host";
+import { isLoopbackHost, isLoopbackUrl, selfBaseUrl } from "./host";
+
+/** An empty value (`KEY=` in a .env file, as `.env.example` ships `ANTHROPIC_API_KEY`) counts as unset. */
+const blankAsUnset = <T extends z.ZodType>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
+
+/** M7 (SEC-1, TST-1, TST-2, TST-5, STG-1, CMP-1, LRN-7): the gateway, the model profile, the fence and the query embedder. */
+const M7Keys = {
+  /** STG-1: which deployment this is. Only `staging` may run the fence, cassettes or a cheaper model profile under NODE_ENV=production. */
+  NORTH_ENV: z.enum(["production", "staging"]).default("production"),
+  /** TST-1: the profile model aliases resolve on; anything but `production` needs NORTH_ENV=staging. */
+  NORTH_MODEL_PROFILE: z.enum(MODEL_PROFILES).default("production"),
+  /** TST-5: `1` turns the test-account fence on (default deny outside the lists below); exactly `0` or `1`. */
+  NORTH_TEST_FENCE: z.enum(["0", "1"]).default("0"),
+  /** TST-5: comma-separated allow-lists of the fence. */
+  NORTH_FENCE_META_AD_ACCOUNTS: blankAsUnset(z.string().optional()),
+  NORTH_FENCE_GITHUB_OWNERS: blankAsUnset(z.string().optional()),
+  NORTH_FENCE_RECIPIENT_DOMAINS: blankAsUnset(z.string().optional()),
+  /** TST-5: the Vercel project prefix the fence allows (default `e2e-`). */
+  NORTH_FENCE_VERCEL_PREFIX: blankAsUnset(z.string().optional()),
+  /** TST-2: `off` (the gateway's `live`), `record` or `replay`. */
+  NORTH_CASSETTE_MODE: z.enum(["off", "record", "replay"]).default("off"),
+  /** TST-2: where cassettes live; default `<repo root>/cassettes`, a relative path is read from the repo root (`AGENTS_DIR/..`). */
+  NORTH_CASSETTE_DIR: blankAsUnset(z.string().optional()),
+  /** TST-1: the gateway's spend cap per UTC day in USD; 0 (default) is no cap. */
+  NORTH_DAILY_CAP_USD: z.coerce.number().min(0).default(0),
+  /** SEC-2: root of the per-company agent config dirs (HOME of each run); on Fly `/data/agent-config`. */
+  AGENT_CONFIG_ROOT: z.string().default(resolve(process.cwd(), ".agent-config")),
+  /** CMP-1: the public worker URL unsubscribe links point at; sandbox mode defaults it to the worker's own URL, live mode in production requires it. */
+  NORTH_WORKER_PUBLIC_URL: blankAsUnset(z.url().optional()),
+  /** CMP-1: the key unsubscribe tokens are signed with; see `unsubscribeSecretFor`. */
+  UNSUBSCRIBE_SECRET: blankAsUnset(z.string().min(16).optional()),
+  /** LRN-7: `1` embeds memory queries through the `embed` Edge Function in sandbox mode too (live mode always does). */
+  NORTH_EMBED_QUERIES: z.enum(["0", "1"]).default("0"),
+  /** SEC-1: the model API the gateway forwards to (default https://api.anthropic.com); loopback only in production. */
+  ANTHROPIC_BASE_URL: blankAsUnset(z.url().optional()),
+  /** SEC-1: the real model key. Read once, by the gateway's start-up; never handed to an agent subprocess. */
+  ANTHROPIC_API_KEY: blankAsUnset(z.string().min(10).optional()),
+};
 
 const EnvSchema = z
   .object({
@@ -47,6 +85,7 @@ const EnvSchema = z
     LANGFUSE_REDACT: z.enum(["0", "1"]).default("1"),
     /** RET-1 (ADR 0016): `1` lets `retention-sweep` purge owners past `retention_until`; `0` (default) only archives and marks `purge_due` (`scripts/purge-due.ts` purges on request). */
     RETENTION_PURGE_ENABLED: z.enum(["0", "1"]).default("0"),
+    ...M7Keys,
   })
   .refine((env) => env.NODE_ENV !== "production" || Boolean(env.INNGEST_SIGNING_KEY), {
     message: "INNGEST_SIGNING_KEY is required in production",
@@ -59,7 +98,36 @@ const EnvSchema = z
   .refine((env) => env.INTEGRATIONS_MODE === "sandbox" || env.NORTH_CLOCK_START === undefined, {
     message: "NORTH_CLOCK_START is a sandbox-only setting; the live worker runs on the wall clock",
     path: ["NORTH_CLOCK_START"],
-  });
+  })
+  .refine((env) => env.NODE_ENV !== "production" || env.NORTH_TEST_FENCE === "0" || env.NORTH_ENV === "staging", {
+    message: "NORTH_TEST_FENCE=1 is for staging: set NORTH_ENV=staging, or turn the fence off",
+    path: ["NORTH_TEST_FENCE"],
+  })
+  .refine((env) => env.NODE_ENV !== "production" || env.NORTH_CASSETTE_MODE === "off" || env.NORTH_ENV === "staging", {
+    message: "NORTH_CASSETTE_MODE must be off in production unless NORTH_ENV=staging",
+    path: ["NORTH_CASSETTE_MODE"],
+  })
+  .refine((env) => env.NORTH_ENV !== "production" || env.NORTH_MODEL_PROFILE === "production", {
+    message: "NORTH_MODEL_PROFILE must be production unless NORTH_ENV=staging",
+    path: ["NORTH_MODEL_PROFILE"],
+  })
+  .refine((env) => env.NODE_ENV !== "production" || env.ANTHROPIC_BASE_URL === undefined || isLoopbackUrl(env.ANTHROPIC_BASE_URL), {
+    message: "ANTHROPIC_BASE_URL must be a loopback URL in production (the real key goes to api.anthropic.com or this machine only)",
+    path: ["ANTHROPIC_BASE_URL"],
+  })
+  .refine((env) => env.AGENT_RUNTIME !== "claude-agent-sdk" || env.NORTH_CASSETTE_MODE === "replay" || env.ANTHROPIC_API_KEY !== undefined, {
+    message: "ANTHROPIC_API_KEY is required when AGENT_RUNTIME=claude-agent-sdk (only NORTH_CASSETTE_MODE=replay runs without it)",
+    path: ["ANTHROPIC_API_KEY"],
+  })
+  .refine((env) => env.NODE_ENV !== "production" || env.INTEGRATIONS_MODE === "sandbox" || env.NORTH_WORKER_PUBLIC_URL !== undefined, {
+    message: "NORTH_WORKER_PUBLIC_URL is required when INTEGRATIONS_MODE=live in production (unsubscribe links point at it)",
+    path: ["NORTH_WORKER_PUBLIC_URL"],
+  })
+  .transform((env) => ({
+    ...env,
+    NORTH_CASSETTE_DIR: resolve(env.AGENTS_DIR, "..", env.NORTH_CASSETTE_DIR ?? "cassettes"),
+    NORTH_WORKER_PUBLIC_URL: env.NORTH_WORKER_PUBLIC_URL ?? (env.INTEGRATIONS_MODE === "sandbox" ? selfBaseUrl(env) : undefined),
+  }));
 export type WorkerEnv = z.infer<typeof EnvSchema>;
 
 /** The secret the smoke and the e2e sign Sentry webhooks with when no real one is configured (sandbox only). */
@@ -95,6 +163,35 @@ export function stripeSecretFor(env: StripeEnv): string | null {
 }
 
 export const stripeWebhookLabel = (env: StripeEnv): string => (stripeSecretFor(env) ? "webhook on" : "webhook off (no secret)");
+
+/** The secret the sandbox signs unsubscribe tokens with when no real one is configured (sandbox on a loopback host only). */
+export const SANDBOX_UNSUBSCRIBE_SECRET = "sandbox-unsubscribe-secret";
+
+export type UnsubscribeEnv = Pick<WorkerEnv, "UNSUBSCRIBE_SECRET" | "INTEGRATIONS_MODE" | "WORKER_HOST">;
+
+/**
+ * The secret unsubscribe tokens are signed and verified with (CMP-1), or null
+ * when the `/u/{token}` route must stay off: live mode without
+ * `UNSUBSCRIBE_SECRET`, or sandbox mode off loopback, where the public sandbox
+ * secret would let anyone forge an opt-out (the `sentrySecretFor` rule).
+ */
+export function unsubscribeSecretFor(env: UnsubscribeEnv): string | null {
+  if (env.UNSUBSCRIBE_SECRET) return env.UNSUBSCRIBE_SECRET;
+  return env.INTEGRATIONS_MODE === "sandbox" && isLoopbackHost(env.WORKER_HOST) ? SANDBOX_UNSUBSCRIBE_SECRET : null;
+}
+
+export type FenceEnv = Pick<WorkerEnv, "NORTH_TEST_FENCE" | "NORTH_FENCE_META_AD_ACCOUNTS" | "NORTH_FENCE_GITHUB_OWNERS" | "NORTH_FENCE_RECIPIENT_DOMAINS" | "NORTH_FENCE_VERCEL_PREFIX">;
+
+/** TST-5: the fence policy of the parsed env, through `fencePolicyFromEnv` (on only with NORTH_TEST_FENCE=1). */
+export function fencePolicyFor(env: FenceEnv): FencePolicy {
+  return fencePolicyFromEnv({
+    NORTH_TEST_FENCE: env.NORTH_TEST_FENCE,
+    NORTH_FENCE_META_AD_ACCOUNTS: env.NORTH_FENCE_META_AD_ACCOUNTS,
+    NORTH_FENCE_GITHUB_OWNERS: env.NORTH_FENCE_GITHUB_OWNERS,
+    NORTH_FENCE_RECIPIENT_DOMAINS: env.NORTH_FENCE_RECIPIENT_DOMAINS,
+    NORTH_FENCE_VERCEL_PREFIX: env.NORTH_FENCE_VERCEL_PREFIX,
+  });
+}
 
 /** OBS-1: Langfuse needs all three keys; anything less is a no-op tracer. */
 export const langfuseConfigured = (env: Pick<WorkerEnv, "LANGFUSE_PUBLIC_KEY" | "LANGFUSE_SECRET_KEY" | "LANGFUSE_HOST">): boolean => Boolean(env.LANGFUSE_PUBLIC_KEY && env.LANGFUSE_SECRET_KEY && env.LANGFUSE_HOST);

@@ -1,15 +1,23 @@
-import { createServiceClient, getKillSwitch, searchMemory, type DbClient, type Json } from "@north/db";
-import { loadRoles, minimalSubprocessEnv, MOCK_LLM_RESPONSES, selectLlm, selectRuntime, type AgentRuntime, type LlmClient, type RoleDefinition } from "@north/agents";
+import { createServiceClient, type DbClient } from "@north/db";
+import { loadRoles, type AgentRuntime, type LlmClient, type RoleDefinition } from "@north/agents";
+import type { FencePolicy, ModelProfile } from "@north/core";
 import { selectIntegrations, type Integrations } from "@north/integrations";
-import { workerEnv, type WorkerEnv } from "./env";
+import { fencePolicyFor, workerEnv, type WorkerEnv } from "./env";
 import { createTracer, type Tracer } from "./observability";
 import { SimClock, wallClock, type Clock } from "./services/clock";
+import { edgeFunctionEmbedder, nullEmbedder, type Embedder } from "./services/embedder";
 import { withPinnedCompetitorFetch } from "./services/pinned-fetch";
+import { buildRuntimeDeps, type WorkerGateway } from "./services/runtime-deps";
 import { hostIsPrivate, type VerifierConfig } from "./services/verifier";
+
+export { AUDIT_INPUT_MAX_CHARS, auditInput, capAuditInput } from "./services/audit";
+
+/** The worker env as the deps carry it: everything but the model key, which only the gateway holds (SEC-1). */
+export type DepsEnv = Omit<WorkerEnv, "ANTHROPIC_API_KEY">;
 
 /** Everything a worker function needs; built once per process, injectable in tests. */
 export interface WorkerDeps {
-  readonly env: WorkerEnv;
+  readonly env: DepsEnv;
   readonly db: DbClient;
   readonly roles: ReadonlyMap<string, RoleDefinition>;
   readonly runtime: AgentRuntime;
@@ -23,29 +31,19 @@ export interface WorkerDeps {
   readonly llm: LlmClient;
   /** OBS-1 (M6): one Langfuse trace per agent run; `NO_TRACER` without the three keys. */
   readonly tracer: Tracer;
-}
-
-/** Audit payloads are capped so a hostile tool input cannot bloat the log. */
-export const AUDIT_INPUT_MAX_CHARS = 4000;
-
-export function capAuditInput(input: unknown): { readonly json: string; readonly truncated: boolean } {
-  let json: string;
-  try {
-    json = JSON.stringify(input ?? {}) ?? "{}";
-  } catch {
-    json = JSON.stringify({ unserializable: true });
-  }
-  return json.length > AUDIT_INPUT_MAX_CHARS ? { json: json.slice(0, AUDIT_INPUT_MAX_CHARS), truncated: true } : { json, truncated: false };
-}
-
-/** The `audit_tool_calls.input` of one call: the parsed input, or its cut text when it was capped (a cut JSON does not parse). Well inside the 0015 size check. */
-export function auditInput(input: unknown): { readonly value: unknown; readonly truncated: boolean } {
-  const capped = capAuditInput(input);
-  return capped.truncated ? { value: capped.json, truncated: true } : { value: JSON.parse(capped.json) as unknown, truncated: false };
+  /** TST-1: the profile model aliases resolve on (`NORTH_MODEL_PROFILE`). */
+  readonly profile: ModelProfile;
+  /** TST-5: the test-account fence (`NORTH_TEST_FENCE` and its lists); disabled outside staging. */
+  readonly fence: FencePolicy;
+  /** SEC-1: the loopback model gateway, started with the Agent SDK runtime; null with the mock runtime. */
+  readonly gateway: WorkerGateway | null;
+  /** LRN-7: embeds memory queries for hybrid search; `nullEmbedder` in sandbox unless `NORTH_EMBED_QUERIES=1`. */
+  readonly embedder: Embedder;
 }
 
 let cached: Promise<WorkerDeps> | null = null;
 
+/** The process's deps, built once (the gateway, when it runs, starts here) and shared by every caller. */
 export function buildDeps(env: WorkerEnv = workerEnv()): Promise<WorkerDeps> {
   if (!cached) cached = createDeps(env);
   return cached;
@@ -67,6 +65,22 @@ const allowPublicUrl = async (url: string): Promise<boolean> => {
   }
 };
 
+/** The worker's one-line warnings (gateway, embedder, session store), on stderr. */
+const workerLog = (message: string): void => console.warn(`[north-worker] ${message}`);
+
+/** LRN-7: queries are embedded through the Edge Function in live mode, and in sandbox mode only with `NORTH_EMBED_QUERIES=1`. */
+function embedderFor(env: WorkerEnv): Embedder {
+  if (env.INTEGRATIONS_MODE !== "live" && env.NORTH_EMBED_QUERIES !== "1") return nullEmbedder;
+  return edgeFunctionEmbedder({ supabaseUrl: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY, warn: workerLog });
+}
+
+/** SEC-1: the env without the model key, as `WorkerDeps.env` carries it: `ANTHROPIC_API_KEY` is handed to the gateway and kept out of the deps. A new frozen object. */
+export function depsEnvOf(env: WorkerEnv): DepsEnv {
+  const copy: Partial<WorkerEnv> = { ...env };
+  delete copy.ANTHROPIC_API_KEY;
+  return Object.freeze(copy as DepsEnv);
+}
+
 async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   const db = createServiceClient({ url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
   const roles = await loadRoles(env.AGENTS_DIR);
@@ -80,28 +94,9 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   // Sandbox previews live on the worker itself (loopback); live previews must be public hosts (M3 security review M3).
   const verifier: VerifierConfig = env.INTEGRATIONS_MODE === "sandbox" ? { timeoutMs: 10_000, allowedOrigins: [new URL(siteBaseUrl).origin], allowPrivate: true } : { timeoutMs: 10_000, allowPrivate: false };
   const tracer = createTracer(env);
-  const runtime = selectRuntime(
-    {
-      roles,
-      onToolCall: (call) => tracer.toolCall(call),
-      workspaceRoot: env.WORKSPACE_ROOT,
-      subprocessEnv: minimalSubprocessEnv(process.env),
-      memorySearch: async (companyId, query) => searchMemory(db, companyId, query),
-      isKilled: async (companyId) => getKillSwitch(db, companyId),
-      audit: async (entry) => {
-        const { error } = await db.from("audit_tool_calls").insert({
-          company_id: entry.companyId,
-          task_id: entry.taskId,
-          tool_name: entry.toolName,
-          // JSON.parse output or a string: valid JSON either way.
-          input: auditInput(entry.input) as NonNullable<Json>,
-          decision: entry.decision,
-        });
-        if (error) throw new Error(`audit insert failed: ${error.message}`);
-      },
-    },
-    { AGENT_RUNTIME: env.AGENT_RUNTIME },
-  );
-  const llm = selectLlm({ AGENT_RUNTIME: env.AGENT_RUNTIME, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }, { ...MOCK_LLM_RESPONSES });
-  return Object.freeze({ env, db, roles, runtime, integrations, verifier, clock, simClock, llm, tracer });
+  const embedder = embedderFor(env);
+  // SEC-1: with the Agent SDK runtime the gateway starts here and is the only holder of the model key.
+  const { runtime, gateway, llm } = await buildRuntimeDeps(env, db, tracer, workerLog, { roles, clock, embedder });
+  const fence = fencePolicyFor(env);
+  return Object.freeze({ env: depsEnvOf(env), db, roles, runtime, integrations, verifier, clock, simClock, llm, tracer, profile: env.NORTH_MODEL_PROFILE, fence, gateway, embedder });
 }
