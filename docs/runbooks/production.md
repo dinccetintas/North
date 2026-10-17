@@ -25,19 +25,36 @@ Langfuse → production check → the founder's company → (later) the flip.
 
 1. Create the project (region close to Fly's `ams`, e.g. Frankfurt). Note the
    project ref, the URL, the publishable (anon) key and the service role key.
-2. Migrations move with the CLI only, never by hand in the dashboard:
+2. Migrations, then the Edge Function, move with the CLI only, never by hand
+   in the dashboard:
    ```bash
    cd packages/db
    npx supabase link --project-ref <ref>
-   npx supabase db push            # 0001 … 0014: tables, RLS, triggers, both buckets
+   npx supabase db push                  # 0001 … 0022: tables, RLS, triggers, both buckets, the embedding queue
+   npx supabase functions deploy embed   # added by M7 (LRN-7): embeds memory items and search queries (Supabase.ai gte-small)
    ```
-3. Storage: `artifacts` and `exports` exist after the push and are **private**
+3. Vault (added by M7, founder only): the embedding queue posts to `embed`
+   only once the project knows its URL and service key (migration 0021's
+   header). SQL editor, once per project, by hand, never in a migration:
+   ```sql
+   select vault.create_secret('https://<ref>.supabase.co', 'project_url');
+   select vault.create_secret('<service role key>', 'service_role_key');
+   ```
+   After the first memory write, `select public.embedding_queue_depth();`
+   falls to 0 within a minute (pg_cron runs `util.process_embeddings` every
+   10 s). Without the function, a live worker's query embedding fails and
+   memory search goes by words alone; without the two secrets,
+   `util.process_embeddings` leaves the queue unread and no item is
+   embedded. **The production check (section 10) verifies neither yet**: it
+   reads no Edge Function and no queue depth, so run the query above by hand
+   after this step.
+4. Storage: `artifacts` and `exports` exist after the push and are **private**
    (`public = false`). Do not toggle either to public; the production check fails if one is.
-4. Auth → URL configuration: Site URL `https://<web>`; redirect URL
+5. Auth → URL configuration: Site URL `https://<web>`; redirect URL
    `https://<web>/auth/callback`. Email (magic link) on; custom SMTP through
    Resend (section 7) so links do not come from the shared sender.
-5. Never paste the service role key anywhere but Fly (section 3) and, for a
-   one-off founder command, your shell.
+6. Never paste the service role key anywhere but Fly (section 3), the Vault
+   secret of step 3 and, for a one-off founder command, your shell.
 
 ## 2. Inngest Cloud
 
@@ -172,7 +189,7 @@ price id lives in code or in an env var.
 
 Verify the sending domain; `fly secrets set RESEND_API_KEY=<key>
 RESEND_FROM="North <decisions@your-domain>"`. Use Resend's SMTP credentials
-for Supabase Auth's custom SMTP (section 1.4).
+for Supabase Auth's custom SMTP (section 1.5).
 
 ## 8. VAPID (web push)
 

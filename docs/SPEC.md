@@ -221,7 +221,7 @@ Faz 2 (stüdyo fazı, M7 ve sonrası) gereksinimleri `docs/superpowers/specs/202
 | LOOP-2 | Fork ile 2-3 varyant, kurucu seçmeden önce sıralanır | M8 |
 | REV-1 | Karar kotasından ayrı, kendi bütçesi ve 24 saatlik varsayılanı olan inceleme kuyruğu | M8 |
 | REV-2 | Metne sabitlenmiş yorumlar, diff'i ve geri alması olan tek bir revizyon üretir | M8 |
-| LIVE-1 | Sadece eklenen çalışma olaylarından (run events) beslenen canlı iş görünümü | M8 |
+| LIVE-1 | Yalnızca eklemeli (append-only) çalışma olaylarından (run events) beslenen canlı iş görünümü | M8 |
 | CHAT-2 | Herhangi bir personayla birebir sohbet; "Bağlama ekle" hafızaya kaynağıyla (provenance) birlikte yazar | M8 |
 | VAL-1 | Doğrulama öncelikli onboarding görevleri | M8 |
 | VAL-2 | Bir sonraki K2 kartında kapı bağlamı (gate context) | M10 |
@@ -249,7 +249,7 @@ Faz 2 (stüdyo fazı, M7 ve sonrası) gereksinimleri `docs/superpowers/specs/202
 | LRN-7 | Gömmeleri Supabase içinde üretilen hibrit tam metin ve vektör araması; departmana ve görev türüne göre tipli erişim | M7 pipeline, M8 contract |
 | LRN-8 | Hafıza ekranı dersleri, kaynaklarını, uygulamalarını ve sonuçlarını gösterir; geri alma ve yerine yenisini koyarak düzenleme vardır | M8 basic, M9 full |
 | LRN-9 | Derslerden türetilen persona brif satırları ve rubrik ağırlığı değişiklikleri önerilir, sürümlenir ve kurucu tarafından onaylanır | M9 |
-| LRN-10 | Her gece derslerle ve derssiz değerlendirmeler farkı, isabet oranını ve zarar oranını raporlar; bir gerileme dersi emekliye ayırır | M8 |
+| LRN-10 | Her gece derslerle ve derssiz değerlendirmeler farkı, isabet oranını ve zarar oranını raporlar; gerileme gösteren ders emekliye ayrılır | M8 |
 | LRN-11 | Şirketler arası playbook'lar isteğe bağlıdır, en az üç şirketten toplanır, temizlenir, etkinleşmeden önce North tarafından incelenir ve ajanlar için salt okunurdur | M10 design, M11 entries |
 | LRN-12 | Satış kaynaklı kanıtı (lead sağlayıcıları, erişim, yanıtlar, pipeline) olan hiçbir ders şirketler arasında yükseltilmez | M12 |
 

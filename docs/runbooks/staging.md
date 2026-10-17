@@ -18,8 +18,14 @@ Rules that hold on every step:
   sets `INTEGRATIONS_MODE=live`, `AGENT_RUNTIME=claude-agent-sdk`,
   `NORTH_ENV=staging` and `NORTH_TEST_FENCE=1`: the gate refuses every outside
   target that is not on the `NORTH_FENCE_*` lists (the Meta sandbox ad account,
-  the GitHub test org, `e2e-` Vercel projects, `staging.<domain>` inboxes, and
-  `sk_test_` Stripe keys, built in). Empty lists deny everything (TST-5).
+  the GitHub test org, `e2e-` Vercel projects, `staging.<domain>` inboxes).
+  Empty lists deny every Meta, GitHub and mail target; only the `e2e-` Vercel
+  prefix is built in (TST-5, ADR 0017). Stripe is not a gate target: with the
+  fence on, the worker refuses the platform's Stripe key at start-up unless it
+  is a Stripe test key (`stripeBillingConfig` in
+  `packages/integrations/src/live/stripe-billing.ts`, `isStripeTestKey`:
+  `sk_test_` or `rk_test_`), logs "live key refused by the test fence" and
+  runs billing on the sandbox adapter.
 - **Spend: a hard ceiling and a daily cap.** The `north-test` Anthropic
   workspace's $50 limit is the hard ceiling. Under it the model gateway caps
   each UTC day at `NORTH_DAILY_CAP_USD` (1 on the `smoke` profile). Every wake
@@ -134,11 +140,12 @@ curl -fsS https://north-worker-staging.fly.dev/health
 
 1. Custom environments need Pro or Enterprise (Pro: one per project, no extra
    cost; Vercel docs updated 2026-09-17). In the production project: Settings →
-   Environments → Create Environment: name `staging`, **Branch Tracking** on
-   with the branch `staging`, attach the domain `staging.<web>` (add the DNS
-   record Vercel shows), and import the variables from Preview, then replace
-   every value below. The environment's domain points at its latest
-   deployment.
+   Environments → Create Environment: name `staging`, **Branch Tracking off**
+   (never create a `staging` git branch: the environment is deployed only by
+   the CLI command in step 4, from the default branch), attach the domain
+   `staging.<web>` (add the DNS record Vercel shows), and import the variables
+   from Preview, then replace every value below. The environment's domain
+   points at its latest deployment.
 2. Environment variables of `staging` (`vercel env add <NAME> staging` prompts
    for the value; `vercel pull --environment=staging` reads them back):
 
@@ -166,20 +173,29 @@ curl -fsS https://north-worker-staging.fly.dev/health
    `VERCEL_AUTOMATION_BYPASS_SECRET` from the environment and sends it to the
    web's origin only), Inngest (section 2.3). Store it in the GitHub environment
    `staging` as `VERCEL_AUTOMATION_BYPASS_SECRET`.
-4. Deploy: push the branch `staging`, or from the repository root (the
-   project's Root Directory is `apps/web`; `vercel link` once, the CLI keeps
-   `.vercel/` out of git):
+4. Deploy: there is no git trigger. The nightly and acceptance workflows run
+   `npx --yes vercel@62.0.0 deploy --target=staging --token "$VERCEL_TOKEN" --yes`
+   on the default branch (with `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` in the
+   step's env instead of `vercel link`). A manual deploy is the same command
+   from the founder's shell, at the repository root on an up-to-date default
+   branch (the project's Root Directory is `apps/web`): export the same three
+   variables, or run `npx --yes vercel@62.0.0 link` once (the CLI keeps
+   `.vercel/` out of git) and drop `--token`:
    ```bash
-   vercel deploy --target=staging
+   git switch <default branch> && git pull --ff-only
+   npx --yes vercel@62.0.0 deploy --target=staging --yes
    ```
    Open `https://staging.<web>/login` signed in to Vercel as a team member.
    `apps/web/vercel.json` needs no change for a custom environment.
 
 ## 5. Stripe (sandbox only)
 
-Staging never holds a live key: the fence allows `sk_test_` only. Use a Stripe
-sandbox of its own (Dashboard → Sandboxes), so staging's events never reach
-production's test-mode endpoint.
+Staging never holds a live key. With the fence on, the worker checks the key
+at start-up: `stripeBillingConfig` accepts only a Stripe test key
+(`isStripeTestKey`: `sk_test_` or `rk_test_`); any other key is refused with
+the warning "live key refused by the test fence" and billing runs on the
+sandbox adapter. Use a Stripe sandbox of its own (Dashboard → Sandboxes), so
+staging's events never reach production's test-mode endpoint.
 
 ```bash
 pnpm stripe:setup -- --worker-url https://north-worker-staging.fly.dev --dry-run
@@ -306,7 +322,8 @@ It refuses before reading anything unless `NORTH_ENV=staging` and
 `SUPABASE_URL`'s host equals `NORTH_PRODUCTION_SUPABASE_REF` (any case); with
 no production ref, only `--i-know-this-is-not-production` lets it run. Task
 workspaces stay on the volume (section 3 prunes them). The nightly and
-acceptance workflows run it last (Task 21) with `STAGING_SUPABASE_URL` and
+acceptance workflows run it after their own journey (Task 21) with
+`--older-than-minutes 0`, `STAGING_SUPABASE_URL` and
 `STAGING_SERVICE_ROLE_KEY` as `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 
 ## 13. Test accounts and connections (the fence, TST-5)
@@ -375,9 +392,9 @@ one evidence file under `docs/evidence/M7/` and prints no key.
    ```bash
    { fly deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile && fly ssh console --config apps/worker/fly.staging.toml -C "sh -c 'mkdir -p /data/workspaces /data/sandbox /data/agent-config && chown -R node:node /data && ls -ld /data/*'" && curl -fsS https://north-worker-staging.fly.dev/health; } 2>&1 | tee docs/evidence/M7/staging-fly-deploy.txt
    ```
-3. Vercel (section 4; `VERCEL_AUTOMATION_BYPASS_SECRET` exported): `login 200`, and `401` without the bypass.
+3. Vercel (section 4, on the default branch; `VERCEL_AUTOMATION_BYPASS_SECRET` exported): `login 200`, and `401` without the bypass.
    ```bash
-   { vercel deploy --target=staging && curl -sS -o /dev/null -w "login %{http_code}\n" -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" https://staging.<web>/login && curl -sS -o /dev/null -w "without bypass %{http_code}\n" https://staging.<web>/login; } 2>&1 | tee docs/evidence/M7/staging-vercel.txt
+   { npx --yes vercel@62.0.0 deploy --target=staging --yes && curl -sS -o /dev/null -w "login %{http_code}\n" -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" https://staging.<web>/login && curl -sS -o /dev/null -w "without bypass %{http_code}\n" https://staging.<web>/login; } 2>&1 | tee docs/evidence/M7/staging-vercel.txt
    ```
 4. Inngest (section 2, after both syncs): both introspections read `"mode":"cloud"` with a function count.
    ```bash

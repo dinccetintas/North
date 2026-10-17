@@ -26,20 +26,22 @@ needs to remove those users without opening a second one.
 ## Decision
 
 **Staging is production's topology with its own accounts.** The same code and
-the same worker image, in five hosted pieces that share no value with
+the same Dockerfile, in five hosted pieces that share no value with
 production (`docs/runbooks/staging.md`). The web runs in the Vercel Pro team's
-custom environment `staging` of the production project (Branch Tracking on
-the branch `staging`, the domain `staging.<web>`,
-`vercel deploy --target=staging`), behind Deployment Protection with
-Protection Bypass for Automation, so only team members and machines holding
-the bypass secret reach it. The worker is the Fly app `north-worker-staging`
-(`apps/worker/fly.staging.toml`): the production Dockerfile, region `ams`,
-the volume `north_staging_data` at `/data`, a `performance-2x` / 4 GB machine
-that stops when idle (`auto_stop_machines = true`,
-`min_machines_running = 0`). The database is a separate Supabase project,
-`north-staging`, migrated with the same CLI commands as production plus the
-`embed` Edge Function, with custom SMTP through Resend (the hosted mailer delivers only to the project's
-team members, so a magic link to an e2e address would never arrive). Inngest
+custom environment `staging` of the production project (the domain
+`staging.<web>`), behind Deployment Protection with Protection Bypass for
+Automation, so only team members and machines holding the bypass secret reach
+it. It has no Branch Tracking and no `staging` git branch: it is deployed only
+by `vercel deploy --target=staging`, from the default branch, by the two
+workflows or by the founder's CLI. The worker is the Fly app
+`north-worker-staging` (`apps/worker/fly.staging.toml`): the production
+Dockerfile, region `ams`, the volume `north_staging_data` at `/data`, a
+`performance-2x` / 4 GB machine that stops when idle
+(`auto_stop_machines = true`, `min_machines_running = 0`). The database is a
+separate Supabase project, `north-staging`, migrated and given the `embed`
+Edge Function with the same CLI commands as production, with custom SMTP
+through Resend (the hosted mailer delivers only to the project's team
+members, so a magic link to an e2e address would never arrive). Inngest
 has an environment `staging` with both serve endpoints synced. Resend has the
 subdomain `staging.<domain>`, which sends (the worker's mail, Supabase Auth's
 SMTP) and receives: one MX record, and any address on the domain lands in
@@ -55,7 +57,7 @@ production, the `[env]` block of `fly.staging.toml` sets
 `NORTH_ENV=staging`, `NORTH_TEST_FENCE=1`, `NORTH_MODEL_PROFILE=smoke`,
 `NORTH_DAILY_CAP_USD=1` and `NORTH_CASSETTE_MODE=off`. The model key is the
 `north-test` Anthropic workspace's, whose $50 spend limit is the hard ceiling
-under the gateway's daily cap (ADR 0019). A workflow raises the profile and
+above the gateway's daily cap (ADR 0019). A workflow raises the profile and
 the cap for one run with `fly secrets set` (a secret overrides `[env]`) and
 resets them afterwards. The staging web carries neither `AGENT_RUNTIME` nor a
 model key, so its health line reads `llm: "mock"`.
@@ -122,7 +124,7 @@ before the journey starts.
 
 **The e2e purge goes through ADR 0016's delete path.**
 `pnpm staging:purge-e2e` (`scripts/staging-purge-e2e.ts`) is the only new way
-M7 deletes anything, and it opens no new path: for each e2e user it ends the
+M7 deletes a user's rows, and it opens no new path: for each e2e user it ends the
 entitlement with the service role and calls the worker's `purgeOwner` with
 reason `e2e` (`purgeTestUser` in `scripts/lib/purge-smoke-user.ts`, ADR
 0016's smoke cleanup, which the smokes now share). It refuses before reading
@@ -140,9 +142,11 @@ in the environment `staging`, on the `smoke` profile with a $1 cap, or
 `staging` with $3 for the biweekly fidelity run.
 `.github/workflows/acceptance.yml` (TST-4) runs by hand only, in the
 environment `acceptance`, whose required reviewer is the founder, on the
-`production` profile with $10. Both deploy
-the default branch in one order (configuration check, `supabase db push`,
-`vercel deploy --target=staging`, the worker with the run's profile staged),
+`production` profile with $10. Both deploy the default branch in one order:
+configuration check, `supabase db push`, the web with
+`npx --yes vercel@62.0.0 deploy --target=staging` (with Branch Tracking off,
+this and the same command from the founder's CLI are the only ways the
+staging web is deployed), the worker with the run's profile staged. They
 then run the staging check, the journey and the cost per company, reset the
 worker to `smoke` / $1 when they raised it, run the evidence guard, and purge
 their e2e users with `--older-than-minutes 0`. They share the concurrency
@@ -152,8 +156,8 @@ branch (a repository setting the founder makes), and `acceptance` also
 refuses any other ref in a job of its own before the founder is asked to
 approve. The nightly keeps its evidence as a 7-day artifact and opens an
 issue on red; the acceptance commits its evidence through a pull request
-(`docs/evidence/README.md`). Until
-`vars.STAGING_WEB_URL` is set, a run is a green skip with a notice. The
+(`docs/evidence/README.md`). Until `vars.STAGING_WEB_URL` is set, a run is a
+green skip with a notice. The
 repository must stay private: a failed run's artifacts (the Playwright report
 and traces) can hold the Vercel bypass cookie and the e2e users' session
 tokens.

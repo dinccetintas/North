@@ -2,7 +2,8 @@
 
 Status: accepted (2026-10-17)
 
-ADR 0018 is reserved by the design spec (section 14) for M8's vendored skills and per-persona mounting; no file exists for it yet.
+ADR 0018 is reserved by the design spec (section 14) for M8's vendored
+skills and per-persona mounting; no file exists for it yet.
 
 ## Context
 
@@ -22,25 +23,29 @@ M7 brings five requirements to that one place
 5.9, 8 and 12): SEC-1, agent shell commands run sandboxed and no agent
 process holds the model key; SEC-2, no agent configuration, memory or
 session is shared between companies; TST-1, model profiles and a test budget
-guard; TST-2, a real-Claude smoke on every PR within its cap (the code files
-the cassettes under it too); LRN-6, memory enters a run as data in a bounded
-block. The plan adds that
-every cap is enforced by the gateway, not by convention (`docs/plans/M7.md`,
-Global Constraints).
+guard; TST-2, a real-Claude smoke on every PR within its cap, the
+requirement the code also labels the cassette record and replay with (the
+`TST-2` headers of `cassette.ts` and `cassettes/README.md`); LRN-6, memory
+enters a run as data in a bounded block. The plan adds that every cap is
+enforced by the gateway, not by convention (`docs/plans/M7.md`, Global
+Constraints).
 
 ## Decision
 
-**A loopback gateway in the worker is the only code that holds the model
-key.** `startGateway` (`apps/worker/src/gateway/server.ts`) is a `node:http`
+**A loopback gateway in the worker is the only code the model key is handed
+to for model calls.** The worker process still has the key in its
+environment: `apps/worker/src/env.ts` parses it, `createTracer(env)` and
+`embedderFor(env)` receive the full `WorkerEnv`, and `selectIntegrations`
+gets a copy of `process.env` (`apps/worker/src/deps.ts`); none of them calls
+the model. `startGateway` (`apps/worker/src/gateway/server.ts`) is a `node:http`
 server bound to `127.0.0.1` on an ephemeral port. With
 `AGENT_RUNTIME=claude-agent-sdk`, `buildRuntimeDeps`
 (`apps/worker/src/services/runtime-deps.ts`) starts it before the runtime and
 the LLM client, reads `ANTHROPIC_API_KEY` once and hands it to the gateway
 alone (a replaying gateway gets none: it never calls the API);
 `WorkerDeps.env` carries the env without the key (`depsEnvOf`). The agent
-subprocess gets
-`ANTHROPIC_BASE_URL` pointing at the gateway and `ANTHROPIC_API_KEY` set to
-the placeholder `north-gateway` (`GATEWAY_PLACEHOLDER_KEY`). The single-call
+subprocess gets `ANTHROPIC_BASE_URL` pointing at the gateway and
+`ANTHROPIC_API_KEY` set to the placeholder `north-gateway` (`GATEWAY_PLACEHOLDER_KEY`). The single-call
 LLM client goes through the same gateway with the same placeholder, so every
 model call of the process is capped, recorded and replayed in one place. The
 gateway answers 403 to a non-loopback `Host` (DNS rebinding), 401 to any key
@@ -64,8 +69,8 @@ placeholder. No provider switch, custom header or cloud credential of the
 host reaches the model API around the gateway. `buildQueryOptions`
 (`packages/agents/src/runtime/claude-agent-sdk.ts`) passes
 `settingSources: []`, no skills, skill shell execution disabled,
-`permissionMode: "dontAsk"` and the role's tool lists. The worker always configures a gateway with the
-SDK runtime.
+`permissionMode: "dontAsk"` and the role's tool lists. The worker always
+configures a gateway with the SDK runtime.
 
 **Prices live in `models.ts`; the gateway enforces one cap per UTC day.**
 `PRICE_USD_PER_MTOK` and `costOfUsage` (`packages/core/src/models.ts`, the
@@ -112,8 +117,11 @@ step) fails on a secret, a renamed file, a key that no longer
 recomputes or an SDK version other than the pin in
 `packages/agents/package.json`. Under `NODE_ENV=production`, `record` and
 `replay` need `NORTH_ENV=staging`; the production check refuses both, the
-staging check refuses `replay`. Cassettes are recorded by hand from synthetic
-companies (`cassettes/README.md`). `pnpm e2e:replay` runs the Playwright
+staging check refuses `replay`. Committed cassettes are recorded by hand from
+synthetic companies (`cassettes/README.md`); CI's `llm-smoke` job also runs
+its worker in `record` mode into the runner's temp directory and uploads
+those cassettes with `smoke-llm.json` as the `llm-smoke-evidence` artifact,
+never as a commit. `pnpm e2e:replay` runs the Playwright
 flows against a replaying worker, and its global setup fails the run unless
 the worker's `/health` reports the SDK runtime and a replaying gateway.
 
@@ -158,28 +166,32 @@ counted and logged, never dropped. Memory reaches a run only as data:
 (`packages/agents/src/runtime/memory-tool.ts`), one `<memory_results>` block
 with each hit as `## title (kind, department)` and its content; every field
 passes through `stripDelimiters`, so memory text cannot close the block or a
-`<company_memory>` section; a hit is cut at `MEMORY_HIT_MAX_CHARS` (1 200)
-and the body at `MEMORY_RESULT_MAX_CHARS` (6 000), and the closing tag is
-always there (LRN-6).
+`<company_memory>` section; a hit's content is cut at `MEMORY_HIT_MAX_CHARS`
+(1 200), each header field is read only to its first 4 800 characters and
+folded onto one line, the joined body is cut at `MEMORY_RESULT_MAX_CHARS`
+(6 000), and the closing tag is always there (LRN-6).
 
 **The web never carries the model key and never calls the model.** Agents
 and the worker's single-call client run behind the gateway. The web's
 `GET /api/health` (`apps/web/src/app/api/health/route.ts`) reports
-`llm: "live"` only when its own process has `AGENT_RUNTIME=claude-agent-sdk`
-and an `ANTHROPIC_API_KEY`, `"mock"` otherwise, and never the key. The
-production check fails unless it reads `"mock"`, in production and in
-staging; both runbooks keep `ANTHROPIC_API_KEY` off Vercel, and the staging
-one leaves `AGENT_RUNTIME` unset there too. That closes the one model path
-in the web process: the onboarding questions step calls
-`selectLlm(process.env)`, which builds a live client under exactly the
-condition the health line reports as `"live"`, and a mock one otherwise.
+`llmModeOf(process.env)` from `@north/agents`: `"live"` only when its own
+process has `AGENT_RUNTIME=claude-agent-sdk` and a model key, `"mock"`
+otherwise, and never the key (the web source never names the key variable,
+so CI's worker-only-secrets grep stays clean). The production check fails
+unless it reads `"mock"`, in production and in staging; both runbooks keep
+the key off Vercel, and the staging one leaves `AGENT_RUNTIME` unset there
+too. That closes the one model path in the web process: the onboarding
+questions step calls `selectLlm(process.env)`, which uses the same
+`llmModeOf` predicate, so it builds a live client exactly when the health
+line reports `"live"`, and a mock one otherwise.
 
 ## Consequences
 
 - SEC-1 holds by construction on the SDK runtime: an agent subprocess, its
   tools and its shell see a placeholder that works only against a loopback
-  server that also enforces the cap. The key stays in the worker's own
-  environment and in the gateway's options.
+  server that also enforces the cap. The key stays in the worker process: in
+  its environment, in the parsed `WorkerEnv` the tracer and the embedder
+  receive, and in the gateway's options; only the gateway sends it.
 - The placeholder is a constant in the source, so any process on the worker
   machine can call the gateway up to the day's cap; the loopback bind, the
   `Host` check and the cap are the control.
