@@ -27,7 +27,9 @@
     "smoke:m4": "tsx scripts/smoke-m4.ts",
     "smoke:m5": "tsx scripts/smoke-m5.ts",
     "smoke:m6": "tsx scripts/smoke-m6.ts",
+    "smoke:llm": "tsx scripts/smoke-llm.ts",
     "test:scripts": "vitest run --config scripts/vitest.config.mts",
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "production:check": "tsx scripts/production-check.ts",
     "staging:check": "tsx scripts/production-check.ts -- --env staging",
     "stripe:setup": "tsx scripts/stripe-setup.ts",
@@ -46,6 +48,7 @@
     "prettier": "3.9.10",
     "tsx": "^4.20.0",
     "typescript": "5.9.3",
-    "vitest": "5.0.4"
+    "vitest": "5.0.4",
+    "zod": "4.6.7"
   }
 }

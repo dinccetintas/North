@@ -18,7 +18,7 @@ async function main() {
   const roles = await loadRoles(resolve(here, "../agents"));
   assert(roles.size === 8, `expected 8 roles, got ${roles.size}`);
 
-  const ctx = { killSwitchActive: false, budgets: [{ category: "ads" as const, totalLimitUsd: 100, dailyLimitUsd: 10, spentTotalUsd: 0, spentTodayUsd: 0 }], autoRules: [], cardDueAt: new Date(Date.now() + 86_400_000).toISOString() };
+  const ctx = { killSwitchActive: false, budgets: [{ category: "ads" as const, totalLimitUsd: 100, dailyLimitUsd: 10, dailyExtraUsd: 0, spentTotalUsd: 0, spentTodayUsd: 0 }], autoRules: [], cardDueAt: new Date(Date.now() + 86_400_000).toISOString() };
   const k0 = gate(ActionSpecSchema.parse({ kind: "research", companyId: "c", agentRole: "research", description: "market report" }), ctx);
   assert(k0.kind === "run", "K0 research must run directly");
   const k2 = gate(ActionSpecSchema.parse({ kind: "ads.start", companyId: "c", agentRole: "growth", description: "test campaign", amountUsd: 5, category: "ads" }), ctx);

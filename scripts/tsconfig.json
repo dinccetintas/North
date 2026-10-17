@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["*.ts", "**/*.ts", "vitest.config.mts"],
+  "exclude": ["stack/**", "pg-verify/**", "node_modules"]
+}

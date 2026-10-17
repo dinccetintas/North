@@ -1,8 +1,7 @@
+/** STG-1, TST-5: the env-dependent rules the worker's /health line must satisfy, on their own (the check wires them in `production-check-env.test.ts`). */
 import { describe, expect, it } from "vitest";
 import { MODEL_PROFILES } from "@north/core";
 import { failedHealthRules, healthFacts, healthRulesFor, isCheckEnv, type CheckEnv, type HealthLine } from "./production-check-rules";
-
-/** STG-1, TST-5: the env-dependent rules the worker's /health line must satisfy, on their own (the check wires them in `production-check.test.ts`). */
 
 const budget = { capUsd: 5, spentUsd: 0.4, unpriced: 0, exhausted: false };
 const production: HealthLine = { mode: "sandbox", runtime: "mock", profile: "production", fence: false, gateway: "off", env: "production", unsubscribe: true, budget: null };

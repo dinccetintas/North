@@ -5,8 +5,11 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$1"; }
 up() { node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" "$1"; }
+# TST-2: true when the worker's /health reports this agent runtime (the body is read, never printed).
+worker_runtime_is() { node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(3000)}).then(r=>r.json()).then(h=>process.exit(h&&h.runtime===process.argv[2]?0:1)).catch(()=>process.exit(1))" http://localhost:3101/health "$1"; }
 
 step "typecheck"; pnpm -r typecheck
+step "typecheck (scripts)"; pnpm typecheck:scripts
 step "lint";      pnpm -r lint
 # Stack-bound worker tests (apps/worker/test/purge.test.ts) skip here when the stack is not in the env; they run, required, in the integration step.
 step "unit";      REQUIRE_INTEGRATION=0 pnpm -r test
@@ -43,6 +46,12 @@ if up http://localhost:3101/health && up http://localhost:8288; then
   step "smoke M4 (growth, sales, ledger)"; pnpm smoke:m4
   step "smoke M5 (proactive layer, seven simulated days)"; pnpm smoke:m5
   step "smoke M6 (subscription and launch, ten phases)"; pnpm smoke:m6
+  # TST-2: real Claude on the smoke profile, only with a key and the SDK runtime (the worker's gateway caps the day at NORTH_DAILY_CAP_USD); never a failure when absent.
+  if [ -n "${ANTHROPIC_API_KEY:-}" ] && worker_runtime_is claude-agent-sdk; then
+    step "smoke LLM (real Claude, smoke profile)"; pnpm smoke:llm -- --runtime claude-agent-sdk
+  else
+    echo "skip: smoke LLM needs ANTHROPIC_API_KEY and AGENT_RUNTIME=claude-agent-sdk" >&2
+  fi
 else
   echo "skip: smoke M1 needs the worker (:3101) and the Inngest Dev Server (:8288); run 'pnpm dev'" >&2
   if [ "${REQUIRE_SMOKE_M1:-0}" = "1" ]; then exit 1; fi
