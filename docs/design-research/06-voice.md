@@ -26,7 +26,9 @@ Hero options (headline ≤ 12 words, subline ≤ 25):
 
 - A. *Three decisions a day. Everything else gets done.* / Agents plan, build, market and sell
   for your company. They ask you only when money, your name or your code is on the line.
-  (Recommended H1: number first, then the promise; passes the "only North could say this" test.)
+  (Recommended H1: number first, then the promise; "decisions" is a North noun, so it passes
+  the "only North could say this" test. The North nouns: decision, card, brief, ledger, gate,
+  staff, agents, evidence.)
 - B. *A company that runs while you sleep. You still decide.* / Every move an agent makes passes
   a gate. Small ones run. Big ones become a card with a recommendation, a safe default and a
   deadline.
@@ -52,10 +54,12 @@ time; your data is kept 90 days."
    outreach initiative" → "Send 5 first-contact emails from your Gmail?"
 3. Options name the action and the object, never Yes/No/Approve/Decline. "Approve ★ /
    Decline" → "Send 5 emails ★ / Don't send".
-4. The default line names the consequence. "No answer by the deadline → decline" → "No answer
-   by Thu 18:00 → nothing is sent." K3: "No default. Nothing happens until you answer."
+4. The default line names the consequence in a plain sentence. "No answer by the deadline →
+   decline" → "If you don't answer by Thu 18:00, nothing is sent." K3: "No default. Nothing
+   happens until you answer."
 5. Cost and deadline are numerals, always visible: "$10/day · due Thu 18:00".
-6. Stop: the button is "Stop all agents"; after: "Stopped 14:02 · Resume". "Kill" never appears.
+6. Stop: the button is "Stop all agents", one tap, no confirmation; after: "Stopped 14:02 ·
+   Resume". "Kill" never appears on screen.
 7. Pause banner: state, reason, what still works, what to do. "Agents paused: subscription
    ended. Brief and export still work. Data kept until 14 Jan. Resubscribe to resume."
 8. Empty states say what will appear and who makes it. "Nothing here yet." → "No ledger entries
@@ -65,14 +69,21 @@ time; your data is kept 90 days."
    "please", "successfully". The model already in the repo: "Stripe did not answer in time.
    Nothing was charged."
 10. Agent status lines are present-progressive, ≤ 5 words, with the object, and a last-changed
-    time after 60 s: "Researching 12 competitors · 4 min".
+    time after 60 s: "Researching 12 competitors, 4 min".
 11. Ledger rows keep one order: action · before → after · cost · evidence.
 12. Confirmations are nouns: "Card answered." "Plan saved." "Export ready."
 13. Billing speaks in the user's money: "Payment failed. Agents keep running for 3 days. Update
     your card."
 14. Never ask for trust without data: "Recommended: option A. The last 3 tests at this budget
     returned 2-4 sign-ups each."
-15. Internal codes get a plain label: tiers read "Runs automatically / Tells you after / Needs
+15. Money has two words that never mix: *spent* (your own accounts: the card, the budget,
+    the ledger; "$14 spent") and *tasks* (what the plan includes; "120 agent tasks a month,
+    84 left until 1 Nov"). Per-task model cost appears only in Settings › Usage, never on a
+    Team row. Name the account money leaves: ad spend leaves the ad account ("Hold to spend
+    $40 of ad budget from your Meta Ads account"); Stripe is read-only income and is never
+    named as a source of spend. "Sandbox" reads "Practice mode: nothing real is sent or spent
+    until you switch a connection to live."
+16. Internal codes get a plain label: tiers read "Runs automatically / Tells you after / Needs
     your decision / Only you can do this" with the K-code as a badge beside, never alone.
     `CHIEF_OF_STAFF`, `signal.pursue`, `entitlement`, `provenance` never appear on screen.
 

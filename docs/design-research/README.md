@@ -3,8 +3,8 @@
 Written 2026-10-17 by five research personas (taste theorist, premium-web practitioner,
 customer-journey researcher, copy strategist, verification engineer), then argued over by three
 reviewers (a skeptical critic, a user advocate, the implementing engineer) and merged. Every
-claim has a source in `09-sources.md`. Raw persona reports live in git history under
-`docs/design-research/raw/` for anyone who wants the long form.
+claim has a source in `09-sources.md`. Raw persona reports and the three reviews live under `docs/design-research/raw/` for anyone
+who wants the long form.
 
 ## Who reads what
 
@@ -33,9 +33,36 @@ Boardroom, not chat. Home = brief + at most three cards. Kill switch on every sc
 first at 390 px. Home paints in 1.5 s; a card answer reaches the queue in 2 s. Every action
 through the gate; every "done" with evidence. These documents never override them.
 
+## How the review round changed the draft (the debate log)
+
+Three reviewers read the first draft; each answered the other two in a rebuttal round
+(`raw/review-*.md`, `raw/rebuttal-*.md`). Outcomes:
+
+- **Stop is one tap**, never a hold (SPEC "tek tıkla"; a tap that does nothing is the worst
+  feedback in a panic; an accidental stop costs one tap on Resume). Hold-to-confirm stays only
+  on money and sends.
+- **One type family**, not serif plus mono: Source Serif 4 with optical sizes and tabular
+  figures; mono only for code and ids. The serif-plus-mono pairing was the strongest "AI made
+  this" tell. Verified that the served font carries `tnum`.
+- **The signature is the receipt**, not a flight: the card collapses in place into its own row
+  with Undo inside; the answer is committed at once and the worker honours a 5 s withdrawal
+  window (a client-side delay would break the 2 s queue rule). Money is confirmed by holding;
+  on the keyboard by select, relabel, Enter (timed key holds are not reliable).
+- **Red only for stopped and failed.** A waiting card is loud by size and by the single
+  ink-filled control; the morning is never painted in the alarm colour.
+- **No ledger theatre.** Ledger rows are measured metric change only; answered cards and sends
+  live in "Today's actions"; the landing demo never shows a fabricated ledger row.
+- **Onboarding matches the spec**: five steps including connect tools (or skip); no setting
+  grants a standing rule in advance; cards on Home are bounded by the quota (1-5), not by 3.
+- **One money vocabulary**: "spent" for the user's accounts, "tasks" for the plan; ad spend
+  leaves the ad account, never "from Stripe"; no per-task dollar figure on Team rows.
+- **Values, not adjectives**: 02 now carries oklch values for both schemes, five type roles with
+  sizes, two weights, nine spacings, the four durations; 07 runs on :3200 with a dedicated
+  Playwright config and no runtime dependencies.
+
 ## Files
 
-- `01-thesis.md` — the story, the feeling, eight principles, the visual direction and why.
+- `01-thesis.md` — the story, the feeling, ten principles, the visual direction and why.
 - `02-design-contract.md` — tokens with hard counts (type, colour, space, radius, motion), the
   slop catalogue with tests, what stays and what goes from the current system.
 - `03-journey.md` — five personas, the journey map, where they meet, the approval layer, agents.

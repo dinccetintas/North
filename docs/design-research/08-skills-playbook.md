@@ -58,20 +58,46 @@ You are designing or building one screen of North. Read, in order:
 docs/design-research/01-thesis.md, 02-design-contract.md, 04-screens.md (your screen),
 05-motion.md, 06-voice.md, 07-verification.md. CLAUDE.md and docs/SPEC.md win over all of them.
 
+Facts you do not re-derive:
+- pnpm install first. Web package: @north/web. Production for the critic: :3200. Dev: :3100.
+- Fonts: Source Serif 4 variable (axes opsz) roman + italic, IBM Plex Mono 400 for code/ids,
+  both via next/font/google in apps/web/src/app/layout.tsx. tabular-nums on every number.
+- Colour, type, spacing, motion tokens: the values in 02, in apps/web/src/app/globals.css.
+  Keep --deep: var(--needle) and the retro-button class as aliases for one migration PR.
+- No runtime dependency for motion or UI (no Motion, Sonner, NumberFlow, Vaul). Dev: only
+  @axe-core/playwright. Lighthouse via npx as scripts/lighthouse-pwa.sh does.
+- Critic renders: apps/web/playwright.critic.config.ts, five projects (390x844 and 1280x800,
+  light and dark, plus mobile reduced-motion). Iterations in .critic/<screen>/<n>/ (git-ignored);
+  finals in docs/evidence/design/<screen>/.
+- Testids and data attributes in apps/web/e2e are a contract: never rename. When copy changes,
+  move text assertions to data-answered / data-tier / data-default in the same PR.
+- The undo window is worker-side (commit at once, step.sleep 5 s, honour answer_withdrawn_at;
+  north-backend owns the worker and DB change). Undo only for one-tap non-money cards.
+- Money and sends: pointer hold 600 ms with the amount and account in the label; keyboard:
+  select, relabel "Confirm: spend $X", Enter. Stop: one tap, never a hold.
+- Accent (--needle) only for stopped and failed. The recommended option is the only ink-filled
+  control, labelled "Recommended", never autofocused.
+- The $25 per-screen budget is the sum of the critic calls' reported usage, logged per iteration.
+
 Before any code: write the screen's intent sentence (from 04) and a compact token plan
-(colour as named oklch values within 02's counts; type roles; an ASCII layout at 390 and 1280;
-the one memorable element; the one motion). Then check the plan against 02's slop catalogue
-and against "would any similar product arrive here?"; revise what is generic and say why.
+(which roles from 02 you use; an ASCII layout at 390 and 1280; the one memorable element; the
+one motion). Check the plan against 02's slop catalogue and against "would any similar product
+arrive here?"; revise what is generic and say why. Then write the failing Playwright assertion.
 
 Build with the repo's conventions (Next.js 16, Tailwind v4 tokens in globals.css, components
-under 200 lines, Playwright flow first for a new flow). Every pressable has a press state;
-every async action has an optimistic state and an inline failure; every screen ships six states.
+under 200 lines, files under 400, functions under 50, Zod at every boundary, immutable data).
+Every pressable has a pressed state and a focus ring; every async action has an optimistic
+state and an inline failure; every screen ships six states.
 
 Then run the loop in 07 until the gates pass and the critic table has zero fails, with a fresh
-critic agent (north-qa-validator) that never sees your explanation. Keep every iteration under
-.critic/<screen>/<n>/. Stop at the plateau; never pass 12 iterations or $25 without the founder.
+critic agent (north-qa-validator) that never sees your explanation. Stop at the plateau; never
+pass 12 iterations or $25 without the founder.
 
-Deliver: the screen, the six-state screenshots at 390 and 1280 in both themes under
-docs/evidence/, the critic's final table, and a DESIGN.md diff naming every surviving tell
-from 02 with its reason.
+Migration order when starting from today's code: tokens and fonts (aliases keep e2e green);
+delete TerminalStrip, cursor-blink, north-blink, the gradient; decision card + Today's actions
++ the receipt; the stop control; Home header and brief; Team; Ledger; landing; dark palette;
+Settings. The persona files .claude/agents/north-frontend.md and north-design.md point at 02.
+
+Deliver: the screen, the six-state screenshots in the five projects under docs/evidence/design/,
+the critic's final table, and a 02 diff naming every surviving tell with its reason.
 ```

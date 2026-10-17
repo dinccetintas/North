@@ -26,8 +26,11 @@ message is "I run a company; my staff is software." (`09`: Norman; Ive.)
 ## Why "premium" is quiet, not loud
 
 Live markup of linear.app, raycast.com, family.co and vercel.com/ship (October 2026) shows no
-canvas, no video hero, no Lottie: typography, screenshots and restraint. Their "wow" comes from
-four mechanisms, and all four are available to North for free:
+canvas, no video hero, no Lottie: typography, screenshots and restraint. That is a small sample
+from one design community, so it is not the whole argument; the grounds that decide are North's
+own budgets (home in 1.5 s on a phone, offline, PWA) and the skeptic's rule that theatre reads
+as fake (`03`). Their "wow" comes from four mechanisms, and all four are available to North for
+free:
 
 1. **Speed.** Nothing waits. Optimistic writes, no spinners, acknowledgement within 100 ms
    (Nielsen's 0.1 s limit; Doherty's 400 ms).
@@ -76,29 +79,49 @@ a table, the card is a decision slip. It does not motivate a terminal, a ticker,
 competitor's orange. The rule for each element is therefore: justified by a sentence of the
 brief, or gone. `02` lists the verdicts.
 
-## The visual direction: "the morning memo", instrument-grade
+## The visual direction: "the receipt", set like a memo
 
-Two registers, both motivated by the subject:
+One register, not two, both motivated by the subject. North's own artefacts are the decision
+slip, the morning memo and the ledger: documents with numbers in them. So:
 
-- **The document register** (brief, card question, artifacts, plan): a text serif with optical
-  sizes, set like a well-printed memo. Reading comfort first: 17-19 px body, 60-70 characters,
-  `text-wrap: pretty`, generous leading. This is where the CEO reads.
-- **The instrument register** (numbers, costs, deadlines, tiers, controls, the kill switch): a
-  mono for data only, hairline rules only where they separate data, controls that feel physical
-  (press scale, hold-to-confirm fill) and are never decorated. This is where the CEO acts.
+- **One text family with optical sizes and tabular figures** (Source Serif 4 variable, `opsz`
+  for display and text, `font-variant-numeric: tabular-nums` for every number). Reading comfort
+  first: 17 px body, 60-70 characters, `text-wrap: pretty`, generous leading. Numbers, costs,
+  times and amounts are set in the same face, lining and tabular, right-aligned in rows: the
+  instrument feel comes from alignment, not from a typewriter face. A mono face appears only on
+  ids, hashes and code inside artifacts. This removes the serif-plus-mono pairing, which is the
+  strongest "AI made this" tell, and the tracked uppercase labels with it.
+- **Rules as the only structural device.** Every data row sits on a hairline; nothing sits in a
+  box. Radius 0 on surfaces, 2 px on controls, 6 px on the one floating sheet. The card is a
+  detachable slip: the largest text on Home, a rule above and below, no fill, no border box.
+- **Controls that feel physical and are never decorated.** Press scale on every pressable, a
+  hold fill on money, instant state changes. The flat control replaces the gradient button.
 
-What is removed: the terminal strip, the ticker, the blinking cursor, uppercase mono labels above
-headings, middle-dot meta strings, the retro gradient, identical grey boxes around everything,
-Polsia's orange. What is added: a real hierarchy (the pending card is the loudest thing on Home;
-"nothing needs you" is the calmest), designed empty states, a dark palette that is designed and
-not inverted, and one signature interaction: **the answer that travels** (the card you answer
-moves into the ledger and the quota ticks; `05`).
+What is removed: the terminal strip, the ticker, the blinking cursor, mono uppercase labels,
+middle-dot meta strings, the retro gradient, identical grey boxes around everything, Polsia's
+orange, dark mode as inversion. What is added: a real hierarchy (the pending card is the loudest
+thing on Home, "nothing else needs you today" the calmest), designed empty states, a designed
+dark palette for the evening laptop, tabular figures everywhere a number appears, and one
+signature interaction: **the receipt** (a card you answer collapses in place into its own
+receipt row with Undo inside; a money card is answered by holding, the amount in the button;
+`05`).
 
-Accent: derive it from the name, not from a competitor. A compass paints north red. North's
-accent is a single "needle" red reserved for the three states where the human must look: a
-decision waiting, agents stopped, a failure. Verified evidence gets a quiet green. Nothing else is
-coloured. The designing agent may propose a different derivation, but must defend it in
-`DESIGN.md` against this paragraph and pass the slop tests in `02`.
+**Accent.** Derived from the name: a compass paints north red. The needle red is reserved for
+the two states where agents are *not running*: stopped and failed. A waiting card is loud by
+size and by holding the only ink-filled control on the screen (the recommended option, labelled
+"Recommended"), never by hue, so the morning ritual is never painted in the alarm colour.
+Verified evidence and "live" get a quiet green. Nothing else is coloured. The designing agent may
+propose a different derivation but must defend it in `02` against this paragraph and pass the
+slop tests.
+
+## The founder's brief and our answer
+
+| The ask | What ships | Why this and not the literal |
+| --- | --- | --- |
+| "Wow on every button" | Press scale, hold fill and an instant state change on every pressable; nothing waits | Frequency: a button pressed 20× a day cannot carry a show without becoming cognitive burden (Freiberg, Kowalski); invisible correctness is what premium products do instead |
+| "Futuristic, modern" | A designed dark theme for the evening laptop; tabular figures; view transitions where the platform gives them for free; no spinners, optimistic writes | The premium sites of 2025-26 are quiet; "modern" reads as speed and continuity, not chrome |
+| "3D maybe" | One CSS-3D device on the landing (the demo card you tip and answer); any WebGL hero must beat its own screenshot in a founder-scored pairwise before it ships | Nothing in North is a physical object; the perf budget (home 1.5 s on a phone) and the skeptic's "theatre means fake" decide |
+| "Different, premium, worth every dollar" | The receipt interaction, the money hold, the finite morning, evidence on everything, one money vocabulary | Trust is built from performance, process and purpose on the same surface (Lee & See); worth is felt at the ledger, not the hero |
 
 ## Ten principles (the rubric in `07` scores exactly these)
 
@@ -112,7 +135,8 @@ coloured. The designing agent may propose a different derivation, but must defen
 7. **Honest copy.** Specific, active, North vocabulary; says what happened and what did not.
 8. **Back of the drawer.** Empty, loading, error, offline, long-text and 390 px states get the
    same care as the hero.
-9. **Restraint.** Remove the weakest element; if nothing is lost, it stays removed.
+9. **Restraint.** Remove the weakest element and judge the two versions pairwise; if the
+   version without it wins, it stays removed.
 10. **Non-default.** Any surviving item from the slop catalogue carries a written reason.
 
 ## What this is not

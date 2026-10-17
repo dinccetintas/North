@@ -1,0 +1,11 @@
+# Rebuttal: user advocate (Mert, Ayşe, Daniel, Lena, Kerem)
+
+**Q1 Stop control: CONCEDE to the merge (it is my position).** One tap stops; hold-to-confirm lives only on money/send options. Deciding argument: SPEC says "Tek tıkla", and in Ayşe's panic a tap that does nothing is worse than an accidental stop, which costs one tap on Resume. Condition: the money hold applies on the keyboard too (Enter held 600 ms), or "1/2/3 instantly" spends $40 in 120 ms; the engineer's item 9 agrees.
+
+**Q2 Type: CONCEDE.** None of the five cares whether a serif+mono pairing looks AI-made; Ayşe and Kerem care that amounts line up and a ledger scans like a receipt. Tabular lining figures, right-aligned, give that without a second face, and one family is one less thing for Daniel's eye to decode. Condition: numbers and times still read as data (tnum, right-aligned), and hashes never reach a screen; evidence shows the domain.
+
+**Q3 Signature: CONCEDE to the combined merge.** Deciding argument is the engineer's: a client-side 5 s delay breaks DEC-2 and loses Mert's answer when the PWA closes on the train. Commit at once, worker-side withdraw window, collapse-in-place receipt row with Undo inside, hold with no undo for money, and the row joins "Today's actions", never a ledger. Conditions for Daniel: the row says "Sending in 5 s · Undo", not "Queued", and appears with Undo on `/decisions/[id]` too.
+
+**Q4 Accent: CONCEDE.** The critic is right that red every morning teaches Ayşe that the ritual is an alarm; size and the single ink fill find the card for Daniel. Hold the merge exactly as written: "Recommended" as a text label, selected state as a check plus "Chosen", never focused or pre-selected. Kerem reads fill as chosen only when fill is the sole cue.
+
+**The one thing I would still fight:** no merge touches onboarding, where Ayşe and Kerem cancel. The "Review drafts / Autopilot" dial (03) grants standing rules before a single answer, which SPEC DEC-3 forbids ("Kural ancak kullanıcı kabul ederse eklenir"); and the wizard drops the spec's connect-tools step while Home promises "Four short steps" for five. Rules only after three identical answers and an explicit accept; a true step count; "connect tools, or skip and a card asks when needed" as a step. If the dial survives, I lose two of my five people on day one.
