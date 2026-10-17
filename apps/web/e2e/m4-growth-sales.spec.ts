@@ -26,8 +26,10 @@ import {
 
 const ANSWER_LATENCY_MS = 2_000;
 const EVIDENCE_DIR = "../../docs/evidence/M4";
+/** CMP-1 is an M7 requirement: its screenshots go to the M7 folder. */
+const M7_EVIDENCE_DIR = "../../docs/evidence/M7";
 
-const shot = (page: Page, name: string, project: string) => page.screenshot({ path: `${EVIDENCE_DIR}/${name}-${project}.png`, fullPage: true });
+const shot = (page: Page, name: string, project: string, dir = EVIDENCE_DIR) => page.screenshot({ path: `${dir}/${name}-${project}.png`, fullPage: true });
 
 /** Reloads the page until the locator has at least `min` matches (the worker runs in the background). */
 async function pollCount(page: Page, locator: Locator, min = 1): Promise<void> {
@@ -207,6 +209,54 @@ test("M4 sales: five leads → one card → five sends → replies in the ledger
   await expect(page.getByTestId("outreach-row").first().getByTestId("outreach-replies")).toHaveText("2");
   await expect(page.locator('[data-testid="channel-row"][data-channel="cold_email"]')).toBeVisible();
   await shot(page, "ledger-replies", project);
+});
+
+test("CMP-1 sales: without a sender identity the first contact is blocked; saving it on the Team page unblocks the next batch", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  const project = testInfo.project.name;
+  const stamp = Date.now().toString(36);
+  const slug = await onboardedCompany(page, project, `${stamp}c`, `Compliance Co ${stamp} ${project}`);
+  const companyId = await companyIdBySlug(slug);
+  await insertLeads(
+    companyId,
+    [1, 2].map((i) => ({ name: `Prospect ${i}`, email: `cmp-${i}-${stamp}@example.test`, company: `Agency ${i}`, why: "Runs outbound without a team." })),
+  );
+
+  // No sender identity yet: the gate blocks the first contact, and the Team page's stream says why.
+  const first = await insertOutreachBatchTask(companyId, "Outreach batch 1");
+  await sendInngestEvent("task/dispatch", { companyId, taskId: first.id });
+  await page.goto(`/c/${slug}/team`);
+  const blocked = actionRows(page, "email.send.first_contact", "blocked").filter({ has: page.getByTestId("action-blocked-reason").filter({ hasText: "no sender identity" }) });
+  await pollCount(page, blocked);
+  await shot(page, "cmp1-team-blocked", project, M7_EVIDENCE_DIR);
+
+  // A refused save (an empty legal name fails SenderIdentitySchema) shows the inline error and saves nothing.
+  const form = page.getByTestId("sender-identity-form");
+  await form.getByTestId("legal-name").fill("");
+  await form.getByTestId("postal-address").fill("1 Example Street, Springfield 12345");
+  await form.getByTestId("sender-identity-save").click();
+  await expect(page.getByTestId("sender-identity-error")).toBeVisible();
+  await expect(page.getByTestId("sender-identity-saved")).toHaveCount(0);
+
+  await form.getByTestId("legal-name").fill("Compliance Co Ltd");
+  await form.getByTestId("sender-identity-save").click();
+  const saved = page.getByTestId("sender-identity-saved");
+  await expect(saved).toContainText("Compliance Co Ltd");
+  await expect(saved).toContainText("1 Example Street, Springfield 12345");
+  await expect(saved).toContainText("Every first-contact email carries this, as the law requires.");
+  await page.reload();
+  await expect(page.getByTestId("sender-identity-saved")).toContainText("Compliance Co Ltd");
+  await shot(page, "cmp1-team-sender-identity", project, M7_EVIDENCE_DIR);
+
+  // The same flow with the identity saved: the next batch opens the first-contact card.
+  const second = await insertOutreachBatchTask(companyId, "Outreach batch 2");
+  await sendInngestEvent("task/dispatch", { companyId, taskId: second.id });
+  await page.goto(`/c/${slug}`);
+  await pollCount(page, cardOfKind(page, "email.send.first_contact"));
+  const card = cardOfKind(page, "email.send.first_contact").first();
+  await expect(card).toContainText(`cmp-1-${stamp}@example.test`);
+  await expect(card).toContainText(`cmp-2-${stamp}@example.test`);
+  await shot(page, "cmp1-home-first-contact", project, M7_EVIDENCE_DIR);
 });
 
 test("M4 connections: Meta Ads and Gmail connect in sandbox and disconnect; a forged Gmail callback is refused", async ({ page }, testInfo) => {

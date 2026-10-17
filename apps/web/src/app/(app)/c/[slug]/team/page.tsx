@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
-import { listAgents, listRecentActions } from "@north/db";
+import { getSenderIdentity, listAgents, listRecentActions, type ActionRecord } from "@north/db";
 import { companyBySlug } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 import { formatNumber, roleTitle } from "@/lib/labels";
 import { leadsCount } from "@/lib/ledger-data";
 import { LeadsUpload } from "@/components/leads-upload";
+import { SenderIdentityForm, type SenderIdentityValue } from "@/components/sender-identity-form";
 
 export const metadata = { title: "Team" };
 
@@ -13,6 +14,38 @@ type Params = Promise<{ slug: string }>;
 const ACTION_WINDOW_HOURS = 24;
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * Why a `blocked` row was blocked: the worker's `payload.blocked_reason`
+ * (a fence target, a suppressed address, `no_sender_identity: no sender
+ * identity`), else the gate's reasons (the kill switch); null for any other
+ * status. Rendered as text, never as markup.
+ */
+function blockedReasonOf(action: ActionRecord): string | null {
+  if (action.status !== "blocked") return null;
+  const { blocked_reason: reason, reasons } = action.payload;
+  if (typeof reason === "string" && reason.trim().length > 0) return reason;
+  const listed = Array.isArray(reasons) ? reasons.filter((r): r is string => typeof r === "string") : [];
+  return listed.length > 0 ? listed.join(", ") : null;
+}
+
+/** One line of the action stream; a blocked row carries its reason right after the status, where the line is not yet cut off. */
+function ActionRow({ action: a }: { action: ActionRecord }) {
+  const reason = blockedReasonOf(a);
+  return (
+    <div className="whitespace-nowrap" data-testid="action-row" data-kind={a.kind} data-status={a.status}>
+      &gt; [{timeOf(a.createdAt)}] {a.agentRole} {a.kind} {a.tier} {a.supersedes ? "→ " : ""}
+      {a.status}
+      {a.sandbox && (a.status === "executed" || a.status === "notified") ? " (sandbox)" : ""}
+      {reason ? (
+        <>
+          <span data-testid="action-blocked-reason"> — {reason}</span> —
+        </>
+      ) : null}{" "}
+      {a.description}
+    </div>
+  );
+}
 
 /** M4: the Sales role's prospect list; fed by CSV upload here and by `lead_research` tasks. */
 function LeadsSection({ companyId, count }: { companyId: string; count: number }) {
@@ -37,13 +70,35 @@ function LeadsSection({ companyId, count }: { companyId: string; count: number }
   );
 }
 
+/**
+ * CMP-1 (M7): the legal name and postal address every first-contact email
+ * carries; until they are saved the gate blocks first contacts, and the
+ * action stream below says so.
+ */
+function SenderIdentitySection({ companyId, slug, identity }: { companyId: string; slug: string; identity: SenderIdentityValue | null }) {
+  return (
+    <section className="mt-10" data-testid="sender-identity-section">
+      <h2 className="mono-label text-faint">{roleTitle("sales")} · Sender identity</h2>
+      <div className="mt-3 border border-surface-border bg-surface p-5">
+        {identity ? null : <p className="mb-4 text-muted">Not set yet: no first-contact email goes out until the company&apos;s legal name and postal address are here.</p>}
+        <SenderIdentityForm companyId={companyId} slug={slug} identity={identity} />
+      </div>
+    </section>
+  );
+}
+
 export default async function TeamPage({ params }: { params: Params }) {
   const { slug } = await params;
   const company = await companyBySlug(slug);
   if (!company) notFound();
 
   const db = await createClient();
-  const [agents, actions, leads] = await Promise.all([listAgents(db, company.id), listRecentActions(db, company.id, ACTION_WINDOW_HOURS), leadsCount(db, company.id)]);
+  const [agents, actions, leads, identity] = await Promise.all([
+    listAgents(db, company.id),
+    listRecentActions(db, company.id, ACTION_WINDOW_HOURS),
+    leadsCount(db, company.id),
+    getSenderIdentity(db, company.id),
+  ]);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
@@ -70,6 +125,7 @@ export default async function TeamPage({ params }: { params: Params }) {
       )}
 
       <LeadsSection companyId={company.id} count={leads} />
+      <SenderIdentitySection companyId={company.id} slug={company.slug} identity={identity} />
 
       <section className="mt-10">
         <h2 className="mono-label text-faint">Last {ACTION_WINDOW_HOURS} hours</h2>
@@ -79,11 +135,7 @@ export default async function TeamPage({ params }: { params: Params }) {
           ) : (
             <>
               {actions.map((a) => (
-                <div key={a.id} className="whitespace-nowrap" data-testid="action-row" data-kind={a.kind} data-status={a.status}>
-                  &gt; [{timeOf(a.createdAt)}] {a.agentRole} {a.kind} {a.tier} {a.supersedes ? "→ " : ""}
-                  {a.status}
-                  {a.sandbox && (a.status === "executed" || a.status === "notified") ? " (sandbox)" : ""} {a.description}
-                </div>
+                <ActionRow key={a.id} action={a} />
               ))}
               <div className="cursor-blink">&gt; </div>
             </>
