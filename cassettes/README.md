@@ -101,10 +101,11 @@ Cassettes go stale when a prompt changes (the key changes with it). To refresh:
 
 ```bash
 AGENT_RUNTIME=claude-agent-sdk NORTH_CASSETTE_MODE=record NORTH_CASSETTE_DIR=cassettes \
-  NORTH_ENV=staging NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=0.50 ANTHROPIC_API_KEY=... pnpm dev
+  NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=0.50 ANTHROPIC_API_KEY=... pnpm dev
 # run the flow once, then review and commit the new files under cassettes/
 ```
 
 Delete the stale `<key>.json` files first if you want a clean set. A recording
 spends real money against `NORTH_DAILY_CAP_USD`; use the `smoke` model profile
-(any profile but `production` needs `NORTH_ENV=staging`).
+(any profile runs in development; under `NODE_ENV=production` any profile but
+`production` needs `NORTH_ENV=staging`).

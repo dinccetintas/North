@@ -140,7 +140,8 @@ export function auditHook(input: AgentRunInput, allowed: readonly string[], deps
 }
 
 const profileOf = (deps: ClaudeAgentSdkDeps): ModelProfile => deps.profile ?? DEFAULT_PROFILE;
-const configRootOf = (deps: ClaudeAgentSdkDeps): string => deps.configRoot ?? defaultConfigRoot(deps.workspaceRoot);
+/** SEC-2: the config root, absolute: the query runs with cwd = the task workspace, so a relative HOME would land inside it. */
+const configRootOf = (deps: ClaudeAgentSdkDeps): string => resolve(deps.configRoot ?? defaultConfigRoot(deps.workspaceRoot));
 const isMcpTool = (name: string): boolean => name.startsWith("mcp__");
 
 /** The directories the engineering sandbox's filesystem rules are built from. */

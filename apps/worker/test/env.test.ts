@@ -84,12 +84,40 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     expect(() => parse({ NORTH_CASSETTE_MODE: "tape" })).toThrow(/NORTH_CASSETTE_MODE/);
   });
 
-  it("TST-1 NORTH_ENV=production refuses a model profile other than production; staging may pick any", () => {
-    expect(() => parse({ NORTH_MODEL_PROFILE: "smoke" })).toThrow(/NORTH_MODEL_PROFILE/);
-    expect(() => parse({ NORTH_MODEL_PROFILE: "staging" })).toThrow(/NORTH_MODEL_PROFILE/);
-    expect(parse({ NORTH_MODEL_PROFILE: "smoke", NORTH_ENV: "staging" }).NORTH_MODEL_PROFILE).toBe("smoke");
+  it("TST-1 under NODE_ENV=production, NORTH_ENV=production refuses a model profile other than production; staging may pick any", () => {
+    expect(() => parseProd({ NORTH_MODEL_PROFILE: "smoke" })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(() => parseProd({ NORTH_MODEL_PROFILE: "staging" })).toThrow(/NORTH_MODEL_PROFILE/);
+    expect(parseProd({ NORTH_MODEL_PROFILE: "smoke", NORTH_ENV: "staging" }).NORTH_MODEL_PROFILE).toBe("smoke");
     expect(() => parse({ NORTH_MODEL_PROFILE: "cheap", NORTH_ENV: "staging" })).toThrow(/NORTH_MODEL_PROFILE/);
     expect(() => parse({ NORTH_ENV: "dev" })).toThrow(/NORTH_ENV/);
+  });
+
+  it("TST-1 in development and test any profile runs without NORTH_ENV=staging (local pnpm dev on the smoke profile)", () => {
+    expect(parse({ NORTH_MODEL_PROFILE: "smoke" })).toMatchObject({ NODE_ENV: "development", NORTH_ENV: "production", NORTH_MODEL_PROFILE: "smoke" });
+    expect(parse({ NODE_ENV: "test", NORTH_MODEL_PROFILE: "staging" }).NORTH_MODEL_PROFILE).toBe("staging");
+  });
+
+  it("SEC-2 AGENT_CONFIG_ROOT is always absolute: blank is the default, a relative value is read from the cwd, an absolute one is kept", () => {
+    expect(parse({ AGENT_CONFIG_ROOT: "" }).AGENT_CONFIG_ROOT).toBe(resolve(process.cwd(), ".agent-config"));
+    expect(parse({ AGENT_CONFIG_ROOT: "cfg/agents" }).AGENT_CONFIG_ROOT).toBe(resolve(process.cwd(), "cfg/agents"));
+    expect(parse({ AGENT_CONFIG_ROOT: ".agent-config" }).AGENT_CONFIG_ROOT).toBe(resolve(process.cwd(), ".agent-config"));
+    expect(parse({ AGENT_CONFIG_ROOT: "/data/agent-config" }).AGENT_CONFIG_ROOT).toBe("/data/agent-config");
+  });
+
+  it("TST-5 a malformed fence list fails boot in the env's own format, naming the key", () => {
+    const malformed: Array<[string, string]> = [
+      ["NORTH_FENCE_GITHUB_OWNERS", "north e2e"],
+      ["NORTH_FENCE_GITHUB_OWNERS", "north-e2e;other"],
+      ["NORTH_FENCE_RECIPIENT_DOMAINS", "@north.test"],
+      ["NORTH_FENCE_RECIPIENT_DOMAINS", "north.test resend.app"],
+      ["NORTH_FENCE_RECIPIENT_DOMAINS", "localhost"],
+      ["NORTH_FENCE_META_AD_ACCOUNTS", "act 1"],
+      ["NORTH_FENCE_META_AD_ACCOUNTS", "act_1;act_2"],
+      ["NORTH_FENCE_VERCEL_PREFIX", "E2E prefix"],
+    ];
+    for (const [key, value] of malformed) expect(() => parse({ NORTH_TEST_FENCE: "1", [key]: value }), `${key}=${value}`).toThrow(new RegExp(`^Worker env invalid: ${key}: `));
+    const ok = parse({ NORTH_FENCE_META_AD_ACCOUNTS: "act_123, 456", NORTH_FENCE_GITHUB_OWNERS: "north-e2e, Octo-Cat", NORTH_FENCE_RECIPIENT_DOMAINS: "resend.app, mail.north.test,", NORTH_FENCE_VERCEL_PREFIX: "e2e-" });
+    expect(fencePolicyFor(ok)).toMatchObject({ metaAdAccounts: ["act_123", "456"], githubOwners: ["north-e2e", "Octo-Cat"], recipientDomains: ["resend.app", "mail.north.test"], vercelProjectPrefix: "e2e-" });
   });
 
   it("SEC-1 NODE_ENV=production refuses an ANTHROPIC_BASE_URL that is not loopback, so the real key cannot be sent elsewhere", () => {
@@ -119,7 +147,7 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     expect(() => parse({ NORTH_DAILY_CAP_USD: "Infinity" })).toThrow(/NORTH_DAILY_CAP_USD/);
   });
 
-  it("STG-1 NORTH_WORKER_PUBLIC_URL defaults to the worker's own URL in sandbox mode and is required for live mode in production", () => {
+  it("CMP-1 NORTH_WORKER_PUBLIC_URL defaults to the worker's own URL in sandbox mode and is required for live mode in production", () => {
     expect(parse({}).NORTH_WORKER_PUBLIC_URL).toBe("http://127.0.0.1:3101");
     expect(parse({ WORKER_HOST: "::1", WORKER_PORT: "4000" }).NORTH_WORKER_PUBLIC_URL).toBe("http://[::1]:4000");
     const liveProd = { INTEGRATIONS_MODE: "live", CONNECTIONS_ENCRYPTION_KEY: "k".repeat(44) };
@@ -129,7 +157,7 @@ describe("SEC-1 / TST-1 / TST-5 / STG-1 the gateway, model profile and fence set
     expect(() => parse({ NORTH_WORKER_PUBLIC_URL: "worker.north.example" })).toThrow(/NORTH_WORKER_PUBLIC_URL/);
   });
 
-  it("STG-1 UNSUBSCRIBE_SECRET is at least 16 characters; sandbox on loopback defaults it, any other bind or live mode without it gets none", () => {
+  it("CMP-1 UNSUBSCRIBE_SECRET is at least 16 characters; sandbox on loopback defaults it, any other bind or live mode without it gets none", () => {
     expect(() => parse({ UNSUBSCRIBE_SECRET: "too-short" })).toThrow(/UNSUBSCRIBE_SECRET/);
     expect(SANDBOX_UNSUBSCRIBE_SECRET).toBe("sandbox-unsubscribe-secret");
     for (const host of ["127.0.0.1", "localhost", "::1"]) expect(unsubscribeSecretFor(parse({ WORKER_HOST: host }))).toBe(SANDBOX_UNSUBSCRIBE_SECRET);

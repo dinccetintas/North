@@ -26,21 +26,21 @@ function fakeRepo(owners: Record<string, string> = {}) {
 }
 
 describe("SEC-2 sessionEntriesPort", () => {
-  it("SEC-1 appends under the run's company and returns the next seq", async () => {
+  it("SEC-2 appends under the run's company and returns the next seq", async () => {
     const fake = fakeRepo();
     const port = sessionEntriesPort(fake.repo);
     expect(await port.append(COMPANY, "s1", "subagents/a", [{ type: "user" }, { type: "assistant" }], 3)).toBe(5);
     expect(fake.appended).toEqual([{ companyId: COMPANY, sessionId: "s1", subpath: "subagents/a", entries: [{ type: "user" }, { type: "assistant" }], fromSeq: 3 }]);
   });
 
-  it("SEC-1 refuses to read a session another company wrote, without loading its entries", async () => {
+  it("SEC-2 refuses to read a session another company wrote, without loading its entries", async () => {
     const fake = fakeRepo({ foreign: OTHER });
     const port = sessionEntriesPort(fake.repo);
     await expect(port.read(COMPANY, "foreign", "")).rejects.toThrow("session foreign belongs to another company");
     expect(fake.read).toEqual([]);
   });
 
-  it("SEC-1 reads the run's own session and a session nobody has written yet", async () => {
+  it("SEC-2 reads the run's own session and a session nobody has written yet", async () => {
     const fake = fakeRepo({ mine: COMPANY });
     const port = sessionEntriesPort(fake.repo);
     expect(await port.read(COMPANY, "mine", "")).toEqual([{ type: "user", uuid: "u1" }]);

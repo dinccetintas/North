@@ -55,11 +55,11 @@ type Log = (message: string) => void;
 /** The env's cassette mode as the gateway names it: `off` forwards and stores nothing, which is the gateway's `live`. */
 export const gatewayModeOf = (mode: WorkerEnv["NORTH_CASSETTE_MODE"]): GatewayMode => (mode === "off" ? "live" : mode);
 
-/** Starts the gateway: the real key is read here, once, and handed to it alone. */
+/** Starts the gateway: the real key is read here, once, and handed to it alone; a replaying gateway never calls the model API, so it gets none (least privilege). */
 async function startWorkerGateway(env: WorkerEnv, log: Log, options: RuntimeDepsOptions): Promise<WorkerGateway> {
   const mode = gatewayModeOf(env.NORTH_CASSETTE_MODE);
   const gateway = await (options.startGateway ?? startGateway)({
-    apiKey: env.ANTHROPIC_API_KEY ?? null,
+    apiKey: mode === "replay" ? null : (env.ANTHROPIC_API_KEY ?? null),
     upstream: env.ANTHROPIC_BASE_URL ?? DEFAULT_MODEL_UPSTREAM,
     mode,
     cassetteDir: env.NORTH_CASSETTE_DIR,
@@ -101,6 +101,15 @@ function llmFor(env: WorkerEnv, gateway: WorkerGateway | null, options: RuntimeD
   return select({ AGENT_RUNTIME: env.AGENT_RUNTIME, ANTHROPIC_API_KEY: GATEWAY_PLACEHOLDER_KEY }, { ...MOCK_LLM_RESPONSES }, { baseURL: gateway.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, profile: env.NORTH_MODEL_PROFILE });
 }
 
+/** Closes a gateway during a failed assembly: a close that fails is logged, so the assembly's own error is the one that surfaces. */
+async function closeQuietly(gateway: WorkerGateway | null, log: Log): Promise<void> {
+  try {
+    await gateway?.close();
+  } catch (error) {
+    log(`gateway: close after a failed start-up failed (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
 /**
  * Builds the agent runtime, the model gateway and the single-call LLM client.
  * `AGENT_RUNTIME=claude-agent-sdk` starts the gateway (live, record or replay
@@ -114,7 +123,7 @@ export async function buildRuntimeDeps(env: WorkerEnv, db: DbClient, tracer: Tra
     const runtime = (options.selectRuntime ?? selectRuntime)(agentDeps(env, db, tracer, log, options, gateway), { AGENT_RUNTIME: env.AGENT_RUNTIME });
     return Object.freeze({ runtime, gateway, llm: llmFor(env, gateway, options) });
   } catch (error) {
-    await gateway?.close();
+    await closeQuietly(gateway, log);
     throw error;
   }
 }

@@ -135,10 +135,12 @@ describe("SEC-1 instructions are capped before the run", () => {
       },
     };
     const deps = { ...fakeDeps(state, events), runtime };
-    const long = seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0, input: `${"x".repeat(9000)}TAIL` });
+    const long = seedTask(state, { role: "research", taskType: "market_report", status: "queued", attempts: 0, title: "Size the bookkeeping market", input: `HEAD-OF-INPUT ${"x".repeat(9000)}TAIL` });
     await executeTask(deps, long.id);
+    const { header } = await companyContext(deps.db, long.companyId, "market_report");
     expect(INSTRUCTIONS_MAX_CHARS).toBe(8000);
     expect(seen[0]).toHaveLength(INSTRUCTIONS_MAX_CHARS);
+    expect(seen[0]?.startsWith(`${header}\n\nTask: Size the bookkeeping market\nHEAD-OF-INPUT `)).toBe(true);
     expect(seen[0]?.endsWith(INSTRUCTIONS_TRUNCATION_MARKER)).toBe(true);
     expect(seen[0]).not.toContain("TAIL");
 
@@ -148,12 +150,41 @@ describe("SEC-1 instructions are capped before the run", () => {
     expect(seen[1]).not.toContain(INSTRUCTIONS_TRUNCATION_MARKER);
   });
 
-  it("SEC-1 capInstructions keeps text up to the cap and cuts one character more", () => {
+  it("SEC-1 capInstructions keeps the header and the Task line whole and cuts the input; text up to the cap is untouched", () => {
     expect(INSTRUCTIONS_TRUNCATION_MARKER).toBe("\n…[instructions truncated]");
-    const exact = "a".repeat(INSTRUCTIONS_MAX_CHARS);
-    expect(capInstructions(exact)).toBe(exact);
-    const over = capInstructions(`${exact}b`);
+    const warn = vi.fn();
+    const head = "Company: Acme\n\nTask: Write the plan";
+    const fits = "a".repeat(INSTRUCTIONS_MAX_CHARS - head.length - 1);
+    expect(capInstructions(head, fits, warn)).toBe(`${head}\n${fits}`);
+    const over = capInstructions(head, `${fits}b`, warn);
     expect(over).toHaveLength(INSTRUCTIONS_MAX_CHARS);
-    expect(over).toBe(`${"a".repeat(INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length)}${INSTRUCTIONS_TRUNCATION_MARKER}`);
+    expect(over).toBe(`${head}\n${fits.slice(0, fits.length - INSTRUCTIONS_TRUNCATION_MARKER.length)}${INSTRUCTIONS_TRUNCATION_MARKER}`);
+    // A huge input never pushes the header out.
+    expect(capInstructions(head, "z".repeat(50_000), warn).startsWith(`${head}\nzzz`)).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("SEC-1 only a header that alone passes the cap is cut itself; the input is dropped and it warns once", () => {
+    const warn = vi.fn();
+    const head = `Company: ${"h".repeat(INSTRUCTIONS_MAX_CHARS)}\n\nTask: Write the plan`;
+    const out = capInstructions(head, "the task input", warn);
+    expect(out).toHaveLength(INSTRUCTIONS_MAX_CHARS);
+    expect(out.startsWith("Company: hhh")).toBe(true);
+    expect(out.endsWith(INSTRUCTIONS_TRUNCATION_MARKER)).toBe(true);
+    expect(out).not.toContain("the task input");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/header/);
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain("hhhh");
+  });
+
+  it("SEC-1 a cut never splits a surrogate pair", () => {
+    const head = "Task: emoji";
+    const room = INSTRUCTIONS_MAX_CHARS - head.length - 1 - INSTRUCTIONS_TRUNCATION_MARKER.length;
+    const input = `${"e".repeat(room - 1)}😀${"e".repeat(100)}`;
+    const out = capInstructions(head, input, () => undefined);
+    const body = out.slice(0, -INSTRUCTIONS_TRUNCATION_MARKER.length);
+    expect(body.endsWith("e")).toBe(true);
+    expect(/[\uD800-\uDBFF]$/.test(body)).toBe(false);
+    expect(out.length).toBeLessThanOrEqual(INSTRUCTIONS_MAX_CHARS);
   });
 });

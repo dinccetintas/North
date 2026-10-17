@@ -117,6 +117,13 @@ describe("SEC-1 buildRuntimeDeps with the Agent SDK runtime", () => {
     expect(JSON.stringify(seams.llmCalls)).not.toContain(KEY);
   });
 
+  it("SEC-1 replay never hands the gateway the key, even when the env has one (least privilege)", async () => {
+    const seams = recordingSeams();
+    await buildRuntimeDeps(sdkEnv({ NORTH_CASSETTE_MODE: "replay" }), db, NO_TRACER, silent, seams.options);
+    expect(seams.gatewayOptions[0]).toMatchObject({ mode: "replay", apiKey: null });
+    expect(JSON.stringify(seams.gatewayOptions[0])).not.toContain(KEY);
+  });
+
   it("TST-2 replay starts without a key (a real gateway on loopback), and closes", async () => {
     const dir = await mkdtemp(join(tmpdir(), "north-runtime-deps-"));
     try {
@@ -192,5 +199,19 @@ describe("SEC-1 buildRuntimeDeps with the mock runtime", () => {
     });
     await expect(buildRuntimeDeps(sdkEnv(), db, NO_TRACER, silent, seams.options)).rejects.toThrow("runtime refused");
     expect(seams.fakeGateway.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("SEC-1 a close that fails during that clean-up is logged, and the original error is the one thrown", async () => {
+    const seams = recordingSeams({
+      selectRuntime: () => {
+        throw new Error("runtime refused");
+      },
+    });
+    vi.mocked(seams.fakeGateway.close).mockRejectedValueOnce(new Error("close failed"));
+    const logs: string[] = [];
+    await expect(buildRuntimeDeps(sdkEnv(), db, NO_TRACER, (m) => logs.push(m), seams.options)).rejects.toThrow("runtime refused");
+    expect(seams.fakeGateway.close).toHaveBeenCalledTimes(1);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/gateway.*close.*close failed/i);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EMBEDDING_DIMENSIONS } from "@north/db";
-import { edgeFunctionEmbedder, nullEmbedder, QUERY_MAX_CHARS } from "../src/services/embedder";
+import { edgeFunctionEmbedder, embedderFor, nullEmbedder, QUERY_MAX_CHARS } from "../src/services/embedder";
 
 /**
  * LRN-7 / SEC-1: the query embedder behind hybrid memory search. It asks the
@@ -86,7 +86,41 @@ describe("LRN-7 edgeFunctionEmbedder", () => {
     expect(warnings[0]).not.toContain(SERVICE_KEY);
   });
 
+  it("LRN-7 a warn that throws cannot make embed reject: the search still gets null", async () => {
+    const warn = () => {
+      throw new Error("logger down");
+    };
+    const embedder = edgeFunctionEmbedder({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SERVICE_KEY, fetchImpl: fakeFetch(answer({ error: "no" }, 500)).fetchImpl, warn });
+    await expect(embedder.embed("query")).resolves.toBeNull();
+  });
+
+  it("LRN-7 a long query is cut on a character boundary, never inside a surrogate pair", async () => {
+    const fake = fakeFetch(answer({ embedding: vector }));
+    const embedder = edgeFunctionEmbedder({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SERVICE_KEY, fetchImpl: fake.fetchImpl });
+    await embedder.embed(`${"q".repeat(QUERY_MAX_CHARS - 1)}😀 and more`);
+    const sent = (JSON.parse(String(fake.seen[0]?.init.body)) as { text: string }).text;
+    expect(sent).toBe("q".repeat(QUERY_MAX_CHARS - 1));
+  });
+
   it("LRN-7 nullEmbedder always answers null", async () => {
     expect(await nullEmbedder.embed("anything")).toBeNull();
+  });
+});
+
+describe("LRN-7 embedderFor: which embedder the worker runs", () => {
+  const env = (mode: "sandbox" | "live", embedQueries: "0" | "1") => ({ INTEGRATIONS_MODE: mode, NORTH_EMBED_QUERIES: embedQueries, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY }) as const;
+
+  it("LRN-7 live mode, and sandbox mode with NORTH_EMBED_QUERIES=1, embed through the Edge Function", async () => {
+    for (const selected of [env("live", "0"), env("live", "1"), env("sandbox", "1")]) {
+      const fake = fakeFetch(answer({ embedding: vector }));
+      const embedder = embedderFor(selected, { fetchImpl: fake.fetchImpl });
+      expect(embedder).not.toBe(nullEmbedder);
+      expect(await embedder.embed("query")).toEqual(vector);
+      expect(fake.seen.map((s) => s.url)).toEqual([`${SUPABASE_URL}/functions/v1/embed`]);
+    }
+  });
+
+  it("LRN-7 sandbox mode by default embeds nothing (nullEmbedder)", () => {
+    expect(embedderFor(env("sandbox", "0"))).toBe(nullEmbedder);
   });
 });

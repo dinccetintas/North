@@ -5,7 +5,7 @@ import { selectIntegrations, type Integrations } from "@north/integrations";
 import { fencePolicyFor, workerEnv, type WorkerEnv } from "./env";
 import { createTracer, type Tracer } from "./observability";
 import { SimClock, wallClock, type Clock } from "./services/clock";
-import { edgeFunctionEmbedder, nullEmbedder, type Embedder } from "./services/embedder";
+import { embedderFor, type Embedder } from "./services/embedder";
 import { withPinnedCompetitorFetch } from "./services/pinned-fetch";
 import { buildRuntimeDeps, type WorkerGateway } from "./services/runtime-deps";
 import { hostIsPrivate, type VerifierConfig } from "./services/verifier";
@@ -68,12 +68,6 @@ const allowPublicUrl = async (url: string): Promise<boolean> => {
 /** The worker's one-line warnings (gateway, embedder, session store), on stderr. */
 const workerLog = (message: string): void => console.warn(`[north-worker] ${message}`);
 
-/** LRN-7: queries are embedded through the Edge Function in live mode, and in sandbox mode only with `NORTH_EMBED_QUERIES=1`. */
-function embedderFor(env: WorkerEnv): Embedder {
-  if (env.INTEGRATIONS_MODE !== "live" && env.NORTH_EMBED_QUERIES !== "1") return nullEmbedder;
-  return edgeFunctionEmbedder({ supabaseUrl: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY, warn: workerLog });
-}
-
 /** SEC-1: the env without the model key, as `WorkerDeps.env` carries it: `ANTHROPIC_API_KEY` is handed to the gateway and kept out of the deps. A new frozen object. */
 export function depsEnvOf(env: WorkerEnv): DepsEnv {
   const copy: Partial<WorkerEnv> = { ...env };
@@ -94,9 +88,10 @@ async function createDeps(env: WorkerEnv): Promise<WorkerDeps> {
   // Sandbox previews live on the worker itself (loopback); live previews must be public hosts (M3 security review M3).
   const verifier: VerifierConfig = env.INTEGRATIONS_MODE === "sandbox" ? { timeoutMs: 10_000, allowedOrigins: [new URL(siteBaseUrl).origin], allowPrivate: true } : { timeoutMs: 10_000, allowPrivate: false };
   const tracer = createTracer(env);
-  const embedder = embedderFor(env);
+  const embedder = embedderFor(env, { warn: workerLog });
+  // TST-5: the fence is read before the gateway starts, so a bad fence fails boot without a gateway left running.
+  const fence = fencePolicyFor(env);
   // SEC-1: with the Agent SDK runtime the gateway starts here and is the only holder of the model key.
   const { runtime, gateway, llm } = await buildRuntimeDeps(env, db, tracer, workerLog, { roles, clock, embedder });
-  const fence = fencePolicyFor(env);
   return Object.freeze({ env: depsEnvOf(env), db, roles, runtime, integrations, verifier, clock, simClock, llm, tracer, profile: env.NORTH_MODEL_PROFILE, fence, gateway, embedder });
 }

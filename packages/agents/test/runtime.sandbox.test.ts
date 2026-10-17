@@ -57,6 +57,21 @@ describe("SEC-1 engineering sandbox filesystem rules", () => {
     for (const path of [...(filesystem?.denyRead ?? []), ...(filesystem?.allowRead ?? []), ...(filesystem?.allowWrite ?? [])]) expect(isAbsolute(path), path).toBe(true);
   });
 
+  it("SEC-2 a relative config root still gives the subprocess an absolute HOME and CLAUDE_CONFIG_DIR, the same dir the sandbox names", () => {
+    // The query runs with cwd = the task workspace: a relative HOME would put the settings and transcripts inside it.
+    const { configRoot, ...noConfigRoot } = makeDeps(roles);
+    void configRoot;
+    for (const deps of [{ ...makeDeps(roles), configRoot: "rel/agent-config" }, { ...noConfigRoot, workspaceRoot: "rel/workspaces" }]) {
+      const options = buildQueryOptions(makeInput({ role: "engineering", companyId: "company-1" }), requireRole(roles, "engineering"), deps);
+      const home = options.env?.HOME ?? "";
+      expect(isAbsolute(home), home).toBe(true);
+      expect(options.env?.CLAUDE_CONFIG_DIR).toBe(home);
+      expect(options.sandbox?.filesystem?.allowRead).toContain(home);
+    }
+    const relative = buildQueryOptions(makeInput({ role: "engineering", companyId: "company-1" }), requireRole(roles, "engineering"), { ...makeDeps(roles), configRoot: "rel/agent-config" });
+    expect(relative.env?.HOME).toBe(resolve("rel/agent-config", "company-1"));
+  });
+
   it("SEC-1 the sandbox of two engineering runs of two companies names each company's own dirs only", () => {
     const engineering = requireRole(roles, "engineering");
     const a = buildQueryOptions(makeInput({ role: "engineering", companyId: "co-a", taskId: "t-a" }), engineering, makeDeps(roles)).sandbox?.filesystem;

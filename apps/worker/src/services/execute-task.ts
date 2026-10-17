@@ -21,6 +21,7 @@ import {
 } from "@north/db";
 import type { AgentRunResult } from "@north/agents";
 import type { WorkerDeps } from "../deps";
+import { clipText } from "./clip";
 import { companyContext } from "./company-context";
 import { deferredActionsFor } from "./actions";
 import { chargeRun, releaseRun, reserveRun, type RunReservation } from "./credits";
@@ -51,10 +52,24 @@ export const INSTRUCTIONS_MAX_CHARS = 8000;
 /** Ends instructions that were cut, in the style of the digest's `…[memory digest truncated]`. */
 export const INSTRUCTIONS_TRUNCATION_MARKER = "\n…[instructions truncated]";
 
-/** Instructions cut to `INSTRUCTIONS_MAX_CHARS`, the marker included; shorter ones are returned as they are. */
-export function capInstructions(text: string): string {
-  if (text.length <= INSTRUCTIONS_MAX_CHARS) return text;
-  return text.slice(0, INSTRUCTIONS_MAX_CHARS - INSTRUCTIONS_TRUNCATION_MARKER.length) + INSTRUCTIONS_TRUNCATION_MARKER;
+const warnOnStderr = (message: string): void => console.warn(`[execute-task] ${message}`);
+
+/**
+ * A run's instructions, `head` (retry note, company-context header and the
+ * `Task: <title>` line) then the task's `input`, at most
+ * `INSTRUCTIONS_MAX_CHARS` long. The input is cut first (ending in the marker)
+ * so the header and the Task line always survive; only a head that alone
+ * leaves no room is cut itself, the input dropped, and `warn` told once (with
+ * sizes, never the text). Cuts never split a surrogate pair.
+ */
+export function capInstructions(head: string, input: string, warn: (message: string) => void = warnOnStderr): string {
+  const whole = `${head}\n${input}`.trim();
+  if (whole.length <= INSTRUCTIONS_MAX_CHARS) return whole;
+  const lead = head.trim();
+  const room = INSTRUCTIONS_MAX_CHARS - lead.length - 1;
+  if (room > INSTRUCTIONS_TRUNCATION_MARKER.length) return `${lead}\n${clipText(input.trim(), room, INSTRUCTIONS_TRUNCATION_MARKER)}`;
+  warn(`the instructions header alone is ${lead.length} characters, over the ${INSTRUCTIONS_MAX_CHARS} cap: it was cut and the task input left out`);
+  return clipText(lead, INSTRUCTIONS_MAX_CHARS, INSTRUCTIONS_TRUNCATION_MARKER);
 }
 
 /** Task types whose run ends in the build pipeline (push, preview, go-live card). */
@@ -160,7 +175,7 @@ async function runAgent(deps: WorkerDeps, task: TaskRecord, running: TaskRecord,
     const context = await companyContext(deps.db, task.companyId, task.taskType);
     await seedWorkspace(deps, task, workspaceDir);
     const retryNote = running.attempts > 1 ? `${retryInstructions(running.attempts, task.lastError)}\n\n` : "";
-    const instructions = capInstructions(`${retryNote}${context.header}\n\nTask: ${task.title}\n${task.input}`.trim());
+    const instructions = capInstructions(`${retryNote}${context.header}\n\nTask: ${task.title}`, task.input, (message) => warnOnStderr(`${task.id}: ${message}`));
     const started = deps.tracer.startRun({ companyId: task.companyId, taskId: task.id, role: task.role, taskType: task.taskType, instructions });
     const ran = await deps.runtime.run({
       companyId: task.companyId,

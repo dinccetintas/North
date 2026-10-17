@@ -5,6 +5,8 @@
 // untrusted and validated; the embedder never throws.
 import { EMBEDDING_DIMENSIONS } from "@north/db";
 import { z } from "zod";
+import type { WorkerEnv } from "../env";
+import { clipText } from "./clip";
 
 /** Turns a memory query into a vector, or null when it cannot. */
 export interface Embedder {
@@ -58,6 +60,15 @@ async function requestEmbedding(url: string, opts: EdgeFunctionEmbedderOptions, 
   return Object.freeze(parsed.data.embedding);
 }
 
+/** Passes a warning on; a logger that throws is ignored, so it can never turn a fallback into a failed search. */
+function tell(warn: ((message: string) => void) | undefined, message: string): void {
+  try {
+    warn?.(message);
+  } catch {
+    // the search goes on without the warning
+  }
+}
+
 /**
  * Embeds a query through `<supabaseUrl>/functions/v1/embed` (POST `{ text }`,
  * the service key as bearer token and `apikey`). Blank text is not sent; a
@@ -72,11 +83,24 @@ export function edgeFunctionEmbedder(opts: EdgeFunctionEmbedderOptions): Embedde
       if (text.trim() === "") return null;
       const signal = AbortSignal.timeout(timeoutMs);
       try {
-        return await Promise.race([requestEmbedding(url, opts, text.slice(0, QUERY_MAX_CHARS), signal), untilAborted(signal)]);
+        return await Promise.race([requestEmbedding(url, opts, clipText(text, QUERY_MAX_CHARS), signal), untilAborted(signal)]);
       } catch (error) {
-        opts.warn?.(`embedder: ${error instanceof Error ? error.message : "failed"}; memory search goes by words only`);
+        tell(opts.warn, `embedder: ${error instanceof Error ? error.message : "failed"}; memory search goes by words only`);
         return null;
       }
     },
   });
+}
+
+/** What `embedderFor` reads of the worker env. */
+export type EmbedderEnv = Pick<WorkerEnv, "INTEGRATIONS_MODE" | "NORTH_EMBED_QUERIES" | "SUPABASE_URL" | "SUPABASE_SERVICE_ROLE_KEY">;
+
+/**
+ * The worker's embedder (LRN-7): the Edge Function embedder in live mode, and
+ * in sandbox mode only with `NORTH_EMBED_QUERIES=1`; `nullEmbedder` otherwise
+ * (search by words). `options` are handed to `edgeFunctionEmbedder`.
+ */
+export function embedderFor(env: EmbedderEnv, options: Pick<EdgeFunctionEmbedderOptions, "fetchImpl" | "timeoutMs" | "warn"> = {}): Embedder {
+  if (env.INTEGRATIONS_MODE !== "live" && env.NORTH_EMBED_QUERIES !== "1") return nullEmbedder;
+  return edgeFunctionEmbedder({ ...options, supabaseUrl: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY });
 }

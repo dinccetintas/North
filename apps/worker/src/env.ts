@@ -7,28 +7,45 @@ import { isLoopbackHost, isLoopbackUrl, selfBaseUrl } from "./host";
 /** An empty value (`KEY=` in a .env file, as `.env.example` ships `ANTHROPIC_API_KEY`) counts as unset. */
 const blankAsUnset = <T extends z.ZodType>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
 
+/** The non-empty entries of a comma-separated list, trimmed (the split `fencePolicyFromEnv` makes). */
+const entriesOf = (value: string): string[] =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+
+/** TST-5: a comma-separated fence allow-list whose every entry must look like `what`, so a typo (a space or `;` as separator, an `@`) fails boot instead of silently fencing the wrong accounts. */
+const fenceList = (pattern: RegExp, what: string) =>
+  blankAsUnset(z.string().optional().refine((value) => value === undefined || entriesOf(value).every((entry) => pattern.test(entry)), { message: `every comma-separated entry must be ${what}` }));
+
+/** Meta ad account ids (`act_123` or `123`), GitHub logins, mail domains (at least one dot), Vercel project name prefixes. */
+const META_AD_ACCOUNT = /^(act_)?\d+$/;
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const MAIL_DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const VERCEL_PREFIX = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+
 /** M7 (SEC-1, TST-1, TST-2, TST-5, STG-1, CMP-1, LRN-7): the gateway, the model profile, the fence and the query embedder. */
 const M7Keys = {
   /** STG-1: which deployment this is. Only `staging` may run the fence, cassettes or a cheaper model profile under NODE_ENV=production. */
   NORTH_ENV: z.enum(["production", "staging"]).default("production"),
-  /** TST-1: the profile model aliases resolve on; anything but `production` needs NORTH_ENV=staging. */
+  /** TST-1: the profile model aliases resolve on; under NODE_ENV=production anything but `production` needs NORTH_ENV=staging. */
   NORTH_MODEL_PROFILE: z.enum(MODEL_PROFILES).default("production"),
   /** TST-5: `1` turns the test-account fence on (default deny outside the lists below); exactly `0` or `1`. */
   NORTH_TEST_FENCE: z.enum(["0", "1"]).default("0"),
-  /** TST-5: comma-separated allow-lists of the fence. */
-  NORTH_FENCE_META_AD_ACCOUNTS: blankAsUnset(z.string().optional()),
-  NORTH_FENCE_GITHUB_OWNERS: blankAsUnset(z.string().optional()),
-  NORTH_FENCE_RECIPIENT_DOMAINS: blankAsUnset(z.string().optional()),
+  /** TST-5: comma-separated allow-lists of the fence; a malformed entry fails boot. */
+  NORTH_FENCE_META_AD_ACCOUNTS: fenceList(META_AD_ACCOUNT, "a Meta ad account id (act_123 or 123)"),
+  NORTH_FENCE_GITHUB_OWNERS: fenceList(GITHUB_LOGIN, "a GitHub login"),
+  NORTH_FENCE_RECIPIENT_DOMAINS: fenceList(MAIL_DOMAIN, "a mail domain such as resend.app"),
   /** TST-5: the Vercel project prefix the fence allows (default `e2e-`). */
-  NORTH_FENCE_VERCEL_PREFIX: blankAsUnset(z.string().optional()),
+  NORTH_FENCE_VERCEL_PREFIX: blankAsUnset(z.string().trim().regex(VERCEL_PREFIX, { message: "must be a Vercel project name prefix (lowercase letters, digits, . _ -)" }).optional()),
   /** TST-2: `off` (the gateway's `live`), `record` or `replay`. */
   NORTH_CASSETTE_MODE: z.enum(["off", "record", "replay"]).default("off"),
   /** TST-2: where cassettes live; default `<repo root>/cassettes`, a relative path is read from the repo root (`AGENTS_DIR/..`). */
   NORTH_CASSETTE_DIR: blankAsUnset(z.string().optional()),
   /** TST-1: the gateway's spend cap per UTC day in USD; 0 (default) is no cap. */
   NORTH_DAILY_CAP_USD: z.coerce.number().min(0).default(0),
-  /** SEC-2: root of the per-company agent config dirs (HOME of each run); on Fly `/data/agent-config`. */
-  AGENT_CONFIG_ROOT: z.string().default(resolve(process.cwd(), ".agent-config")),
+  /** SEC-2: root of the per-company agent config dirs (HOME of each run); default `<cwd>/.agent-config`, on Fly `/data/agent-config`. Always made absolute (see the transform): a relative HOME would land in the task workspace. */
+  AGENT_CONFIG_ROOT: blankAsUnset(z.string().optional()),
   /** CMP-1: the public worker URL unsubscribe links point at; sandbox mode defaults it to the worker's own URL, live mode in production requires it. */
   NORTH_WORKER_PUBLIC_URL: blankAsUnset(z.url().optional()),
   /** CMP-1: the key unsubscribe tokens are signed with; see `unsubscribeSecretFor`. */
@@ -107,8 +124,8 @@ const EnvSchema = z
     message: "NORTH_CASSETTE_MODE must be off in production unless NORTH_ENV=staging",
     path: ["NORTH_CASSETTE_MODE"],
   })
-  .refine((env) => env.NORTH_ENV !== "production" || env.NORTH_MODEL_PROFILE === "production", {
-    message: "NORTH_MODEL_PROFILE must be production unless NORTH_ENV=staging",
+  .refine((env) => env.NODE_ENV !== "production" || env.NORTH_ENV !== "production" || env.NORTH_MODEL_PROFILE === "production", {
+    message: "NORTH_MODEL_PROFILE must be production under NODE_ENV=production unless NORTH_ENV=staging",
     path: ["NORTH_MODEL_PROFILE"],
   })
   .refine((env) => env.NODE_ENV !== "production" || env.ANTHROPIC_BASE_URL === undefined || isLoopbackUrl(env.ANTHROPIC_BASE_URL), {
@@ -126,6 +143,7 @@ const EnvSchema = z
   .transform((env) => ({
     ...env,
     NORTH_CASSETTE_DIR: resolve(env.AGENTS_DIR, "..", env.NORTH_CASSETTE_DIR ?? "cassettes"),
+    AGENT_CONFIG_ROOT: resolve(env.AGENT_CONFIG_ROOT ?? ".agent-config"),
     NORTH_WORKER_PUBLIC_URL: env.NORTH_WORKER_PUBLIC_URL ?? (env.INTEGRATIONS_MODE === "sandbox" ? selfBaseUrl(env) : undefined),
   }));
 export type WorkerEnv = z.infer<typeof EnvSchema>;
