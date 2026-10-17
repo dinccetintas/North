@@ -26,6 +26,7 @@ supabase/.temp
 coverage/
 playwright-report/
 playwright-report-prod/
+playwright-report-staging/
 test-results/
 blob-report/
 

@@ -124,6 +124,9 @@ function flagsFrom(argv: readonly string[]): z.infer<typeof FlagsSchema> {
 const IPV4_LOOPBACK = /^127(\.\d{1,3}){3}$/;
 const LOOPBACK_HOSTS = new Set(["localhost", "[::1]"]);
 
+/** True for a URL hostname on this machine: `localhost`, `[::1]` or `127.x.y.z` (shared with `evidence-costs-helpers.ts`). */
+export const isLoopbackHost = (host: string): boolean => LOOPBACK_HOSTS.has(host) || IPV4_LOOPBACK.test(host);
+
 /**
  * Null when the smoke may create its user and company in the database at
  * `url`: a loopback host, or any host with `allowRemote`
@@ -136,7 +139,7 @@ export function databaseRefusal(url: string, allowRemote: boolean): string | nul
   } catch {
     return "the database URL is not a URL: smoke LLM creates a user and a company there and refuses to guess";
   }
-  if (allowRemote || LOOPBACK_HOSTS.has(host) || IPV4_LOOPBACK.test(host)) return null;
+  if (allowRemote || isLoopbackHost(host)) return null;
   return `the database ${host} is not this machine: smoke LLM creates a user and a company there; set SMOKE_LLM_ALLOW_REMOTE_DB=1 to allow it`;
 }
 

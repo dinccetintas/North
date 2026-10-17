@@ -8,8 +8,12 @@ export default defineConfig({
   testDir: "./e2e",
   /** TST-2: with NORTH_CASSETTE_MODE=replay in this process (pnpm e2e:replay), fail unless the worker replays; otherwise a no-op. */
   globalSetup: "./e2e/global-setup.ts",
-  /** Production-build flows (the offline brief) run with playwright.prod.config.ts: `pnpm e2e:prod`. */
-  testIgnore: /\.prod\.spec\.ts$/,
+  /**
+   * Production-build flows (the offline brief) run with playwright.prod.config.ts: `pnpm e2e:prod`;
+   * the live journey on staging with playwright.staging.config.ts: `pnpm e2e:staging`; `*.test.ts`
+   * next to the flows are Vitest unit tests of their helpers (`pnpm --filter @north/web test`).
+   */
+  testIgnore: [/\.prod\.spec\.ts$/, /\.live\.spec\.ts$/, /\.test\.ts$/],
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

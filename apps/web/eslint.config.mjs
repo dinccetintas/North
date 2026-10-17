@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     // Playwright output (HTML reports with the trace viewer's bundled JS, failure artifacts): generated and gitignored.
     "playwright-report/**",
     "playwright-report-prod/**",
+    "playwright-report-staging/**",
     "test-results/**",
   ]),
 ]);

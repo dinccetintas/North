@@ -392,7 +392,16 @@ one evidence file under `docs/evidence/M7/` and prints no key.
    pnpm -s staging:check -- --web https://staging.<web> --worker https://north-worker-staging.fly.dev --supabase https://<staging ref>.supabase.co --anon-key <staging publishable key> --json | tee docs/evidence/M7/staging-check.json
    ```
 7. The connections (section 13): one screenshot per test account, `docs/evidence/M7/staging-connection-<provider>.png`.
-8. After the first live journey (Task 20), the purge (section 12, its env exported): `purged N of N e2e user(s)`.
+8. The live journey (Task 20; the nightly variant, `smoke` profile): `2 passed` (mobile, desktop), or a failure that names the step. Screenshots and `journey-<project>.json` (with the company `slug`) land in `docs/evidence/M7/acceptance/<date>/`; then the costs per company, with section 12's service-role env and `EVIDENCE_ALLOW_REMOTE_DB=1`. Without `E2E_BASE_URL` the spec only skips (`E2E_BASE_URL not set: …`), which proves nothing.
+   ```bash
+   read -rs E2E_RESEND_KEY && export E2E_RESEND_KEY                         # the full-access key (section 7)
+   read -rs VERCEL_AUTOMATION_BYPASS_SECRET && export VERCEL_AUTOMATION_BYPASS_SECRET
+   export E2E_BASE_URL=https://staging.<web> E2E_MAIL_PROVIDER=resend E2E_MAIL_DOMAIN=staging.<domain> E2E_EVIDENCE_DATE=$(date -u +%F)
+   pnpm e2e:staging 2>&1 | tee docs/evidence/M7/staging-journey.txt
+   D=docs/evidence/M7/acceptance/$E2E_EVIDENCE_DATE
+   for p in mobile desktop; do EVIDENCE_ALLOW_REMOTE_DB=1 EVIDENCE_WORKER_URL=https://north-worker-staging.fly.dev pnpm -s evidence:costs -- --slug "$(node -p "require('./$D/journey-$p.json').slug")" --out "$D/$p"; done
+   ```
+9. After the first live journey (Task 20), the purge (section 12, its env exported): `purged N of N e2e user(s)`.
    ```bash
    pnpm -s staging:purge-e2e -- --yes 2>&1 | tee docs/evidence/M7/staging-purge.txt
    ```

@@ -72,9 +72,11 @@ export async function approveWizard(page: Page, slug: string): Promise<void> {
   await expect(page.getByTestId("kill-switch")).toHaveText("Stop all agents");
 }
 
+/** The rows of the home's "First 24 hours" list, optionally only those with the given status. */
+export const onboardingRows = (page: Page, status?: string) => page.locator(`[data-testid="onboarding-tasks"] [data-testid="task-row"]${status ? `[data-status="${status}"]` : ""}`);
+
 /** Counts rows in the "First 24 hours" list with the given status after a reload. */
-export const countOnboardingRows = (page: Page, status?: string) =>
-  page.locator(`[data-testid="onboarding-tasks"] [data-testid="task-row"]${status ? `[data-status="${status}"]` : ""}`).count();
+export const countOnboardingRows = (page: Page, status?: string) => onboardingRows(page, status).count();
 
 /**
  * M6: a second company for the signed-in owner, onboarded to its home. The
