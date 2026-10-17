@@ -39,7 +39,7 @@
 | First artifact | Is this any good? | Proud, surprised | Report with cited claims, cost, "what changed" | Read, comment | A finding the user did not know | Generic output | Time on artifact |
 | First card | I get it: this is my job | Competent in 60 s | Question, why (2 lines), cost, deadline, default, outcome-labelled options | One tap | Tap → the card collapses into its receipt row with "Sending in 5 s · Undo" | Pre-selected default; "Are you sure?" | Median answer < 60 s |
 | First money card | Now it's real money | Protected, deliberate | Amount and account in the button, cap, what happens if nothing | Hold to confirm | The receipt row reads "Sent · $40 · 09:12"; the ledger shows the result when it is measured | A skipped confirmation | 0 unapproved spends |
-| Daily ritual, day 5-30 | Five minutes and done | Finite, closable | Brief, ≤ 3 cards, "Nothing else needs you today" | Answer cards | The brief's last line names yesterday's measured result | Streak guilt; notifications beyond cards | D7/D30 ritual retention |
+| Daily ritual, day 5-30 | Five minutes and done | Finite, closable | Brief, the day's cards (≤ quota), "Nothing else needs you today" | Answer cards | The brief's last line names yesterday's measured result | Streak guilt; notifications beyond cards | D7/D30 ritual retention |
 | Month 3 | Was it worth it? | Compounding | Ledger month view: spend vs metric; "41 decisions · 38 done with evidence · 12 sent in your name · 3 rules" ; export | Renew | The counts line | Cost with no ledger delta | Net retention |
 
 ## Where the personas meet: twelve decisions that satisfy all five

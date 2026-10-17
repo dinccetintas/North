@@ -29,7 +29,7 @@ spend the boldness in one place: the moment a decision is made.
 
 ## Non-negotiables carried from `CLAUDE.md` and `docs/SPEC.md`
 
-Boardroom, not chat. Home = brief + at most three cards. Kill switch on every screen. Mobile
+Boardroom, not chat. Home = brief + the day's cards (the quota, default 3). Stop control on every screen. Mobile
 first at 390 px. Home paints in 1.5 s; a card answer reaches the queue in 2 s. Every action
 through the gate; every "done" with evidence. These documents never override them.
 
