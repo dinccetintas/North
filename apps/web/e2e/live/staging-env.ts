@@ -23,10 +23,6 @@ type Env = Readonly<Record<string, string | undefined>>;
 export const DRY_RUN_REASON = "E2E_BASE_URL not set: the live journey runs against staging only (docs/runbooks/staging.md §15)";
 /** The variables a staging run needs, in the order a message lists them. */
 export const STAGING_VARIABLES = Object.freeze(["E2E_BASE_URL", "VERCEL_AUTOMATION_BYPASS_SECRET", "E2E_SUPABASE_URL", "E2E_MAIL_PROVIDER=resend", "E2E_RESEND_KEY", "E2E_MAIL_DOMAIN"] as const);
-/** Vercel's Deployment Protection bypass header; sent to the staging origin only ({@link isStagingRequest}). */
-export const BYPASS_HEADER = "x-vercel-protection-bypass";
-/** Asks Vercel to set its bypass cookie, so a redirect into staging from another origin (Supabase's verify link) passes too. */
-export const SET_BYPASS_COOKIE_HEADER = "x-vercel-set-bypass-cookie";
 /** Agents may only touch Vercel projects with this prefix (the staging fence, `NORTH_FENCE_VERCEL_PREFIX`); a preview's host starts with the project name. */
 export const FENCE_PREFIX = "e2e-";
 /** The onboarding task types the journey requires `done`, each with an artifact that opens. */
@@ -113,15 +109,6 @@ export function stagingEnvVerdict(env: Env): StagingEnvVerdict {
   const mailDomain = valueOf(env, "E2E_MAIL_DOMAIN").toLowerCase();
   if (!HOSTNAME.test(mailDomain)) return { kind: "fail", message: "E2E_MAIL_DOMAIN must be a domain such as staging.<domain>" };
   return { kind: "ok", env: { baseUrl: withoutTrailingSlash(baseUrl), mailDomain, supabaseUrl: withoutTrailingSlash(supabaseUrl) } };
-}
-
-/** True when `url` is on the staging web's origin (scheme, host and port): the only requests that may carry {@link BYPASS_HEADER}. */
-export function isStagingRequest(url: string, baseUrl: string): boolean {
-  try {
-    return new URL(url).origin === new URL(baseUrl).origin;
-  } catch {
-    return false;
-  }
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;

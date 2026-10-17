@@ -2,15 +2,19 @@ import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, request, test } from "@playwright/test";
 import { statusOutside } from "./helpers";
-import { BYPASS_HEADER } from "./staging-env";
+import { BYPASS_HEADER } from "./bypass-cookie";
 
 /**
  * TST-5: a self-check of the live journey's harness, runnable without
  * staging (no browser, a local server only). Playwright copies every `use`
- * option a new request context does not name into it, so a bypass header in
- * `use` would reach the agent-built `e2e-` preview through `statusOutside`.
- * Here `use` carries a canary header: a plain context sends it (the runner
- * does copy options) and the preview check's context does not.
+ * option a new request context does not name into it (Playwright 1.64.1
+ * `lib/index.js` `runBeforeCreateRequestContext`), so a header in `use` would
+ * reach the agent-built `e2e-` preview through `statusOutside`. Here `use`
+ * carries a canary header: a plain context sends it (the runner does copy
+ * options) and the preview check's context does not. This asserts the request
+ * context only; that the browser never holds the secret is asserted on the
+ * resolved config (`staging-config.test.ts`: no header, only the primed
+ * cookie's storage state).
  */
 const CANARY = "canary-not-a-secret";
 

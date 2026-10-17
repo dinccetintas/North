@@ -8,13 +8,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assertWithin,
-  BYPASS_HEADER,
   DRY_RUN_REASON,
   e2eAddress,
   evidenceDate,
   evidenceDir,
   isFencedPreview,
-  isStagingRequest,
   JOURNEY_STEPS,
   JOURNEY_TIMEOUT_MS,
   missingStagingEnv,
@@ -102,31 +100,6 @@ describe("TST-3 stagingEnvVerdict: skip without staging, fail on a half-configur
       env: { baseUrl: "https://staging.north.example", mailDomain: "staging.north.example", supabaseUrl: "https://stagingref.supabase.co" },
     });
     expect(JSON.stringify(verdict)).not.toContain(BYPASS);
-  });
-});
-
-describe("TST-5 isStagingRequest: the bypass header goes to the staging origin only", () => {
-  const BASE = "https://staging.north.example";
-
-  it("TST-5 is true for any path and query on the staging origin", () => {
-    expect(isStagingRequest("https://staging.north.example/login", BASE)).toBe(true);
-    expect(isStagingRequest("https://staging.north.example/c/x/artifacts/1?y=2", `${BASE}/`)).toBe(true);
-    expect(BYPASS_HEADER).toBe("x-vercel-protection-bypass");
-  });
-
-  it("TST-5 is false for Supabase, a sub- or look-alike domain, another scheme or port, and garbage", () => {
-    for (const url of [
-      "https://stagingref.supabase.co/auth/v1/verify?token=x",
-      "https://evil.staging.north.example/",
-      "https://staging.north.example.evil.com/",
-      "http://staging.north.example/",
-      "https://staging.north.example:8443/",
-      "https://o1.ingest.sentry.io/api/1/envelope/",
-      "not a url",
-    ]) {
-      expect(isStagingRequest(url, BASE), url).toBe(false);
-    }
-    expect(isStagingRequest("https://staging.north.example/", "not a url")).toBe(false);
   });
 });
 

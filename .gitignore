@@ -27,6 +27,8 @@ coverage/
 playwright-report/
 playwright-report-prod/
 playwright-report-staging/
+# the staging journey's primed Vercel bypass cookie (also covered by test-results/; removed by the global teardown)
+apps/web/test-results/staging-storage-state.json
 test-results/
 blob-report/
 

@@ -6,7 +6,6 @@ import {
   openOnStaging,
   pollReload,
   requireStagingEnv,
-  scopeBypassToStaging,
   signInLive,
   stagingEnv,
   statusOutside,
@@ -35,8 +34,10 @@ import { describeRows, e2eAddress, evidenceDate, isFencedPreview, REQUIRED_DONE,
  * (`pnpm e2e:live`, `--grep @live`) answers it in the UI and fails when a
  * planned campaign never opens its card. Without staging (`E2E_BASE_URL`
  * unset) every journey is skipped with the reason; costs are read afterwards
- * by `pnpm evidence:costs`, never through the UI. The Vercel bypass header
- * goes to the staging origin only (`scopeBypassToStaging`, below).
+ * by `pnpm evidence:costs`, never through the UI. Vercel's protection is
+ * passed by the `_vercel_jwt` cookie the global setup primed outside the
+ * browser (both projects start from that storage state); the bypass secret
+ * never reaches the browser.
  */
 
 const KILL_SWITCH_MS = 5_000;
@@ -203,11 +204,6 @@ async function runJourney(page: Page, testInfo: TestInfo, variant: Variant): Pro
     throw error;
   }
 }
-
-/** Both variants: the bypass header on the staging origin only (never a context option, never to Supabase, Sentry or a preview). */
-test.beforeEach(async ({ context }) => {
-  await scopeBypassToStaging(context);
-});
 
 test.describe("live journey (nightly)", () => {
   requireStagingEnv();
