@@ -11,13 +11,14 @@ name: acceptance
 # Environments): the job starts only when the founder approves, and the environment holds the same secrets and
 # variables as `staging` (environment secrets are not shared between environments). The repository setting
 # Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests" must be on.
-# Start it from the default branch: the pull request goes to the default branch and holds the commits of the branch
-# it was started on. A pull request opened with the workflow token does not start the `ci` workflow; the evidence PR
-# only adds files under docs/evidence/.
+# Start it from the default branch (the `branch` job refuses anything else before the founder is asked): the pull
+# request goes to the default branch. It deploys that branch to staging. A pull request opened with the workflow
+# token does not start the `ci` workflow; the evidence PR only adds files under docs/evidence/. Until
+# `vars.STAGING_WEB_URL` is set in `acceptance`, the first step prints a notice and every later step is skipped.
 #
 # Rules: every secret reaches a step through `env:`, never inside a `run:` text; no `set -x`; the evidence guard
-# must find neither the bypass secret nor the Resend key in the evidence before it is committed (a leak stops the
-# run before the pull request, and nothing reaches git history).
+# must find neither the bypass secret nor the Resend key in docs/evidence/<milestone> (everything the pull request
+# can add) before it is committed (a leak stops the run before the pull request, and nothing reaches git history).
 on:
   workflow_dispatch:
     inputs:
@@ -28,15 +29,33 @@ on:
         required: true
 
 jobs:
+  # A separate job without an environment, so a doomed run stops before the founder is asked to approve it.
+  branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Started from the default branch
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::start the acceptance from the default branch ($DEFAULT_BRANCH), not from $REF_NAME: it deploys the branch to staging and its pull request goes to the default branch"
+            exit 1
+          fi
+
   acceptance:
+    needs: branch
     runs-on: ubuntu-latest
     environment: acceptance
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: write
       pull-requests: write
-    # One staging, one run at a time: shared with nightly-staging.yml; a run in progress is never cancelled.
-    # A run waiting for the founder's approval counts towards the group: approve or reject it promptly.
+    # One staging, one run at a time: shared with nightly-staging.yml. A run in progress is never cancelled, but a
+    # newer run waiting in the group replaces an older waiting one. A run waiting for the founder's approval holds
+    # the group: approve or reject it promptly.
     concurrency:
       group: staging-journey
       cancel-in-progress: false
@@ -45,10 +64,16 @@ jobs:
         # bash with `-e -o pipefail`.
         shell: bash
     steps:
+      # create-pull-request pushes with its own `token:` input (its source configures the HTTPS credential from it and
+      # unsets a persisted one only if there is one), so the checkout keeps no credential in .git/config.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      # A missing value is named here, before anything is deployed or spent (an unset STAGING_WEB_URL would make
-      # the journey a dry run that passes without touching staging).
+      # Not provisioned (vars.STAGING_WEB_URL empty): a notice, `ready=false`, green; every step below is gated on
+      # `ready`. (A job-level `if` cannot read an environment's variables.) Provisioned (it is set) but anything
+      # else missing: the run fails here, naming the names, before anything is deployed or spent. Without this an
+      # unset STAGING_WEB_URL would make the journey a dry run that passes without touching staging.
       - name: Configuration is complete
         id: config
         env:
@@ -56,7 +81,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
           STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           STAGING_ANON_KEY: ${{ secrets.STAGING_ANON_KEY }}
@@ -68,20 +92,27 @@ jobs:
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
           E2E_MAIL_DOMAIN: ${{ vars.E2E_MAIL_DOMAIN }}
         run: |
+          if [ -z "${STAGING_WEB_URL:-}" ]; then
+            echo "::notice::staging not provisioned (vars.STAGING_WEB_URL unset); skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           missing=""
-          for name in FLY_API_TOKEN VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID SUPABASE_ACCESS_TOKEN STAGING_DB_URL STAGING_SUPABASE_URL STAGING_ANON_KEY STAGING_SERVICE_ROLE_KEY E2E_RESEND_KEY VERCEL_AUTOMATION_BYPASS_SECRET NORTH_PRODUCTION_SUPABASE_REF STAGING_WEB_URL STAGING_WORKER_URL E2E_MAIL_DOMAIN; do
+          for name in FLY_API_TOKEN VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID STAGING_DB_URL STAGING_SUPABASE_URL STAGING_ANON_KEY STAGING_SERVICE_ROLE_KEY E2E_RESEND_KEY VERCEL_AUTOMATION_BYPASS_SECRET NORTH_PRODUCTION_SUPABASE_REF STAGING_WORKER_URL E2E_MAIL_DOMAIN; do
             if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::not set in the GitHub environment 'acceptance' (names only):$missing. See docs/evidence/README.md."
+            echo "::error::STAGING_WEB_URL is set but these are not set in the GitHub environment 'acceptance' (names only):$missing. See docs/evidence/README.md."
             exit 1
           fi
           case "$STAGING_WEB_URL" in https://*) ;; *) echo "::error::STAGING_WEB_URL must be an https URL (the bypass cookie is primed for https only)"; exit 1 ;; esac
           case "$E2E_MAIL_DOMAIN" in staging.*) ;; *) echo "::error::E2E_MAIL_DOMAIN must be staging.<domain> (the purge matches only that host)"; exit 1 ;; esac
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       # The milestone becomes a directory and a branch name: M<n> only, checked here and used from the output.
       - name: Resolve the milestone and the day
         id: plan
+        if: ${{ steps.config.outputs.ready == 'true' }}
         env:
           INPUT_MILESTONE: ${{ inputs.milestone }}
         run: |
@@ -92,27 +123,37 @@ jobs:
           { echo "milestone=$INPUT_MILESTONE"; echo "day=$(date -u +%F)"; } >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
+        if: ${{ steps.config.outputs.ready == 'true' }}
         with:
           version: 10.32.1
       - uses: actions/setup-node@v4
+        if: ${{ steps.config.outputs.ready == 'true' }}
         with:
           node-version: 24
           cache: pnpm
       - name: Install
         id: install
+        if: ${{ steps.config.outputs.ready == 'true' }}
         run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @north/web exec playwright install --with-deps chromium
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Install the Playwright browser
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      # Pinned to a commit: this action runs next to FLY_API_TOKEN. The tags 1.6 and v1 and the branch master all pointed
+      # at this commit on 2026-10-17 (git ls-remote https://github.com/superfly/flyctl-actions.git); setup-flyctl/action.yml
+      # exists at it. Bump by looking up the newest tag and replacing the SHA in both workflows.
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # tag 1.6
+        if: ${{ steps.config.outputs.ready == 'true' }}
 
       # Database first: a failed migration stops the run with the old web and worker still matching the old schema.
       # STAGING_DB_URL is the full, percent-encoded Postgres URI of north-staging (the Supavisor session-pooler URI:
-      # runners have no IPv6, the direct host is IPv6-only on the free plan).
+      # runners have no IPv6, the direct host is IPv6-only on the free plan). `db push --db-url` talks to the
+      # database only, so it needs no Supabase access token.
       - name: Apply the migrations (supabase db push)
         id: migrate
+        if: ${{ steps.config.outputs.ready == 'true' }}
         timeout-minutes: 10
         working-directory: packages/db
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
         run: npx supabase db push --db-url "$STAGING_DB_URL" --yes
 
@@ -120,7 +161,8 @@ jobs:
       # `vercel link`; the project's Root Directory is apps/web. stdout is the deployment URL only.
       - name: Deploy the web (Vercel staging environment)
         id: vercel
-        timeout-minutes: 20
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 15
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -137,18 +179,22 @@ jobs:
       # The production profile and a $10 cap for this run (staged: the deploy below applies both in one restart).
       - name: Stage the production profile and the $10 cap
         id: fly_profile
+        if: ${{ steps.config.outputs.ready == 'true' }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl secrets set NORTH_MODEL_PROFILE=production NORTH_DAILY_CAP_USD=10 --config apps/worker/fly.staging.toml --stage
       - name: Deploy the worker (Fly, remote build)
         id: fly_deploy
-        timeout-minutes: 25
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 20
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
 
       # auto_stop_machines: the next request waits for the boot.
       - name: Wait for the worker's health line
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 5
         env:
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
         run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 20 "$STAGING_WORKER_URL/health" > /dev/null
@@ -157,6 +203,8 @@ jobs:
       # NORTH_USAGE_READ_KEY is optional: without it `usage-ratios` is a skip, not a failure.
       - name: Staging check (read-only)
         id: check
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 10
         env:
           STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
@@ -174,7 +222,8 @@ jobs:
       # guard, keeping Playwright's exit code. The journey writes to docs/evidence/M7/acceptance/<date>/ (Task 20).
       - name: Live acceptance journey on staging
         id: journey
-        timeout-minutes: 75
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 65
         env:
           E2E_BASE_URL: ${{ vars.STAGING_WEB_URL }}
           E2E_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
@@ -187,12 +236,15 @@ jobs:
         run: pnpm e2e:live
 
       # Assembles docs/evidence/<milestone>/acceptance/<date>/, also after a failed journey (for the artifact; the
-      # pull request needs every step green). The journey's own folder is fixed at M7, so for another milestone the
-      # files move: the copy is removed unless git tracks something there. run.json per viewport comes from
-      # agent_runs through the service role, never from the UI.
+      # pull request needs the journey, this step and the guard green). The journey's own folder is fixed at M7, so
+      # for another milestone the files move: the copy is removed unless git tracks something there. run.json per
+      # viewport comes from agent_runs through the service role, never from the UI. It runs before the reset because
+      # run.json records the worker's profile from its /health line: after the reset it would read smoke. The step
+      # timeout keeps a hang here from delaying the reset.
       - name: Assemble the evidence folder
         id: evidence
-        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.journey.outcome != 'skipped' }}
+        timeout-minutes: 10
         env:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
@@ -224,19 +276,31 @@ jobs:
           printf '%s\n' '{ "status": "pending", "note": "filled by Task 24" }' > "$dest/judges.json"
           exit "$status"
 
-      # The gate of the artifact and of the pull request: nothing that holds a secret's value is uploaded or committed.
+      # Whatever happened since the profile was staged: back to smoke and $1. Build-free: no `--stage`, so this is one
+      # rolling restart of the current image with the two secrets, not a remote rebuild. It runs as soon as the
+      # journey and its evidence are done, before the slower steps below.
+      - name: Reset the worker to smoke and $1
+        id: reset
+        if: ${{ always() && steps.config.outputs.ready == 'true' && steps.fly_profile.outcome != 'skipped' }}
+        timeout-minutes: 10
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl secrets set NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=1 --config apps/worker/fly.staging.toml
+
+      # The gate of the artifact and of the pull request. It scans the whole docs/evidence/<milestone> folder, which is
+      # everything the pull request's add-paths can commit: nothing that holds a secret's value is uploaded or committed.
       - name: Evidence guard
         id: guard
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' }}
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           E2E_RESEND_KEY: ${{ secrets.E2E_RESEND_KEY }}
-          EVIDENCE_DIR: docs/evidence/${{ steps.plan.outputs.milestone }}/acceptance/${{ steps.plan.outputs.day }}
+          EVIDENCE_DIR: docs/evidence/${{ steps.plan.outputs.milestone }}
         run: bash scripts/evidence-guard.sh "$EVIDENCE_DIR" staging-check.json
 
       - name: Upload the evidence (7 days)
         id: upload
-        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.guard.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: acceptance-evidence
@@ -247,9 +311,11 @@ jobs:
             staging-check.json
             docs/evidence/${{ steps.plan.outputs.milestone }}/acceptance/${{ steps.plan.outputs.day }}
 
-      # Only when every step above is green. The pull request adds the milestone's evidence and nothing else.
+      # Needs the journey, the assembled folder and the guard green; a failed reset or upload does not lose the evidence.
+      # The pull request adds the milestone's evidence and nothing else.
       - name: Open the evidence pull request
         id: pr
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.journey.outcome == 'success' && steps.evidence.outcome == 'success' && steps.guard.outcome == 'success' }}
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ github.token }}
@@ -269,32 +335,24 @@ jobs:
 
             Adds `docs/evidence/${{ steps.plan.outputs.milestone }}/acceptance/${{ steps.plan.outputs.day }}/`: a screenshot per step and viewport, `journey-<project>.json`, `<project>/run.json` (cost per task), `staging-check.json` and `judges.json` (a placeholder until Task 24 fills it).
 
-            The evidence guard found neither the bypass secret nor the Resend key in these files. Look at the screenshots before merging.
+            The evidence guard found neither the bypass secret nor the Resend key in `docs/evidence/${{ steps.plan.outputs.milestone }}`. Look at the screenshots before merging.
+
+            This pull request was opened with the workflow token, so the `ci` workflow did not start: close and reopen it to run `ci`, or merge it as an administrator.
 
       - name: Link the pull request in the summary
-        if: ${{ steps.pr.outputs.pull-request-url != '' }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.pr.outputs.pull-request-url != '' }}
         env:
           PR_URL: ${{ steps.pr.outputs.pull-request-url }}
         run: |
           echo "Evidence pull request: $PR_URL" >> "$GITHUB_STEP_SUMMARY"
-
-      # Whatever happened since the profile was staged: back to smoke and $1.
-      - name: Reset the worker to smoke and $1
-        id: reset
-        if: ${{ always() && steps.fly_profile.outcome != 'skipped' }}
-        timeout-minutes: 25
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: |
-          flyctl secrets set NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=1 --config apps/worker/fly.staging.toml --stage
-          flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
 
       # RET-1: every e2e- user of the run goes through the one delete path. --older-than-minutes 0: nothing else runs
       # now (the concurrency group). The script refuses unless NORTH_ENV is staging, E2E_MAIL_DOMAIN is
       # staging.<domain> and the Supabase host is not the production project's.
       - name: Purge the e2e users
         id: purge
-        if: ${{ always() && steps.install.outcome == 'success' }}
+        if: ${{ always() && steps.config.outputs.ready == 'true' && steps.install.outcome == 'success' }}
+        timeout-minutes: 10
         env:
           NORTH_ENV: staging
           NORTH_PRODUCTION_SUPABASE_REF: ${{ secrets.NORTH_PRODUCTION_SUPABASE_REF }}

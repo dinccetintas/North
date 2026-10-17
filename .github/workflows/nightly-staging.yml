@@ -1,14 +1,18 @@
 name: nightly-staging
 
-# TST-3 (M7 Task 21): the nightly real journey on staging. It deploys the default branch to the staging web (Vercel
-# `staging` environment), worker (Fly `north-worker-staging`) and database (Supabase `north-staging`), checks the
-# deployment read-only, runs the live founder journey (`pnpm e2e:staging`: real Claude on the `smoke` profile, a
-# fresh `e2e-` user, a real magic link through Resend), reads the cost per company and uploads the evidence.
-# Red means a GitHub issue `nightly staging failed <date>`. docs/evidence/README.md lists the secrets and variables;
+# TST-3 (M7 Task 21): the nightly real journey on staging. It deploys the checked-out branch to the staging web
+# (Vercel `staging` environment), worker (Fly `north-worker-staging`) and database (Supabase `north-staging`): a
+# schedule always runs the default branch, a manual dispatch deploys the branch it was started on (so a dispatch
+# from another branch puts that branch's code on staging). It checks the deployment read-only, runs the live
+# founder journey (`pnpm e2e:staging`: real Claude on the `smoke` profile, a fresh `e2e-` user, a real magic link
+# through Resend), reads the cost per company and uploads the evidence. Red means a GitHub issue
+# `nightly staging failed <date>`. docs/evidence/README.md lists the secrets and variables;
 # docs/runbooks/staging.md is the manual form of every command here.
 #
 # Founder-gated: nothing here has run. It needs the GitHub environment `staging` (secrets and variables below) and
-# the staging accounts of docs/runbooks/staging.md; the first run is `workflow_dispatch` with profile `smoke`.
+# the staging accounts of docs/runbooks/staging.md. Until `vars.STAGING_WEB_URL` is set the first step prints a
+# notice and every later step is skipped (green, no issue); with it set and any other name missing the run fails
+# loudly. The "Run workflow" button exists only once this file is on the default branch.
 #
 # Rules: every secret reaches a step through `env:`, never inside a `run:` text; no `set -x`; GitHub masks the values
 # in the log; `scripts/evidence-guard.sh` looks for the bypass secret and the Resend key in everything uploaded and
@@ -31,7 +35,7 @@ jobs:
   journey:
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       issues: write
@@ -44,11 +48,16 @@ jobs:
         # bash with `-e -o pipefail`.
         shell: bash
     steps:
-      # A schedule runs the default branch; a manual dispatch runs the branch it was started on.
+      # A schedule runs the default branch; a manual dispatch runs the branch it was started on. No git credential is
+      # kept in .git/config: nothing here pushes.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      # A missing value is named here, before anything is deployed or spent. Without it an unset
-      # STAGING_WEB_URL would make the journey a dry run that passes without touching staging.
+      # Not provisioned (vars.STAGING_WEB_URL empty): a notice, `ready=false`, green; every step below is gated on
+      # `ready`. (A job-level `if` cannot read an environment's variables.) Provisioned (it is set) but anything
+      # else missing: the run fails here, naming the names, before anything is deployed or spent. Without this an
+      # unset STAGING_WEB_URL would make the journey a dry run that passes without touching staging.
       - name: Configuration is complete
         id: config
         env:
@@ -56,7 +65,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
           STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           STAGING_ANON_KEY: ${{ secrets.STAGING_ANON_KEY }}
@@ -68,19 +76,26 @@ jobs:
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
           E2E_MAIL_DOMAIN: ${{ vars.E2E_MAIL_DOMAIN }}
         run: |
+          if [ -z "${STAGING_WEB_URL:-}" ]; then
+            echo "::notice::staging not provisioned (vars.STAGING_WEB_URL unset); skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           missing=""
-          for name in FLY_API_TOKEN VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID SUPABASE_ACCESS_TOKEN STAGING_DB_URL STAGING_SUPABASE_URL STAGING_ANON_KEY STAGING_SERVICE_ROLE_KEY E2E_RESEND_KEY VERCEL_AUTOMATION_BYPASS_SECRET NORTH_PRODUCTION_SUPABASE_REF STAGING_WEB_URL STAGING_WORKER_URL E2E_MAIL_DOMAIN; do
+          for name in FLY_API_TOKEN VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID STAGING_DB_URL STAGING_SUPABASE_URL STAGING_ANON_KEY STAGING_SERVICE_ROLE_KEY E2E_RESEND_KEY VERCEL_AUTOMATION_BYPASS_SECRET NORTH_PRODUCTION_SUPABASE_REF STAGING_WORKER_URL E2E_MAIL_DOMAIN; do
             if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::not set in the GitHub environment 'staging' (names only):$missing. See docs/evidence/README.md."
+            echo "::error::STAGING_WEB_URL is set but these are not set in the GitHub environment 'staging' (names only):$missing. See docs/evidence/README.md."
             exit 1
           fi
           case "$STAGING_WEB_URL" in https://*) ;; *) echo "::error::STAGING_WEB_URL must be an https URL (the bypass cookie is primed for https only)"; exit 1 ;; esac
           case "$E2E_MAIL_DOMAIN" in staging.*) ;; *) echo "::error::E2E_MAIL_DOMAIN must be staging.<domain> (the purge matches only that host)"; exit 1 ;; esac
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Resolve the profile and the day
         id: plan
+        if: ${{ steps.config.outputs.ready == 'true' }}
         env:
           INPUT_PROFILE: ${{ inputs.profile }}
         run: |
@@ -93,27 +108,37 @@ jobs:
           { echo "profile=$profile"; echo "cap=$cap"; echo "day=$(date -u +%F)"; } >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
+        if: ${{ steps.config.outputs.ready == 'true' }}
         with:
           version: 10.32.1
       - uses: actions/setup-node@v4
+        if: ${{ steps.config.outputs.ready == 'true' }}
         with:
           node-version: 24
           cache: pnpm
       - name: Install
         id: install
+        if: ${{ steps.config.outputs.ready == 'true' }}
         run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @north/web exec playwright install --with-deps chromium
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Install the Playwright browser
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      # Pinned to a commit: this action runs next to FLY_API_TOKEN. The tags 1.6 and v1 and the branch master all pointed
+      # at this commit on 2026-10-17 (git ls-remote https://github.com/superfly/flyctl-actions.git); setup-flyctl/action.yml
+      # exists at it. Bump by looking up the newest tag and replacing the SHA in both workflows.
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # tag 1.6
+        if: ${{ steps.config.outputs.ready == 'true' }}
 
       # Database first: a failed migration stops the run with the old web and worker still matching the old schema.
       # STAGING_DB_URL is the full, percent-encoded Postgres URI of north-staging (the Supavisor session-pooler URI:
       # runners have no IPv6, the direct host is IPv6-only on the free plan), not the bare password of the brief.
+      # `db push --db-url` talks to the database only, so it needs no Supabase access token.
       - name: Apply the migrations (supabase db push)
         id: migrate
+        if: ${{ steps.config.outputs.ready == 'true' }}
         timeout-minutes: 10
         working-directory: packages/db
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
         run: npx supabase db push --db-url "$STAGING_DB_URL" --yes
 
@@ -123,7 +148,8 @@ jobs:
       # points at the environment's latest deployment.
       - name: Deploy the web (Vercel staging environment)
         id: vercel
-        timeout-minutes: 20
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 15
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -140,6 +166,7 @@ jobs:
       # A secret overrides [env] in fly.staging.toml. Staged, so the deploy below applies both in one restart.
       - name: Stage the model profile and the daily cap
         id: fly_profile
+        if: ${{ steps.config.outputs.ready == 'true' }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           PROFILE: ${{ steps.plan.outputs.profile }}
@@ -147,13 +174,16 @@ jobs:
         run: flyctl secrets set "NORTH_MODEL_PROFILE=$PROFILE" "NORTH_DAILY_CAP_USD=$CAP" --config apps/worker/fly.staging.toml --stage
       - name: Deploy the worker (Fly, remote build)
         id: fly_deploy
-        timeout-minutes: 25
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 20
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
 
       # auto_stop_machines: the next request waits for the boot.
       - name: Wait for the worker's health line
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 5
         env:
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
         run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 20 "$STAGING_WORKER_URL/health" > /dev/null
@@ -162,6 +192,8 @@ jobs:
       # NORTH_USAGE_READ_KEY is optional: without it `usage-ratios` is a skip, not a failure.
       - name: Staging check (read-only)
         id: check
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 10
         env:
           STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
           STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
@@ -180,7 +212,8 @@ jobs:
       # docs/evidence/M7/acceptance/<date>/ (Task 20); the next step copies them under nightly/.
       - name: Live journey on staging
         id: journey
-        timeout-minutes: 75
+        if: ${{ steps.config.outputs.ready == 'true' }}
+        timeout-minutes: 65
         env:
           E2E_BASE_URL: ${{ vars.STAGING_WEB_URL }}
           E2E_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
@@ -193,10 +226,13 @@ jobs:
         run: pnpm e2e:staging
 
       # Also after a failed journey: the notes name the company, costs are read from agent_runs, never from the UI.
-      # One run.json per viewport (each viewport signs up its own company).
+      # One run.json per viewport (each viewport signs up its own company). This runs before the reset because
+      # run.json records the worker's profile from its /health line: after the reset it would read smoke. The step
+      # timeout keeps a hang here from delaying the reset.
       - name: Cost evidence per company
         id: costs
-        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.journey.outcome != 'skipped' }}
+        timeout-minutes: 10
         env:
           SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SERVICE_ROLE_KEY }}
@@ -222,10 +258,21 @@ jobs:
           done
           exit "$status"
 
+      # After a `staging` profile run only (a smoke run already ends on smoke / $1). Build-free: no `--stage`, so this
+      # is one rolling restart of the current image with the two secrets, not a remote rebuild. It runs as soon as the
+      # journey and its costs are done, whatever happened since the profile was staged, and before the slower steps below.
+      - name: Reset the worker to smoke and $1
+        id: reset
+        if: ${{ always() && steps.config.outputs.ready == 'true' && steps.plan.outputs.profile == 'staging' && steps.fly_profile.outcome != 'skipped' }}
+        timeout-minutes: 10
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl secrets set NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=1 --config apps/worker/fly.staging.toml
+
       # The gate of the upload: the report, the results, the log and the evidence hold neither the bypass secret nor the Resend key.
       - name: Evidence guard
         id: guard
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' }}
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           E2E_RESEND_KEY: ${{ secrets.E2E_RESEND_KEY }}
@@ -233,7 +280,7 @@ jobs:
 
       - name: Upload the evidence (7 days)
         id: upload
-        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.config.outputs.ready == 'true' && steps.guard.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: nightly-staging-evidence
@@ -244,24 +291,13 @@ jobs:
             staging-check.json
             docs/evidence/M7/nightly
 
-      # After a `staging` profile run only: a smoke run already ends on smoke / $1. Runs when the profile was staged,
-      # whatever happened since.
-      - name: Reset the worker to smoke and $1
-        id: reset
-        if: ${{ always() && steps.plan.outputs.profile == 'staging' && steps.fly_profile.outcome != 'skipped' }}
-        timeout-minutes: 25
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: |
-          flyctl secrets set NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=1 --config apps/worker/fly.staging.toml --stage
-          flyctl deploy --config apps/worker/fly.staging.toml --dockerfile apps/worker/Dockerfile --remote-only
-
       # RET-1: every e2e- user of the run goes through the one delete path. --older-than-minutes 0: nothing else runs
       # now (the concurrency group), so even the youngest user is this run's. The script refuses unless NORTH_ENV is
       # staging, E2E_MAIL_DOMAIN is staging.<domain> and the Supabase host is not the production project's.
       - name: Purge the e2e users
         id: purge
-        if: ${{ always() && steps.install.outcome == 'success' }}
+        if: ${{ always() && steps.config.outputs.ready == 'true' && steps.install.outcome == 'success' }}
+        timeout-minutes: 10
         env:
           NORTH_ENV: staging
           NORTH_PRODUCTION_SUPABASE_REF: ${{ secrets.NORTH_PRODUCTION_SUPABASE_REF }}
@@ -271,9 +307,11 @@ jobs:
         run: pnpm -s staging:purge-e2e -- --yes --older-than-minutes 0
 
       # Last, so it also reports a failed reset or purge. One issue per day: a second red run of the day comments on it.
-      # Step ids come from the `steps` context (steps without an id are not listed). Links and ids only, never a value.
+      # An unprovisioned skip (`ready` false) never fails, so it never gets here; a failed configuration check does
+      # (`ready` unset). Step ids come from the `steps` context (steps without an id are not listed). Links and ids
+      # only, never a value.
       - name: Open or update the failure issue
-        if: ${{ failure() }}
+        if: ${{ failure() && steps.config.outputs.ready != 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
