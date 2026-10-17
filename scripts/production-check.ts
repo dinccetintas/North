@@ -5,6 +5,10 @@
  * the first step of any incident.
  *
  *   web and worker health lines (mode, runtime, webhooks mounted, clock = wall)
+ *   the worker's profile, fence, gateway and env for the deployment being checked (STG-1, TST-5):
+ *     production = profile production, fence off, env production, no recording or replaying gateway;
+ *     staging = fence on, env staging, no replaying gateway; the rules live in production-check-rules.ts
+ *   the web health line reports llm "mock": the web never calls the model around the worker's gateway
  *   the public worker mounts no sandbox route: /sandbox/sites/ and /sandbox/clock are 404
  *   an anonymous select on `companies` returns zero rows
  *   both storage buckets refuse an anonymous list and are not public
@@ -16,9 +20,10 @@
  * Usage:
  *   [STRIPE_READ_KEY=<restricted read-only key>] [NORTH_USAGE_READ_KEY=<key>] \
  *   pnpm production:check -- --web https://<web> --worker https://<worker> \
- *     --supabase https://<ref>.supabase.co --anon-key <anon key> [--json] [--allow-dev-inngest]
- * Env fallbacks for the flags: NORTH_WEB_URL, NORTH_WORKER_URL,
- * NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY. The two
+ *     --supabase https://<ref>.supabase.co --anon-key <anon key> [--env production|staging] [--json] [--allow-dev-inngest]
+ * `pnpm staging:check` is the same command with `--env staging`; every check but the worker's
+ * health rules runs unchanged in both. Env fallbacks for the flags: NORTH_WEB_URL, NORTH_WORKER_URL,
+ * NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, NORTH_CHECK_ENV. The two
  * secret keys are read from the environment only, never from a flag, so they
  * stay out of shell history and `ps` (M6 review L11).
  * Exit 1 when any check fails; `skip` and `warn` do not fail.
@@ -28,6 +33,7 @@ import { parseArgs } from "node:util";
 import { BILLING_EVENT_TYPES, USAGE_ALERT_RATIO, usageRatio } from "@north/core";
 import { localMonth } from "@north/core/time";
 import { stripeCall } from "../packages/integrations/src/live/stripe-http";
+import { CHECK_ENVS, failedHealthRules, healthFacts, isCheckEnv, type CheckEnv } from "./production-check-rules";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export type CheckStatus = "pass" | "fail" | "skip" | "warn";
@@ -39,6 +45,8 @@ export interface CheckResult {
 }
 
 export interface CheckConfig {
+  /** STG-1: which deployment the worker's health rules are those of; every other check is the same in both. */
+  readonly env: CheckEnv;
   readonly webUrl: string;
   readonly workerUrl: string;
   readonly supabaseUrl: string;
@@ -86,13 +94,21 @@ const anonHeaders = (key: string): Record<string, string> => ({ apikey: key, aut
 
 /* ---------- the checks ---------- */
 
+/** The web's line: `{ ok, app, time, llm }`. `llm` must read "mock" in both envs: the web never calls the model around the worker's gateway (STG-1, TST-5). */
 export async function webHealth(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
   const r = await fetchJson(f, `${c.webUrl}/api/health`);
-  const ok = r.status === 200 && isObj(r.json) && r.json.ok === true && (str(r.json, "app") ?? "north-web") === "north-web";
-  return result("web-health", ok ? "pass" : "fail", ok ? "GET /api/health ok" : `GET /api/health → ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+  const body = isObj(r.json) ? r.json : null;
+  if (r.status !== 200 || body === null || body.ok !== true || (str(body, "app") ?? "north-web") !== "north-web") return result("web-health", "fail", `GET /api/health → ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+  if (body.llm === undefined) return result("web-health", "fail", "GET /api/health has no llm field: the web is older than this check");
+  if (body.llm !== "mock") return result("web-health", "fail", `GET /api/health: llm is ${JSON.stringify(body.llm)?.slice(0, 80)}: the web must not call the model (unset AGENT_RUNTIME and ANTHROPIC_API_KEY on the web host)`);
+  return result("web-health", "pass", "GET /api/health ok, llm mock");
 }
 
-/** The worker's line: `{ ok, mode, runtime, webhooks: { sentry, stripe }, clockIsWall }`; the Stripe webhook must be mounted and the clock must be the wall's. */
+/**
+ * The worker's line: `{ ok, mode, runtime, webhooks: { sentry, stripe }, clockIsWall, profile, fence, gateway, env, ... }`.
+ * The Stripe webhook must be mounted, the clock must be the wall's, and the env's rules hold (STG-1, TST-5);
+ * every problem is named at once.
+ */
 export async function workerHealth(c: CheckConfig, f: FetchLike): Promise<CheckResult> {
   const r = await fetchJson(f, `${c.workerUrl}/health`);
   if (r.status !== 200 || !isObj(r.json) || r.json.ok !== true) return result("worker-health", "fail", `GET /health → ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
@@ -101,10 +117,13 @@ export async function workerHealth(c: CheckConfig, f: FetchLike): Promise<CheckR
   const clock = str(h, "clock");
   const time = str(h, "time");
   const clockIsWall = typeof h.clockIsWall === "boolean" ? h.clockIsWall : clock !== null && time !== null && Math.abs(Date.parse(clock) - Date.parse(time)) <= CLOCK_SKEW_MS;
-  const detail = `mode ${str(h, "mode") ?? "?"}, runtime ${str(h, "runtime") ?? "?"}, webhooks stripe ${on(webhooks.stripe) ? "on" : "off"}, sentry ${on(webhooks.sentry) ? "on" : "off"}, clock ${clockIsWall ? "= wall" : "simulated"}`;
-  if (!clockIsWall) return result("worker-health", "fail", `${detail}: the worker clock is not the wall clock (NORTH_CLOCK_START or /sandbox/clock in production)`);
-  if (!on(webhooks.stripe)) return result("worker-health", "fail", `${detail}: the Stripe webhook is not mounted (set STRIPE_WEBHOOK_SECRET on Fly)`);
-  return result("worker-health", "pass", detail);
+  const detail = `mode ${str(h, "mode") ?? "?"}, runtime ${str(h, "runtime") ?? "?"}, webhooks stripe ${on(webhooks.stripe) ? "on" : "off"}, sentry ${on(webhooks.sentry) ? "on" : "off"}, clock ${clockIsWall ? "= wall" : "simulated"}, ${healthFacts(h)}`;
+  const problems = [
+    clockIsWall ? null : "the worker clock is not the wall clock (NORTH_CLOCK_START or /sandbox/clock in production)",
+    on(webhooks.stripe) ? null : "the Stripe webhook is not mounted (set STRIPE_WEBHOOK_SECRET on Fly)",
+    ...failedHealthRules(c.env, h),
+  ].filter((problem): problem is string => problem !== null);
+  return problems.length === 0 ? result("worker-health", "pass", detail) : result("worker-health", "fail", `${detail}: ${problems.join("; ")}`);
 }
 
 /** Paths a sandbox worker on loopback serves; the public worker (bound to 0.0.0.0) must not have them at all (ADR 0015, M6 review L5). */
@@ -255,18 +274,29 @@ function refuseKeyFlags(argv: readonly string[]): void {
   }
 }
 
-/** Flags first, then the environment for the URLs and the anon key; the secret keys from the environment only, never printed. */
+/** `--env` over `NORTH_CHECK_ENV` over production; a blank variable is unset, anything but production or staging is a usage error. */
+function envFrom(flags: readonly string[] | undefined, env: NodeJS.ProcessEnv): CheckEnv {
+  if (flags !== undefined && flags.length > 1) throw new Error(`--env was given ${flags.length} times: pass it once (${CHECK_ENVS.join(" or ")})`);
+  const flag = flags?.[0];
+  const raw = (flag ?? env.NORTH_CHECK_ENV ?? "").trim();
+  if (flag === undefined && raw === "") return "production";
+  if (!isCheckEnv(raw)) throw new Error(`${flag === undefined ? "NORTH_CHECK_ENV" : "--env"} ${JSON.stringify(raw.slice(0, 40))} is not known: use ${CHECK_ENVS.join(" or ")}`);
+  return raw;
+}
+
+/** Flags first, then the environment for the URLs, the anon key and the check env; the secret keys from the environment only, never printed. */
 export function configFrom(argv: readonly string[], env: NodeJS.ProcessEnv, now = new Date()): CheckConfig & { readonly json: boolean } {
   refuseKeyFlags(argv);
   const { values } = parseArgs({
     args: [...argv],
-    options: { web: { type: "string" }, worker: { type: "string" }, supabase: { type: "string" }, "anon-key": { type: "string" }, json: { type: "boolean" }, "allow-dev-inngest": { type: "boolean" } },
+    options: { web: { type: "string" }, worker: { type: "string" }, supabase: { type: "string" }, "anon-key": { type: "string" }, env: { type: "string", multiple: true }, json: { type: "boolean" }, "allow-dev-inngest": { type: "boolean" } },
     strict: true,
     allowPositionals: false,
   });
   const anonKey = (values["anon-key"] ?? env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
   if (anonKey.length < 10) throw new Error("--anon-key (or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) is required: the public anon key");
   return Object.freeze({
+    env: envFrom(values.env, env),
     webUrl: trimUrl(values.web ?? env.NORTH_WEB_URL, "--web"),
     workerUrl: trimUrl(values.worker ?? env.NORTH_WORKER_URL, "--worker"),
     supabaseUrl: trimUrl(values.supabase ?? env.NEXT_PUBLIC_SUPABASE_URL, "--supabase"),
@@ -279,11 +309,12 @@ export function configFrom(argv: readonly string[], env: NodeJS.ProcessEnv, now 
   });
 }
 
+/** The printed report (or, with `json`, the evidence file's JSON): the env checked, every result and the verdict; `ok` unless a check failed. */
 export function report(c: CheckConfig, results: readonly CheckResult[], json: boolean): string {
   const ok = results.every((r) => r.status !== "fail");
-  if (json) return JSON.stringify({ ok, checkedAt: c.now.toISOString(), web: c.webUrl, worker: c.workerUrl, results }, null, 2);
+  if (json) return JSON.stringify({ ok, env: c.env, checkedAt: c.now.toISOString(), web: c.webUrl, worker: c.workerUrl, results }, null, 2);
   const lines = results.map((r) => `${r.status.toUpperCase().padEnd(5)} ${r.id.padEnd(19)} ${r.detail}`);
-  return [...lines, "", ok ? "production check: green" : `production check: ${results.filter((r) => r.status === "fail").length} failed`].join("\n");
+  return [...lines, "", ok ? `${c.env} check: green` : `${c.env} check: ${results.filter((r) => r.status === "fail").length} failed`].join("\n");
 }
 
 async function main(): Promise<void> {
