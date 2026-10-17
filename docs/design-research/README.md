@@ -14,6 +14,7 @@ who wants the long form.
 | A reviewer of a design PR | `07-verification.md` → `02-design-contract.md` | Fill the critic table; a verdict without a selector or crop is invalid |
 | Someone deciding product/UX questions | `01-thesis.md` → `03-journey.md` | Check the decision against the persona table and the approval layer |
 | Someone writing copy or prompts | `06-voice.md` | Grep for banned words before merging |
+| Someone designing in Claude Design | `10-claude-design-handoff.md`, then only `claude-design/` | Import the kit, upload the brief and sample data, run the prompts in order, review after each |
 
 ## The one-paragraph version
 
@@ -73,3 +74,6 @@ Three reviewers read the first draft; each answered the other two in a rebuttal 
 - `08-skills-playbook.md` — how to use the Emil, frontend-design and impeccable skills, what
   each gets wrong for North, and the prompt header the designing agent should start from.
 - `09-sources.md` — annotated bibliography.
+- `10-claude-design-handoff.md` — how to take these documents into Claude Design and back;
+  the package it needs is in `claude-design/` (design-system kit, brief, sample data, prompts,
+  review prompt).

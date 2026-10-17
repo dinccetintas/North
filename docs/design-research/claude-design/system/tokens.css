@@ -1,0 +1,74 @@
+/* North design tokens — the values in docs/design-research/02-design-contract.md.
+   One text family (Source Serif 4, optical sizes, tabular figures); mono only for code and ids. */
+:root {
+  --font-text: "Source Serif 4", Georgia, serif;
+  --font-code: "IBM Plex Mono", "Courier New", monospace;
+
+  --paper: oklch(99% 0.004 80);
+  --ink: oklch(15% 0.01 260);
+  --text-2: oklch(42% 0.012 260);
+  --text-3: oklch(58% 0.01 260);
+  --rule: oklch(86% 0.006 260);
+  --surface: oklch(96.5% 0.005 80);
+  --needle: oklch(52% 0.2 27);      /* stopped, failed. Nothing else. */
+  --verified: oklch(48% 0.11 150);  /* verified evidence, "live". */
+
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
+  --r-surface: 0; --r-control: 2px; --r-sheet: 6px;
+  --shadow-sheet: 0 1px 2px oklch(15% 0.01 260 / 0.08), 0 8px 24px oklch(15% 0.01 260 / 0.12);
+
+  --dur-fast: 120ms; --dur-base: 200ms; --dur-slow: 280ms; --dur-reveal: 600ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: oklch(17% 0.008 260);
+    --ink: oklch(94% 0.006 80);
+    --text-2: oklch(72% 0.01 80);
+    --text-3: oklch(58% 0.01 80);
+    --rule: oklch(30% 0.008 260);
+    --surface: oklch(21% 0.008 260);
+    --needle: oklch(68% 0.18 27);
+    --verified: oklch(72% 0.12 150);
+  }
+}
+html { background: var(--paper); color: var(--ink); font-family: var(--font-text); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+body { margin: 0; padding: var(--s-5); font-size: 17px; line-height: 1.5; max-width: 66ch; }
+
+/* Type roles */
+.display { font-size: 32px; line-height: 1.1; font-variation-settings: "opsz" 60; text-wrap: balance; }
+.title   { font-size: 22px; line-height: 1.2; font-variation-settings: "opsz" 36; text-wrap: balance; }
+.body    { font-size: 17px; line-height: 1.5; text-wrap: pretty; }
+.small   { font-size: 15px; line-height: 1.45; }
+.meta    { font-size: 13px; line-height: 1.4; color: var(--text-3); }
+.strong  { font-weight: 600; }
+.code    { font-family: var(--font-code); font-size: 14px; }
+
+/* The control */
+.control { font: inherit; font-size: 17px; color: var(--ink); background: transparent; border: 1px solid var(--ink); border-radius: var(--r-control); padding: 10px 16px; min-height: 44px; cursor: pointer; transition: transform var(--dur-fast) var(--ease-out); touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.control:active, .control[data-pressed] { transform: scale(0.97); }
+.control:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.control.primary { background: var(--ink); color: var(--paper); font-weight: 600; }
+.control.stopped { border-color: var(--needle); color: var(--needle); }
+.control.hold { position: relative; overflow: hidden; }
+.control.hold::before { content: ""; position: absolute; inset: 0; width: var(--hold, 0%); background: oklch(15% 0.01 260 / 0.12); }
+.control.primary.hold::before { background: oklch(99% 0.004 80 / 0.28); }
+
+/* Rows: a rule under each, numbers right-aligned */
+.row { display: grid; grid-template-columns: 1fr auto auto; gap: var(--s-4); align-items: baseline; padding: var(--s-3) 0; border-bottom: 1px solid var(--rule); }
+.row .num { text-align: right; }
+.receipt { color: var(--text-2); }
+
+/* The card: a slip, rules above and below, no box */
+.card { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); padding: var(--s-5) 0; }
+.card .options { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-5); }
+
+/* State words */
+.state { font-size: 13px; color: var(--text-2); }
+.state.waiting { color: var(--ink); font-weight: 600; }
+.state.failed, .state.stopped { color: var(--needle); }
+.state.verified { color: var(--verified); }
+
+@media (prefers-reduced-motion: reduce) { .control { transition: none; } }
