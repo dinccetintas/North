@@ -9,15 +9,17 @@
  * problem is listed at once, and each one names what it found and what to set.
  */
 import { z } from "zod";
-import { SMOKE_RUNTIMES, type SmokePlan, type SmokeRuntime } from "./smoke-llm-helpers";
+import { SMOKE_GATEWAYS, SMOKE_RUNTIMES, type SmokeGateway, type SmokePlan, type SmokeRuntime } from "./smoke-llm-helpers";
 
-/** What the gate decided: the runtime under test (the flag, else the worker's), the worker's profile, the gateway's day spend so far (null without a gateway), and every problem. */
+/** What the gate decided: the runtime under test (the flag, else the worker's), the worker's profile, the gateway's day spend so far and mode (null without a gateway), and every problem. */
 export interface HealthVerdict {
   readonly ok: boolean;
   readonly runtime: SmokeRuntime | null;
   readonly profile: string | null;
   /** `budget.spentUsd` at the gate, before anything is created: the run's spend is measured from here. */
   readonly spentUsd: number | null;
+  /** The gateway's mode from `/health` (`live`, `record` or `replay`); null when the worker reports `off`. */
+  readonly gateway: SmokeGateway | null;
   readonly problems: readonly string[];
 }
 
@@ -33,10 +35,13 @@ const HealthSchema = z.object({
 type Health = z.infer<typeof HealthSchema>;
 
 const isRuntime = (value: string): value is SmokeRuntime => (SMOKE_RUNTIMES as readonly string[]).includes(value);
+const isGateway = (value: string): value is SmokeGateway => (SMOKE_GATEWAYS as readonly string[]).includes(value);
+/** The gateway's mode from the health line; `off` (no gateway) and anything else is null. */
+const gatewayModeOf = (value: string): SmokeGateway | null => (isGateway(value) ? value : null);
 const isWorkerLine = (body: unknown): boolean => body !== null && typeof body === "object" && !Array.isArray(body) && (body as Record<string, unknown>).app === "north-worker";
 
-const verdict = (runtime: SmokeRuntime | null, profile: string | null, spentUsd: number | null, problems: readonly string[]): HealthVerdict =>
-  Object.freeze({ ok: problems.length === 0, runtime, profile, spentUsd, problems: Object.freeze([...problems]) });
+const verdict = (runtime: SmokeRuntime | null, profile: string | null, spentUsd: number | null, gateway: SmokeGateway | null, problems: readonly string[]): HealthVerdict =>
+  Object.freeze({ ok: problems.length === 0, runtime, profile, spentUsd, gateway, problems: Object.freeze([...problems]) });
 
 function deploymentProblems(h: Health): string[] {
   return [
@@ -64,15 +69,15 @@ function budgetProblems(h: Health, maxCostUsd: number): string[] {
 
 /** Runs the gate over the worker's `/health` body for this plan's `--runtime` and cost cap. */
 export function checkHealth(body: unknown, plan: Pick<SmokePlan, "runtime" | "maxCostUsd">): HealthVerdict {
-  if (!isWorkerLine(body)) return verdict(plan.runtime, null, null, ["the body is not the worker's health line (no app \"north-worker\"): is NORTH_WORKER_URL the worker?"]);
+  if (!isWorkerLine(body)) return verdict(plan.runtime, null, null, null, ["the body is not the worker's health line (no app \"north-worker\"): is NORTH_WORKER_URL the worker?"]);
   const parsed = HealthSchema.safeParse(body);
   if (!parsed.success) {
     const fields = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? "body")))].join(", ");
-    return verdict(plan.runtime, null, null, [`the worker is older than this smoke or its health line is malformed (${fields} missing or invalid): run the worker from this commit`]);
+    return verdict(plan.runtime, null, null, null, [`the worker is older than this smoke or its health line is malformed (${fields} missing or invalid): run the worker from this commit`]);
   }
   const h = parsed.data;
   const runtime = plan.runtime ?? (isRuntime(h.runtime) ? h.runtime : null);
-  return verdict(runtime, h.profile, h.budget?.spentUsd ?? null, [...deploymentProblems(h), ...runtimeProblems(h, plan.runtime), ...budgetProblems(h, plan.maxCostUsd)]);
+  return verdict(runtime, h.profile, h.budget?.spentUsd ?? null, gatewayModeOf(h.gateway), [...deploymentProblems(h), ...runtimeProblems(h, plan.runtime), ...budgetProblems(h, plan.maxCostUsd)]);
 }
 
 const SpendSchema = z.object({ budget: BudgetSchema.nullable() });

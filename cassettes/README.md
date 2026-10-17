@@ -5,6 +5,26 @@ key, without network and without spend (TST-2). A cassette is one request and
 its response, written by the model gateway (`apps/worker/src/gateway`) and read
 back by it. They are committed.
 
+## The rule
+
+- **Synthetic companies only.** A cassette is recorded from a flow that runs on
+  a made-up company with made-up customers (`@north.test` addresses, scrubbed
+  from the request below). Never record a real founder's company, a real
+  customer or a real inbox.
+- **Request bodies are scrubbed** (`sk-ant-...` keys, bearer tokens and
+  `@north.test` addresses are replaced, see below); **responses are kept
+  verbatim**, and the gateway refuses to record a response that carries a key.
+- **Secret-scanned.** `pnpm cassette:check` reads every file here and fails on
+  a secret, a renamed file, a request that no longer hashes to its name or a
+  recording from another Agent SDK than the one pinned. It is a `pnpm validate`
+  step and a CI step (job `validate`, and job `e2e-replay` before it replays).
+- **Re-recorded by the nightly job** (M7 Task 21) when a prompt or a model
+  alias changes a key, or the Agent SDK pin moves; a stale cassette is deleted
+  and recorded again, not patched.
+- **Never edited by hand.** A hand edit breaks the key check or hides what the
+  agent really received; if `pnpm cassette:check` fails, fix the flow and
+  record again.
+
 ## Format
 
 One file per exchange, `<key>.json`, where `key` is the sha256 hex of the
@@ -13,15 +33,28 @@ request body (see below):
 ```json
 {
   "key": "<64 hex>",
-  "request":  { "method": "POST", "path": "/v1/messages", "headers": { "...": "..." }, "body": "<base64>" },
-  "response": { "status": 200, "headers": { "content-type": "application/json" }, "body": "<base64>" }
+  "request":  { "method": "POST", "path": "/v1/messages?beta=true", "headers": { "...": "..." }, "body": "<base64>" },
+  "response": { "status": 200, "headers": { "content-type": "application/json" }, "body": "<base64>" },
+  "meta":     { "sdkVersion": "0.3.301", "recordedAt": "2026-10-17T09:00:00.000Z", "requestScrubbed": false, "gatewayMode": "record" }
 }
 ```
 
 Bodies are base64 so a streamed (SSE) reply is kept byte for byte and replays
-with the same `content-type`. The request is stored for review only; matching
-uses the key alone. Files are written to a temp file and renamed, so a reader
-never sees half a recording.
+with the same `content-type`. Replay matches by the key alone; the stored
+request is for review and for `pnpm cassette:check`. Files are written to a
+temp file and renamed, so a reader never sees half a recording.
+
+### The `meta` block
+
+Written by the gateway when it records (optional in the schema, so a cassette
+recorded before the block existed still replays):
+
+| Field | Meaning |
+| --- | --- |
+| `sdkVersion` | The Agent SDK version from the request's `user-agent`: the Claude Code subprocess the SDK starts sends `claude-cli/<cli version> (external, sdk-ts, agent-sdk/<sdk version>[, client-app/..][, workload/..])`, and `agent-sdk/<sdk version>` is the field read. `null` for any other client (the single-call `@anthropic-ai/sdk` client sends `Anthropic/JS <version>`). `claude-cli/<n>` is the CLI's own version and is not used. |
+| `recordedAt` | When the exchange was recorded, ISO-8601 UTC. |
+| `requestScrubbed` | `true` when scrubbing changed the body, the path or the `anthropic-beta` header, the three parts a key is made of: the key then cannot be recomputed from the stored request. |
+| `gatewayMode` | Always `record`: only that mode writes a file. |
 
 ## The key
 
@@ -76,6 +109,60 @@ error: counted, not priced, and the day stays open. Read a new cassette before
 committing it anyway: the rules cover credentials, not everything an agent
 might echo.
 
+## The cassette check
+
+`pnpm cassette:check` (`scripts/cassette-check.ts`; `NORTH_CASSETTE_DIR` picks
+another directory, default `cassettes`) validates every `*.json` with the
+gateway's own schema (`CassetteFileSchema`) and fails when:
+
+- the file name is not its `key` (a renamed or copied cassette);
+- a body, a header or the path matches `sk-ant-[A-Za-z0-9_-]+` (other than the
+  `sk-ant-REDACTED` the scrubber writes), `Bearer <16 or more token
+  characters>`, or an address under `@north.test` other than
+  `redacted@north.test`. The finding names the kind and the place, never the
+  secret. A reply that echoes a made-up `@north.test` address therefore fails
+  the check, because responses are stored verbatim: record from a flow whose
+  replies do not repeat one;
+- `meta.sdkVersion` is not null and differs from the version pinned in
+  `packages/agents/package.json` (both are printed);
+- `meta.requestScrubbed` is `false` (or `meta` is absent) and the key
+  recomputed from the stored path, `anthropic-beta` header and body is not the
+  file name: the request was edited, or the key rules changed. For a cassette
+  with no `meta` this is only a warning, `unverifiable (pre-meta cassette)`,
+  because its scrubbing is unknown;
+- the directory holds anything but `*.json` and this README (a leftover
+  `.tmp` file, a subfolder), or cannot be read.
+
+It prints `cassette check: N files, W warnings` (plus `, F failed`), each
+problem as `FAIL|WARN <file>: <reason>` on stderr, and exits 1 on any failure.
+An empty directory passes with `cassette check: 0 files, 0 warnings`.
+
+## Replaying the end-to-end flows
+
+`pnpm e2e:replay` runs the Playwright specs (`apps/web/e2e`, `m0` to `m6`) with
+the worker on the SDK runtime and a replaying gateway:
+
+```bash
+NORTH_CASSETTE_MODE=replay AGENT_RUNTIME=claude-agent-sdk NORTH_ENV=staging NORTH_MODEL_PROFILE=smoke \
+  pnpm --filter @north/web e2e
+```
+
+Playwright starts `pnpm dev` itself when nothing answers on the web port, and
+that child inherits these variables; an already running stack keeps the
+environment it started with (`reuseExistingServer`), so start the worker with
+the same four variables first (no `ANTHROPIC_API_KEY`: replay needs none).
+
+CI job `e2e-replay` does the same: `needs: validate`, a worker `.env` with
+those four variables and no key, `pnpm cassette:check`, then `pnpm
+e2e:replay`; the Playwright report is uploaded when it fails. It runs only when
+`cassettes/*.json` exist: GitHub does not allow `hashFiles` in a job-level
+`if`, so the small job `cassettes` reads the directory and `e2e-replay` is
+skipped unless it reports a file. Until the nightly job (Task 21) has recorded
+a full set, no cassette is committed, `e2e-replay` is skipped, and the mock
+`e2e` job stays the gate. A cassette is committed with the set that covers
+every call the specs make: a miss is a `502 north_cassette_miss` naming the
+file it looked for, and fails the spec.
+
 ## Modes
 
 The worker starts the gateway when `AGENT_RUNTIME=claude-agent-sdk`
@@ -103,6 +190,7 @@ Cassettes go stale when a prompt changes (the key changes with it). To refresh:
 AGENT_RUNTIME=claude-agent-sdk NORTH_CASSETTE_MODE=record NORTH_CASSETTE_DIR=cassettes \
   NORTH_MODEL_PROFILE=smoke NORTH_DAILY_CAP_USD=0.50 ANTHROPIC_API_KEY=... pnpm dev
 # run the flow once, then review and commit the new files under cassettes/
+pnpm cassette:check
 ```
 
 Delete the stale `<key>.json` files first if you want a clean set. A recording

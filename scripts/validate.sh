@@ -14,6 +14,8 @@ step "lint";      pnpm -r lint
 # Stack-bound worker tests (apps/worker/test/purge.test.ts) skip here when the stack is not in the env; they run, required, in the integration step.
 step "unit";      REQUIRE_INTEGRATION=0 pnpm -r test
 step "unit (scripts)"; pnpm test:scripts
+# TST-2: every committed cassette is a gateway recording with no secret, a key that is its name and the pinned Agent SDK version; 0 files passes.
+step "cassette check"; pnpm cassette:check
 
 stack_reachable() {
   [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] && curl -fsS -o /dev/null "${SUPABASE_URL:-http://127.0.0.1:54321}/rest/v1/" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY"

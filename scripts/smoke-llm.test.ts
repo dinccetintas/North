@@ -151,9 +151,16 @@ describe("TST-2 database and evidence targets", () => {
   });
 
   it("a mock run never writes the proof path: its default is smoke-llm.mock.json; SMOKE_LLM_OUT wins for both", () => {
-    expect(evidencePathFor(null, "claude-agent-sdk")).toBe("docs/evidence/M7/smoke-llm.json");
-    expect(evidencePathFor(null, "mock")).toBe("docs/evidence/M7/smoke-llm.mock.json");
-    expect(evidencePathFor("/tmp/out.json", "mock")).toBe("/tmp/out.json");
+    expect(evidencePathFor(null, "claude-agent-sdk", "record")).toBe("docs/evidence/M7/smoke-llm.json");
+    expect(evidencePathFor(null, "mock", null)).toBe("docs/evidence/M7/smoke-llm.mock.json");
+    expect(evidencePathFor("/tmp/out.json", "mock", null)).toBe("/tmp/out.json");
+  });
+
+  it("a replaying gateway never writes the proof path either: tape is not real Claude. Live and record do", () => {
+    expect(evidencePathFor(null, "claude-agent-sdk", "replay")).toBe("docs/evidence/M7/smoke-llm.replay.json");
+    expect(evidencePathFor(null, "claude-agent-sdk", "live")).toBe("docs/evidence/M7/smoke-llm.json");
+    expect(evidencePathFor(null, "claude-agent-sdk", "record")).toBe("docs/evidence/M7/smoke-llm.json");
+    expect(evidencePathFor("/tmp/out.json", "claude-agent-sdk", "replay")).toBe("/tmp/out.json");
   });
 });
 
@@ -192,8 +199,14 @@ const gate = { runtime: null, maxCostUsd: 0.5 } as const;
 
 describe("TST-2 health gate", () => {
   it("a staging sandbox worker on the smoke profile with a $0.50 gateway cap passes; the runtime under test comes from /health; the gateway's spend so far is kept", () => {
-    expect(checkHealth(sdkHealth, gate)).toEqual({ ok: true, runtime: "claude-agent-sdk", profile: "smoke", spentUsd: 0.04, problems: [] });
-    expect(checkHealth(mockHealth, gate)).toEqual({ ok: true, runtime: "mock", profile: "smoke", spentUsd: null, problems: [] });
+    expect(checkHealth(sdkHealth, gate)).toEqual({ ok: true, runtime: "claude-agent-sdk", profile: "smoke", spentUsd: 0.04, gateway: "record", problems: [] });
+    expect(checkHealth(mockHealth, gate)).toEqual({ ok: true, runtime: "mock", profile: "smoke", spentUsd: null, gateway: null, problems: [] });
+  });
+
+  it("the gateway's mode comes from /health: live, record or replay; off (no gateway) or anything else is null", () => {
+    for (const mode of ["live", "record", "replay"] as const) expect(checkHealth({ ...sdkHealth, gateway: mode }, gate).gateway).toBe(mode);
+    expect(checkHealth({ ...sdkHealth, gateway: "off" }, gate).gateway).toBeNull();
+    expect(checkHealth({ ...sdkHealth, gateway: "tape" }, gate).gateway).toBeNull();
   });
 
   it("a profile that is not smoke fails, naming what it found and what to set", () => {
@@ -321,12 +334,13 @@ describe("TST-2 the gateway is the spend truth on the SDK runtime", () => {
 describe("TST-2 report", () => {
   const summary = summariseRuns([run(MARKET, "claude-haiku-5-5", 0.05, 10), run(BUILD, "claude-haiku-5-5", 0.2, 20)], tasks);
 
-  it("the JSON has exactly the evidence shape: the runtime, the ledger's total and the gateway's spend", () => {
-    const report = buildReport({ sha: "abc", profile: "smoke", runtime: "claude-agent-sdk", summary, gatewaySpentUsd: 0.27 });
-    expect(Object.keys(report)).toEqual(["sha", "profile", "runtime", "tasks", "totalCostUsd", "gatewaySpentUsd"]);
+  it("the JSON has exactly the evidence shape: the runtime, the gateway's mode, the ledger's total and the gateway's spend", () => {
+    const report = buildReport({ sha: "abc", profile: "smoke", runtime: "claude-agent-sdk", gateway: "record", summary, gatewaySpentUsd: 0.27 });
+    expect(Object.keys(report)).toEqual(["sha", "profile", "runtime", "gateway", "tasks", "totalCostUsd", "gatewaySpentUsd"]);
     expect(Object.keys(report.tasks[0] ?? {})).toEqual(["taskType", "status", "model", "inputTokens", "outputTokens", "costUsd", "durationMs", "evidenceKind"]);
-    expect(report).toMatchObject({ runtime: "claude-agent-sdk", totalCostUsd: 0.25, gatewaySpentUsd: 0.27 });
-    expect(buildReport({ sha: "abc", profile: "smoke", runtime: "mock", summary: mockSummary, gatewaySpentUsd: null })).toMatchObject({ runtime: "mock", gatewaySpentUsd: null });
+    expect(report).toMatchObject({ runtime: "claude-agent-sdk", gateway: "record", totalCostUsd: 0.25, gatewaySpentUsd: 0.27 });
+    expect(buildReport({ sha: "abc", profile: "smoke", runtime: "claude-agent-sdk", gateway: "replay", summary, gatewaySpentUsd: 0.27 }).gateway).toBe("replay");
+    expect(buildReport({ sha: "abc", profile: "smoke", runtime: "mock", gateway: null, summary: mockSummary, gatewaySpentUsd: null })).toMatchObject({ runtime: "mock", gateway: null, gatewaySpentUsd: null });
   });
 
   it("the table names each task with its cost and both totals", () => {

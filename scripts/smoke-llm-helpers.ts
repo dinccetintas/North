@@ -16,6 +16,8 @@ export const SMOKE_LLM_MAX_COST_USD = 0.5;
 export const DEFAULT_SMOKE_LLM_OUT = "docs/evidence/M7/smoke-llm.json";
 /** Where a mock run's file lands when `SMOKE_LLM_OUT` is unset: never the proof path. */
 export const MOCK_SMOKE_LLM_OUT = "docs/evidence/M7/smoke-llm.mock.json";
+/** Where a run against a replaying gateway lands when `SMOKE_LLM_OUT` is unset: tape is not real Claude, so never the proof path. */
+export const REPLAY_SMOKE_LLM_OUT = "docs/evidence/M7/smoke-llm.replay.json";
 /** The fewest `##` sections a market report must have. */
 export const MIN_REPORT_HEADINGS = 3;
 const DEFAULT_TIMEOUT_MS = 420_000;
@@ -27,6 +29,11 @@ const DEFAULT_INNGEST_URL = "http://localhost:8288";
 export const SMOKE_RUNTIMES = Object.freeze(["mock", "claude-agent-sdk"] as const);
 /** One of {@link SMOKE_RUNTIMES}. */
 export type SmokeRuntime = (typeof SMOKE_RUNTIMES)[number];
+
+/** The modes of the worker's model gateway (`/health` `gateway`; `off` there means no gateway and is `null` here). */
+export const SMOKE_GATEWAYS = Object.freeze(["live", "record", "replay"] as const);
+/** One of {@link SMOKE_GATEWAYS}. */
+export type SmokeGateway = (typeof SMOKE_GATEWAYS)[number];
 
 /** One task the smoke creates and dispatches through `task/dispatch`. */
 export interface SmokeTaskSpec {
@@ -133,9 +140,16 @@ export function databaseRefusal(url: string, allowRemote: boolean): string | nul
   return `the database ${host} is not this machine: smoke LLM creates a user and a company there; set SMOKE_LLM_ALLOW_REMOTE_DB=1 to allow it`;
 }
 
-/** The evidence file for a run on `runtime`: `SMOKE_LLM_OUT` when set, else the proof path for the SDK runtime and `smoke-llm.mock.json` for the mock. */
-export function evidencePathFor(outPath: string | null, runtime: SmokeRuntime): string {
-  return outPath ?? (runtime === "mock" ? MOCK_SMOKE_LLM_OUT : DEFAULT_SMOKE_LLM_OUT);
+/**
+ * The evidence file for a run on `runtime` against a gateway in `gateway` mode
+ * (null: none): `SMOKE_LLM_OUT` when set, else `smoke-llm.mock.json` for the
+ * mock, `smoke-llm.replay.json` for a replaying gateway, and the proof path
+ * only for the SDK runtime against a live or recording one.
+ */
+export function evidencePathFor(outPath: string | null, runtime: SmokeRuntime, gateway: SmokeGateway | null): string {
+  if (outPath !== null) return outPath;
+  if (runtime === "mock") return MOCK_SMOKE_LLM_OUT;
+  return gateway === "replay" ? REPLAY_SMOKE_LLM_OUT : DEFAULT_SMOKE_LLM_OUT;
 }
 
 /**
@@ -295,11 +309,13 @@ export function pickPreview<T extends PreviewAction>(actions: readonly T[], evid
   return evidenced ?? previews.reduce<T | null>((newest, a) => (newest === null || a.createdAt > newest.createdAt ? a : newest), null);
 }
 
-/** The evidence file `smoke-llm.json` (or `smoke-llm.mock.json`). */
+/** The evidence file `smoke-llm.json` (or `smoke-llm.mock.json`, `smoke-llm.replay.json`). */
 export interface SmokeReport {
   readonly sha: string;
   readonly profile: string;
   readonly runtime: SmokeRuntime;
+  /** The gateway's mode read from `/health` (`live`, `record` or `replay`); null without a gateway (the mock runtime). */
+  readonly gateway: SmokeGateway | null;
   readonly tasks: readonly SmokeTaskRow[];
   /** The ledger: every `agent_runs.cost_usd` of the company. */
   readonly totalCostUsd: number;
@@ -312,16 +328,17 @@ export interface ReportInput {
   readonly sha: string;
   readonly profile: string;
   readonly runtime: SmokeRuntime;
+  readonly gateway: SmokeGateway | null;
   readonly summary: SmokeSummary;
   readonly gatewaySpentUsd: number | null;
 }
 
-/** The evidence file: `{ sha, profile, runtime, tasks, totalCostUsd, gatewaySpentUsd }`, each task row with exactly the evidence fields. */
+/** The evidence file: `{ sha, profile, runtime, gateway, tasks, totalCostUsd, gatewaySpentUsd }`, each task row with exactly the evidence fields. */
 export function buildReport(input: ReportInput): SmokeReport {
   const tasks = input.summary.tasks.map((t) =>
     Object.freeze({ taskType: t.taskType, status: t.status, model: t.model, inputTokens: t.inputTokens, outputTokens: t.outputTokens, costUsd: t.costUsd, durationMs: t.durationMs, evidenceKind: t.evidenceKind }),
   );
-  return Object.freeze({ sha: input.sha, profile: input.profile, runtime: input.runtime, tasks: Object.freeze(tasks), totalCostUsd: input.summary.totalCostUsd, gatewaySpentUsd: input.gatewaySpentUsd });
+  return Object.freeze({ sha: input.sha, profile: input.profile, runtime: input.runtime, gateway: input.gateway, tasks: Object.freeze(tasks), totalCostUsd: input.summary.totalCostUsd, gatewaySpentUsd: input.gatewaySpentUsd });
 }
 
 const COLUMNS = [16, 18, 30, 9, 8, 10, 9] as const;

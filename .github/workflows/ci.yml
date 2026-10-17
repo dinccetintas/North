@@ -25,6 +25,8 @@ jobs:
       - run: pnpm -r lint
       - run: pnpm -r test
       - run: pnpm test:scripts
+      # TST-2 (M7 Task 18): every committed cassette is a gateway recording with no secret, a key that is its name and the pinned Agent SDK version.
+      - run: pnpm cassette:check
       # ADR 0015: the web may read NEXT_PUBLIC_SENTRY_DSN (a public DSN), so SENTRY_DSN is matched only when no `_` precedes it.
       # M6 review L15: every tracked file of apps/web (root configs such as next.config.ts and sentry.*.config.ts
       # included), not only src/. `git grep` reads tracked files only, so build output, reports and local env files
@@ -211,3 +213,84 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke-llm.json
             ${{ runner.temp }}/cassettes
+
+  # TST-2 (M7 Task 18): the guard of `e2e-replay`. `hashFiles` is not allowed in a job-level `if`, so this one-step
+  # job reads the directory and `e2e-replay` is skipped (not run, not red) unless a cassette is committed.
+  cassettes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      present: ${{ steps.found.outputs.present }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Look for committed cassettes
+        id: found
+        env:
+          HAS_CASSETTES: ${{ hashFiles('cassettes/*.json') != '' }}
+        run: |
+          echo "present=$HAS_CASSETTES" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_CASSETTES" != "true" ]; then echo "::notice::e2e-replay skipped: no cassettes/*.json is committed yet (the nightly job records them, M7 Task 21); the mock e2e job stays the gate"; fi
+
+  # TST-2 (M7 Task 18): the Playwright specs on the SDK runtime with replayed responses: no key, no network to the model
+  # API, no spend. Skipped until the nightly job (Task 21) has committed a full set of cassettes; the mock `e2e` job
+  # is the gate until then. The cassette check runs first, so a bad file fails before anything starts.
+  e2e-replay:
+    needs: [validate, cassettes]
+    if: needs.cassettes.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      INTEGRATIONS_MODE: sandbox
+      INNGEST_DEV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm cassette:check
+      # SEC-1: the agent subprocess still runs the engineering sandbox on replay (bwrap + socat; see `llm-smoke`).
+      - name: Bubblewrap and socat for the engineering sandbox (SEC-1)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+      - name: Start local Supabase
+        run: pnpm db:start
+      - name: Env files for the local stack (sandbox, SDK runtime, smoke profile, replaying gateway, no model key)
+        run: |
+          status="$(cd packages/db && npx supabase status -o env)"
+          val() { printf '%s\n' "$status" | sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" | head -1; }
+          url="$(val API_URL)"; anon="$(val ANON_KEY)"; service="$(val SERVICE_ROLE_KEY)"
+          echo "::add-mask::$service"
+          printf 'NEXT_PUBLIC_APP_URL=http://localhost:3100\nNEXT_PUBLIC_SUPABASE_URL=%s\nNEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=%s\nINNGEST_DEV=1\nINTEGRATIONS_MODE=sandbox\n' "$url" "$anon" > apps/web/.env.local
+          printf 'NEXT_PUBLIC_APP_URL=http://localhost:3100\nSUPABASE_URL=%s\nSUPABASE_SERVICE_ROLE_KEY=%s\nINNGEST_DEV=1\nINTEGRATIONS_MODE=sandbox\nWORKER_PORT=3101\n' "$url" "$service" > apps/worker/.env
+          printf 'AGENT_RUNTIME=claude-agent-sdk\nNORTH_ENV=staging\nNORTH_MODEL_PROFILE=smoke\nNORTH_CASSETTE_MODE=replay\n' >> apps/worker/.env
+          { echo "SUPABASE_URL=$url"; echo "SUPABASE_ANON_KEY=$anon"; echo "SUPABASE_SERVICE_ROLE_KEY=$service"; } >> "$GITHUB_ENV"
+      - name: Start web, worker and the Inngest Dev Server in the background
+        run: nohup pnpm dev > dev.log 2>&1 &
+      - name: Wait for the three health URLs
+        run: |
+          for url in http://localhost:3101/health http://localhost:8288 http://localhost:3100/api/health; do
+            for _ in $(seq 1 120); do curl -fsS -o /dev/null "$url" && break; sleep 2; done
+            curl -fsS -o /dev/null "$url" || { echo "not up: $url"; tail -n 200 dev.log; exit 1; }
+          done
+      - run: pnpm --filter @north/web exec playwright install --with-deps chromium
+      - run: pnpm e2e:replay
+        env:
+          CI: "1"
+      - name: Dev server log on failure
+        if: failure()
+        run: tail -n 300 dev.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-replay-report
+          retention-days: 7
+          if-no-files-found: ignore
+          path: apps/web/playwright-report

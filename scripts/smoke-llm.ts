@@ -16,13 +16,15 @@
  * tokens, and the gateway priced more than $0 and at most $0.50 during the run
  * (its `/health` `budget.spentUsd` at the gate and after: the spend truth, as
  * a run can store `cost_usd` 0), with no $0 ledger next to used tokens. It
- * writes `{ sha, profile, runtime, tasks, totalCostUsd, gatewaySpentUsd }` to
- * `SMOKE_LLM_OUT`, else `docs/evidence/M7/smoke-llm.json` on the SDK runtime
- * and `smoke-llm.mock.json` on the mock (a mock run never writes the proof
- * path), prints the per-task table and `smoke LLM: OK (ledger $x.xx, gateway
- * $y.yy), runtime …`. Any failure, an exception after dispatch included,
- * exits 1 with every problem and the table, and presses the company's kill
- * switch so a local run spends nothing more.
+ * writes `{ sha, profile, runtime, gateway, tasks, totalCostUsd, gatewaySpentUsd }`
+ * (`gateway`: the mode the worker's `/health` reports) to `SMOKE_LLM_OUT`, else
+ * `docs/evidence/M7/smoke-llm.json` on the SDK runtime, `smoke-llm.mock.json` on
+ * the mock and `smoke-llm.replay.json` against a replaying gateway (neither
+ * ever writes the proof path), prints the per-task table and
+ * `smoke LLM: OK (ledger $x.xx, gateway $y.yy), runtime …`. Any failure, an
+ * exception after dispatch included, exits 1 with every problem and the
+ * table, and presses the company's kill switch so a local run spends nothing
+ * more.
  *
  * Economics: the role YAML's `max_turns` and `max_budget_usd` stay. The hard
  * stop is the worker's gateway, `NORTH_DAILY_CAP_USD=0.50` per UTC day, which
@@ -71,7 +73,7 @@ import {
 } from "@north/db";
 import { localSupabaseEnv } from "../packages/db/test/env";
 import { checkHealth, spentUsdOf } from "./smoke-llm-health";
-import { attempt, buildReport, databaseRefusal, evidencePathFor, formatTable, messageOf, okLine, pickPreview, planFor, summariseRuns, type SmokePlan, type SmokeRuntime, type SmokeSummary } from "./smoke-llm-helpers";
+import { attempt, buildReport, databaseRefusal, evidencePathFor, formatTable, messageOf, okLine, pickPreview, planFor, summariseRuns, type SmokeGateway, type SmokePlan, type SmokeRuntime, type SmokeSummary } from "./smoke-llm-helpers";
 import { gatewayDeltaUsd, smokeProblems, type SmokeFacts } from "./smoke-llm-verdict";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -188,11 +190,12 @@ async function readPreview(db: DbClient, task: TaskRecord | undefined): Promise<
   return { status: action.status, url, httpStatus };
 }
 
-/** What the gate found: the runtime under test, the worker's profile and the gateway's day spend before anything was created. */
+/** What the gate found: the runtime under test, the worker's profile, the gateway's day spend before anything was created and its mode. */
 interface Gate {
   readonly runtime: SmokeRuntime;
   readonly profile: string;
   readonly spentUsd: number | null;
+  readonly gateway: SmokeGateway | null;
 }
 
 /** What the verdict reads: the tasks' outcomes, the company's runs, the market report, the preview and the gateway's spend; a read that throws becomes a problem. */
@@ -226,10 +229,10 @@ function commitSha(plan: SmokePlan): string {
   }
 }
 
-/** Writes the evidence file (also on a failed run: the evidence of what happened); a mock run never writes the proof path. Returns its path. */
+/** Writes the evidence file (also on a failed run: the evidence of what happened); a mock run and a replaying gateway never write the proof path. Returns its path. */
 async function writeEvidence(plan: SmokePlan, gate: Gate, summary: SmokeSummary, gatewaySpentUsd: number | null): Promise<string> {
-  const path = resolve(REPO_ROOT, evidencePathFor(plan.outPath, gate.runtime));
-  const report = buildReport({ sha: commitSha(plan), profile: gate.profile, runtime: gate.runtime, summary, gatewaySpentUsd });
+  const path = resolve(REPO_ROOT, evidencePathFor(plan.outPath, gate.runtime, gate.gateway));
+  const report = buildReport({ sha: commitSha(plan), profile: gate.profile, runtime: gate.runtime, gateway: gate.gateway, summary, gatewaySpentUsd });
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
   return path;
@@ -285,7 +288,7 @@ async function main(): Promise<number> {
   }
   const gatewayNow = verdict.spentUsd === null ? "" : `, gateway spent $${verdict.spentUsd.toFixed(4)} today so far`;
   console.log(`smoke LLM on runtime ${verdict.runtime}, profile ${verdict.profile}, cap $${plan.maxCostUsd.toFixed(2)}, timeout ${plan.timeoutMs / 1000} s${gatewayNow}`);
-  return run(plan, { runtime: verdict.runtime, profile: verdict.profile, spentUsd: verdict.spentUsd });
+  return run(plan, { runtime: verdict.runtime, profile: verdict.profile, spentUsd: verdict.spentUsd, gateway: verdict.gateway });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

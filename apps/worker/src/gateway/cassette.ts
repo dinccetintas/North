@@ -3,7 +3,9 @@
 // request after the parts that change between runs are normalised. Cassettes
 // are committed: the stored request is scrubbed (`scrubCassette`), the stored
 // response is kept verbatim so replay serves exactly what was recorded, and a
-// response that holds an Anthropic key is refused outright.
+// response that holds an Anthropic key is refused outright. A recording also
+// carries a `meta` block (SDK version, time, whether scrubbing changed the
+// request) that `scripts/cassette-check.ts` reads.
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -97,11 +99,40 @@ const scrubBody = (body: Buffer): Buffer => Buffer.from(scrubCassette(body.toStr
 const Base64 = z.string().refine((text) => Buffer.from(text, "base64").toString("base64") === text, "not base64");
 const HeadersSchema = z.record(z.string(), z.string());
 
-const CassetteFileSchema = z.object({
+/**
+ * What a recording says about itself, written by `writeCassette` and read by
+ * `scripts/cassette-check.ts`. Optional in the file so a cassette recorded
+ * before this block existed still replays.
+ */
+const MetaSchema = z.object({
+  /** The Agent SDK version the request's user agent names (`agent-sdk/<version>`); null for any other client. */
+  sdkVersion: z.string().nullable(),
+  /** When the exchange was recorded (ISO-8601, UTC). */
+  recordedAt: z.iso.datetime(),
+  /** True when scrubbing changed the body, path or `anthropic-beta` header, so the key cannot be recomputed from the stored request. */
+  requestScrubbed: z.boolean(),
+  /** Only the `record` mode writes a cassette. */
+  gatewayMode: z.literal("record"),
+});
+
+/** The shape of a cassette file on disk; the cassette check validates every file against it. */
+export const CassetteFileSchema = z.object({
   key: KeySchema,
   request: z.object({ method: z.string(), path: z.string(), headers: HeadersSchema, body: Base64 }),
   response: z.object({ status: z.number().int().min(100).max(599), headers: HeadersSchema, body: Base64 }),
+  meta: MetaSchema.optional(),
 });
+export type CassetteFile = z.infer<typeof CassetteFileSchema>;
+export type CassetteMeta = z.infer<typeof MetaSchema>;
+
+// `agent-sdk/<semver>` as its own field of the user agent's parenthesis: `claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301[, client-app/..][, workload/..])`.
+// The Agent SDK sets CLAUDE_AGENT_SDK_VERSION for the Claude Code subprocess, which adds the field. `claude-cli/<n>` is the CLI's own version, not the SDK's.
+const AGENT_SDK_FIELD = /[(,]\s*agent-sdk\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*(?=[,)])/;
+
+/** The Agent SDK version a user agent names, or null when it names none (the CLI alone, the API client, no header). */
+export function sdkVersionOf(userAgent: string | null | undefined): string | null {
+  return AGENT_SDK_FIELD.exec(userAgent ?? "")?.[1] ?? null;
+}
 
 /** Headers as Node hands them over: a repeated header may be an array. */
 export type HeaderInput = Readonly<Record<string, string | string[] | undefined>>;
@@ -149,22 +180,49 @@ export function holdsAnthropicKey(body: Buffer, headers: HeaderInput = {}): bool
 
 const fileOf = (dir: string, key: string): string => join(dir, `${KeySchema.parse(key)}.json`);
 
+/** The stored form of a request: scrubbed, with the credential headers gone. */
+interface StoredRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly headers: Record<string, string>;
+  readonly body: Buffer;
+}
+
+function storedRequestOf(request: CassetteRequest): StoredRequest {
+  return { method: request.method, path: scrubCassette(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, scrubCassette), body: scrubBody(request.body) };
+}
+
+/**
+ * True when scrubbing changed a part a key is made of (the body, the path or the
+ * `anthropic-beta` header): the key of such a recording cannot be recomputed
+ * from the stored request, and the cassette check skips that comparison.
+ */
+function keyPartsScrubbed(request: CassetteRequest, stored: StoredRequest): boolean {
+  const rawBeta = cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, (value) => value)["anthropic-beta"];
+  return !stored.body.equals(request.body) || stored.path !== request.path || stored.headers["anthropic-beta"] !== rawBeta;
+}
+
 /**
  * Stores one exchange as `<dir>/<key>.json`, both bodies base64. The request
  * is scrubbed (body, path and header values) and loses its key headers. The
  * response is stored verbatim, so replay serves exactly what was recorded; it
  * loses only its account and wire headers, and a response that holds an
- * Anthropic key is refused (throws, writes nothing). The write goes to a temp
- * file and is renamed into place, so a reader never sees half a file. Throws
- * when `key` is not a sha256 hex digest.
+ * Anthropic key is refused (throws, writes nothing). A `meta` block records the
+ * SDK version (from the stored `user-agent`), the time (`now`, the wall clock by
+ * default) and whether scrubbing changed the key's inputs. The write goes to a
+ * temp file and is renamed into place, so a reader never sees half a file.
+ * Throws when `key` is not a sha256 hex digest.
  */
-export async function writeCassette(dir: string, key: string, response: CassetteResponse, request: CassetteRequest): Promise<void> {
+export async function writeCassette(dir: string, key: string, response: CassetteResponse, request: CassetteRequest, now: () => Date = () => new Date()): Promise<void> {
   const target = fileOf(dir, key);
   if (holdsAnthropicKey(response.body, response.headers)) throw new Error("refusing to record a response that holds an Anthropic key");
-  const file = {
+  const stored = storedRequestOf(request);
+  const meta: CassetteMeta = { sdkVersion: sdkVersionOf(stored.headers["user-agent"]), recordedAt: now().toISOString(), requestScrubbed: keyPartsScrubbed(request, stored), gatewayMode: "record" };
+  const file: CassetteFile = {
     key,
-    request: { method: request.method, path: scrubCassette(request.path), headers: cleanHeaders(request.headers, SECRET_REQUEST_HEADERS, scrubCassette), body: scrubBody(request.body).toString("base64") },
+    request: { ...stored, body: stored.body.toString("base64") },
     response: { status: response.status, headers: cleanHeaders(response.headers, DROPPED_RESPONSE_HEADERS, (value) => value), body: response.body.toString("base64") },
+    meta,
   };
   await mkdir(dir, { recursive: true });
   const temp = join(dir, `.${key}.${randomBytes(6).toString("hex")}.tmp`);

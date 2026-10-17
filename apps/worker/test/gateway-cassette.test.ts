@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cassetteKey, holdsAnthropicKey, readCassette, scrubCassette, writeCassette } from "../src/gateway/cassette";
+import { CassetteFileSchema, cassetteKey, holdsAnthropicKey, readCassette, scrubCassette, sdkVersionOf, writeCassette } from "../src/gateway/cassette";
 
 /**
  * TST-1 / TST-2: cassettes make real-Claude tests replayable. The key survives
@@ -261,5 +261,80 @@ describe("TST-2 writeCassette and readCassette", () => {
   it("refuses a key that is not a sha256 hex digest, so a key can never name another path", async () => {
     await expect(readCassette(dir, "../../etc/passwd")).rejects.toThrow(/key/i);
     await expect(writeCassette(dir, "../x", { status: 200, headers: {}, body: Buffer.alloc(0) }, { method: "POST", path: "/", headers: {}, body: Buffer.alloc(0) })).rejects.toThrow(/key/i);
+  });
+});
+
+describe("TST-2 sdkVersionOf", () => {
+  it("reads the Agent SDK version from the user agent the Claude Code subprocess sends", () => {
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301)")).toBe("0.3.301");
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301, client-app/north/1.0, workload/cron)")).toBe("0.3.301");
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.4.0-beta.2)")).toBe("0.4.0-beta.2");
+    // Captured from the real @anthropic-ai/claude-agent-sdk 0.3.301 subprocess on `POST /v1/messages?beta=true` (the entrypoint field is the session's CLAUDE_CODE_ENTRYPOINT).
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, remote_desktop, agent-sdk/0.3.301)")).toBe("0.3.301");
+  });
+
+  it("is null when the user agent names no Agent SDK: the CLI alone, the API client, nothing", () => {
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, cli)")).toBeNull();
+    expect(sdkVersionOf("Anthropic/JS 0.134.0")).toBeNull();
+    expect(sdkVersionOf("")).toBeNull();
+    expect(sdkVersionOf(undefined)).toBeNull();
+  });
+
+  it("does not take a version out of another field (the CLI's own version, a client-app that contains the words)", () => {
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, sdk-ts, client-app/agent-sdk/9.9.9)")).toBeNull();
+    expect(sdkVersionOf("claude-cli/2.1.301 (external, sdk-ts, agent-sdk/latest)")).toBeNull();
+  });
+});
+
+describe("TST-2 the meta block of a recording", () => {
+  const key = keyOf(request());
+  const at = () => new Date("2026-10-17T09:00:00.000Z");
+  const reply = { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from("{}") };
+  const sdkAgent = "claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301)";
+  const put = (req: { path?: string; headers?: Record<string, string>; body?: string }) =>
+    writeCassette(dir, key, reply, { method: "POST", path: req.path ?? "/v1/messages?beta=true", headers: req.headers ?? { "user-agent": sdkAgent }, body: Buffer.from(req.body ?? JSON.stringify(request())) }, at);
+  const metaOnDisk = async () => (JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { meta?: Record<string, unknown> }).meta;
+
+  it("records the SDK version from the user agent, the time from the clock, that nothing was scrubbed, and the gateway mode", async () => {
+    await put({});
+    expect(await metaOnDisk()).toEqual({ sdkVersion: "0.3.301", recordedAt: "2026-10-17T09:00:00.000Z", requestScrubbed: false, gatewayMode: "record" });
+  });
+
+  it("keeps sdkVersion null when the user agent names no Agent SDK or there is none", async () => {
+    await put({ headers: { "user-agent": "Anthropic/JS 0.134.0" } });
+    expect((await metaOnDisk())?.sdkVersion).toBeNull();
+    await put({ headers: {} });
+    expect((await metaOnDisk())?.sdkVersion).toBeNull();
+  });
+
+  it("flags requestScrubbed when scrubbing changed the body, the path or the beta header (the parts a key is made of), and only then", async () => {
+    await put({ body: JSON.stringify(request({ metadata: { note: "mail bob@north.test" } })) });
+    expect((await metaOnDisk())?.requestScrubbed).toBe(true);
+    await put({ path: "/v1/messages?note=sk-ant-api03-LEAKPATH" });
+    expect((await metaOnDisk())?.requestScrubbed).toBe(true);
+    await put({ headers: { "anthropic-beta": "Bearer LEAKTOKENLEAKTOKEN1234", "user-agent": sdkAgent } });
+    expect((await metaOnDisk())?.requestScrubbed).toBe(true);
+    await put({ headers: { "x-trace": "sk-ant-api03-LEAK3", "user-agent": sdkAgent } });
+    expect((await metaOnDisk())?.requestScrubbed).toBe(false);
+  });
+
+  it("stamps the wall clock when none is given", async () => {
+    const before = Date.now();
+    await writeCassette(dir, key, reply, { method: "POST", path: "/v1/messages", headers: {}, body: Buffer.from("{}") });
+    const recordedAt = Date.parse(String((await metaOnDisk())?.recordedAt));
+    expect(recordedAt).toBeGreaterThanOrEqual(before);
+    expect(recordedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("still reads a cassette recorded before meta existed, and the schema makes meta optional but checks it when present", async () => {
+    const old = { key, request: { method: "POST", path: "/v1/messages", headers: {}, body: "" }, response: { status: 200, headers: {}, body: Buffer.from("old").toString("base64") } };
+    await writeFile(join(dir, `${key}.json`), JSON.stringify(old));
+    expect((await readCassette(dir, key))?.body.toString()).toBe("old");
+    expect(CassetteFileSchema.safeParse(old).success).toBe(true);
+    const meta = { sdkVersion: null, recordedAt: "2026-10-17T09:00:00.000Z", requestScrubbed: true, gatewayMode: "record" };
+    expect(CassetteFileSchema.safeParse({ ...old, meta }).success).toBe(true);
+    expect(CassetteFileSchema.safeParse({ ...old, meta: { ...meta, recordedAt: "yesterday" } }).success).toBe(false);
+    expect(CassetteFileSchema.safeParse({ ...old, meta: { ...meta, gatewayMode: "replay" } }).success).toBe(false);
+    expect(CassetteFileSchema.safeParse({ ...old, meta: { sdkVersion: null } }).success).toBe(false);
   });
 });

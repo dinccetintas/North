@@ -159,6 +159,16 @@ describe("TST-2 record then replay", () => {
     expect(replayer.stats().misses).toBe(4);
   });
 
+  it("a recording through the gateway carries meta: the SDK version from the user agent, a time, no scrubbing for a clean request", async () => {
+    const recorder = await start("record");
+    await call(recorder.baseUrl, { headers: { "user-agent": "claude-cli/2.1.301 (external, sdk-ts, agent-sdk/0.3.301)" }, body: request() });
+    await recorder.close();
+    const [file] = await readdir(h.dir);
+    const stored = JSON.parse(await readFile(join(h.dir, file!), "utf8")) as { meta: { recordedAt: string } };
+    expect(stored.meta).toMatchObject({ sdkVersion: "0.3.301", requestScrubbed: false, gatewayMode: "record" });
+    expect(Number.isNaN(Date.parse(stored.meta.recordedAt))).toBe(false);
+  });
+
   it("record stores a non-2xx exchange too, and replay serves its status", async () => {
     const errorBody = JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } });
     h.upstream.handler = jsonHandler(errorBody, 429);

@@ -54,3 +54,5 @@ update-check/
 
 # TST-2: a mock run of `pnpm smoke:llm` is never evidence (the proof is smoke-llm.json from the SDK runtime)
 docs/evidence/M7/smoke-llm.mock.json
+# TST-2: a run against a replaying gateway is tape, not real Claude: never evidence either
+docs/evidence/M7/smoke-llm.replay.json
