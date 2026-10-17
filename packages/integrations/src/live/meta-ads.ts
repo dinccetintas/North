@@ -3,7 +3,8 @@ import { CampaignSpecSchema, scopeValue, type AdsProvider, type CampaignInsights
 import type { ProviderAuth } from "../types";
 import type { FetchLike } from "./github";
 
-export const META_GRAPH_API = "https://graph.facebook.com/v21.0";
+// Graph API / Marketing API v26.0 (released 2026-07-29, the latest). The creative upload (image, video) lands in M11 (MKT-1).
+export const META_GRAPH_API = "https://graph.facebook.com/v26.0";
 
 const NOT_CONNECTED = "Meta Ads is not connected for this user (connect it in Settings → Connections)";
 

@@ -74,9 +74,9 @@ describe("ONB-3 OAuth code exchange (worker side: client secrets never leave her
 
   it("Meta (BUD-2, ADR 0010): code → short-lived → long-lived token, first ad account as act:<id>, first page as page:<id>, account name as the label", async () => {
     const { fetchImpl, calls } = fakeFetch({
-      "https://graph.facebook.com/v21.0/oauth/access_token": { body: { access_token: "EAAB-short-or-long", expires_in: 5_184_000 } },
-      "https://graph.facebook.com/v21.0/me/adaccounts": { body: { data: [{ id: "act_123", account_id: "123", name: "Acme ads" }] } },
-      "https://graph.facebook.com/v21.0/me/accounts": { body: { data: [{ id: "456", name: "Acme page" }] } },
+      "https://graph.facebook.com/v26.0/oauth/access_token": { body: { access_token: "EAAB-short-or-long", expires_in: 5_184_000 } },
+      "https://graph.facebook.com/v26.0/me/adaccounts": { body: { data: [{ id: "act_123", account_id: "123", name: "Acme ads" }] } },
+      "https://graph.facebook.com/v26.0/me/accounts": { body: { data: [{ id: "456", name: "Acme page" }] } },
     });
     const token = await exchangeMetaCode(client, "c0de", "http://x/cb", fetchImpl, now);
     expect(token).toEqual({ token: { accessToken: "EAAB-short-or-long", expiresAt: "2026-12-14T10:00:00.000Z" }, scopes: ["act:123", "page:456"], accountLabel: "Acme ads" });
@@ -88,7 +88,7 @@ describe("ONB-3 OAuth code exchange (worker side: client secrets never leave her
     expect(calls[2]?.init?.headers).toMatchObject({ authorization: "Bearer EAAB-short-or-long" });
     expect(calls[3]?.url).toContain("/me/accounts");
     // No ad account → no connection: the adapter could never act.
-    const none = fakeFetch({ "https://graph.facebook.com/v21.0/oauth/access_token": { body: { access_token: "t" } }, "https://graph.facebook.com/v21.0/me/adaccounts": { body: { data: [] } } });
+    const none = fakeFetch({ "https://graph.facebook.com/v26.0/oauth/access_token": { body: { access_token: "t" } }, "https://graph.facebook.com/v26.0/me/adaccounts": { body: { data: [] } } });
     await expect(exchangeMetaCode(client, "c", "http://x/cb", none.fetchImpl, now)).rejects.toThrow(/no ad account/);
     await expect(exchangeMetaCode(client, "c", "http://x/cb", fakeFetch({}).fetchImpl, now)).rejects.not.toThrow(/s3cret/);
   });

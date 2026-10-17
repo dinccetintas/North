@@ -20,7 +20,7 @@ export const STATE_TTL_SECONDS = 10 * 60;
 const DEFAULT_GITHUB_SCOPE = "repo";
 /** M4 (BUD-2): manage and read the user's own ad account; list pages for the ad's page id. */
 const META_SCOPE = "ads_management,ads_read,pages_show_list";
-const META_DIALOG_URL = "https://www.facebook.com/v21.0/dialog/oauth";
+const META_DIALOG_URL = "https://www.facebook.com/v26.0/dialog/oauth";
 /** M4 (SLS-K2): send from the user's mailbox and read threads for replies; nothing broader. */
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";

@@ -51,7 +51,7 @@ describe("ONB-3 OAuth helpers (web side: public ids and CSRF state only)", () =>
     const config = oauthConfig("meta_ads", { META_APP_ID: "123456" });
     expect(config!.publicId).toBe("123456");
     const url = new URL(config!.authorizeUrl("st4te", "http://localhost:3100/api/connections/meta_ads/callback"));
-    expect(url.origin + url.pathname).toBe("https://www.facebook.com/v21.0/dialog/oauth");
+    expect(url.origin + url.pathname).toBe("https://www.facebook.com/v26.0/dialog/oauth");
     expect(Object.fromEntries(url.searchParams)).toEqual({
       client_id: "123456",
       redirect_uri: "http://localhost:3100/api/connections/meta_ads/callback",

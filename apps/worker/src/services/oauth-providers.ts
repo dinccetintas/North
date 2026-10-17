@@ -16,7 +16,7 @@ export const OAUTH_CLIENT_PROVIDERS = ["github", "vercel", "meta_ads", "gmail", 
 export type OauthClientProvider = (typeof OAUTH_CLIENT_PROVIDERS)[number];
 
 const PROVIDER_TIMEOUT_MS = 10_000;
-export const META_GRAPH = "https://graph.facebook.com/v21.0";
+export const META_GRAPH = "https://graph.facebook.com/v26.0";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";

@@ -32,12 +32,15 @@ jobs:
       - name: Worker-only secrets never appear in the web app
         run: |
           status=0
-          git grep -nE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_CONNECT_CLIENT_SECRET|LANGFUSE_SECRET_KEY|ANTHROPIC_API_KEY|RESEND_API_KEY|VAPID_PRIVATE_KEY|(^|[^_])SENTRY_DSN" -- apps/web ':(exclude)apps/web/e2e' ':(exclude)apps/web/node_modules' ':(exclude)apps/web/.next' ':(exclude)apps/web/playwright-report*' ':(exclude)apps/web/test-results' || status=$?
+          git grep -nE "SUPABASE_SERVICE_ROLE_KEY|GITHUB_CLIENT_SECRET|VERCEL_CLIENT_SECRET|META_APP_SECRET|GOOGLE_CLIENT_SECRET|CONNECTIONS_ENCRYPTION_KEY|SENTRY_CLIENT_SECRET|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|STRIPE_CONNECT_CLIENT_SECRET|LANGFUSE_SECRET_KEY|ANTHROPIC_API_KEY|RESEND_API_KEY|VAPID_PRIVATE_KEY|UNSUBSCRIBE_SECRET|NORTH_TRUST_PROXY|(^|[^_])SENTRY_DSN" -- apps/web ':(exclude)apps/web/e2e' ':(exclude)apps/web/node_modules' ':(exclude)apps/web/.next' ':(exclude)apps/web/playwright-report*' ':(exclude)apps/web/test-results' || status=$?
           [ "$status" -eq 1 ]
       - name: Worker image builds (Fly.io Dockerfile, ADR 0007)
         run: docker build -f apps/worker/Dockerfile -t north-worker:ci .
       - name: Worker image carries no env files, workspaces or sandbox sites
         run: docker run --rm north-worker:ci sh -c '! find /app -name ".env" -o -name ".env.*" ! -name ".env.example" | grep . && ! ls -d /app/apps/worker/.workspaces /app/apps/worker/.sandbox 2>/dev/null'
+      # SEC-1 (M7 Task 9): the engineering role's shell runs under the Agent SDK sandbox with failIfUnavailable, which needs bwrap and socat on Linux.
+      - name: Worker image carries bubblewrap and socat for the SDK sandbox (SEC-1)
+        run: docker run --rm north-worker:ci sh -c 'bwrap --version && socat -V >/dev/null && command -v socat'
       - name: Start local Supabase
         run: pnpm db:start
       - name: Integration tests (RLS, constraints)
